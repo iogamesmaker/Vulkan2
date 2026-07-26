@@ -1,0 +1,18 @@
+{
+  "name": "vulkan2",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "glm",
+    "vk-bootstrap",
+    "vulkan-memory-allocator",
+	"fmt",
+	"stb",
+    {
+      "name": "sdl3",
+      "default-features": true,
+      "features": [
+        "vulkan"
+      ]
+    }
+  ]
+}

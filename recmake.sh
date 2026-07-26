@@ -3,9 +3,10 @@
 set -e
 
 rm -rf build
-
-cmake -B build -G Ninja -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER_TARGET=x86_64-pc-windows-gnu
-
-cmake --build build
-
-./build/vulkan.exe
+cmake -B build -G Ninja \
+  -DCMAKE_MAKE_PROGRAM=/ucrt64/bin/ninja.exe \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_C_COMPILER=clang \
+  -DVCPKG_TARGET_TRIPLET=x64-mingw-static \
+  -DVCPKG_HOST_TRIPLET=x64-mingw-static \
+  -DCMAKE_TOOLCHAIN_FILE="C:/code/clone/vcpkg/scripts/buildsystems/vcpkg.cmake"
