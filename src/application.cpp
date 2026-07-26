@@ -1,9 +1,11 @@
 // Application.cpp
+#define VMA_IMPLEMENTATION
+#include "vk_mem_alloc.h"
 #include "application.hpp"
 
 constexpr bool useValidationLayers = false; // ?
 
-Application::Application(int width, int height) : m_Width(width), m_Height(height) {
+Application::Application(uint32_t width, uint32_t height) : m_Width(width), m_Height(height) {
 	initWindow();
 
 	initVulkan();
@@ -17,15 +19,20 @@ Application::Application(int width, int height) : m_Width(width), m_Height(heigh
 Application::~Application() {
 	if(m_InitDone) {
 		vkDeviceWaitIdle(m_Device);
+		
 		for(int i = 0; i < FRAME_OVERLAP; i++) {
 			vkDestroyCommandPool(m_Device, m_Frames[i].commandPool, nullptr);
 			
 			vkDestroyFence(m_Device, m_Frames[i].renderFence, nullptr);
 			vkDestroySemaphore(m_Device, m_Frames[i].renderSemaphore, nullptr);
 			vkDestroySemaphore(m_Device, m_Frames[i].swapchainSemaphore, nullptr);
+			
+			m_Frames[i].deletionQueue.flush();
 		}
 		
 		destroySwapchain();
+		
+		m_DeletionQueue.flush();
 	}
 	
 	SDL_Vulkan_UnloadLibrary();
@@ -48,7 +55,7 @@ void Application::initWindow() {
 }
 
 void Application::initVulkan() {
-	/*
+	/* // I entered a small portion of code into ChatGPT because I'm using SDL3 instead of the tutorial's SDL2 implementation, it told me I'd have problems and this block of code would fix it alledgedly.
 	Uint32 extensionCount = 0;
 
     const char* const* sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&extensionCount);
@@ -103,10 +110,50 @@ void Application::initVulkan() {
 	m_GraphicsQueue = vkbDevice.get_queue(vkb::QueueType::graphics).value();
 	m_GraphicsQueueFamily = vkbDevice.get_queue_index(vkb::QueueType::graphics).value();
 	
+	// Initialise VMA
+	VmaAllocatorCreateInfo allocatorInfo = {};
+	allocatorInfo.physicalDevice = m_GPU;
+	allocatorInfo.device = m_Device;
+	allocatorInfo.instance = m_Instance;
+	allocatorInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+	
+	vmaCreateAllocator(&allocatorInfo, &m_Allocator);
+	
+	m_DeletionQueue.push([&]() {
+		vmaDestroyAllocator(m_Allocator);
+	});
 }
 
 void Application::initSwapchain() {
 	createSwapchain(static_cast<uint32_t>(m_Width), static_cast<uint32_t>(m_Height));
+	
+	VkExtent3D drawImageExtent = { m_Width, m_Height, 1 };
+	
+	m_DrawImage.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+	m_DrawImage.imageExtent = drawImageExtent;
+	
+	VkImageUsageFlags drawImageUsages{};
+	drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
+	drawImageUsages |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	
+	VkImageCreateInfo rimg_info = vkinit::image_create_info(m_DrawImage.imageFormat, drawImageUsages, drawImageExtent);
+
+	VmaAllocationCreateInfo rimg_allocinfo = {};
+	rimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	rimg_allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	
+	vmaCreateImage(m_Allocator, &rimg_info, &rimg_allocinfo, &m_DrawImage.image, &m_DrawImage.allocation, nullptr);
+
+	VkImageViewCreateInfo rview_info = vkinit::imageview_create_info(m_DrawImage.imageFormat, m_DrawImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
+	
+	VK_CHECK(vkCreateImageView(m_Device, &rview_info, nullptr, &m_DrawImage.imageView));
+	
+	m_DeletionQueue.push([&]() {
+		vkDestroyImageView(m_Device, m_DrawImage.imageView, nullptr);
+		vmaDestroyImage(m_Allocator, m_DrawImage.image, m_DrawImage.allocation);	
+	});
 }
 
 void Application::initCommands() {
@@ -165,6 +212,14 @@ void Application::destroySwapchain() {
 	}
 }
 
+void Application::clearImage(VkCommandBuffer cmd) {
+	VkClearColorValue clearValue = {{0.0f, 0.0f, 0.0f, 1.0f}};
+	
+	VkImageSubresourceRange clearRange = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
+	
+	vkCmdClearColorImage(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
+}
+
 void Application::run() {
 	bool quit = false;
 	
@@ -181,7 +236,11 @@ void Application::run() {
 		while(SDL_PollEvent(&event)) {
 			if(event.type == SDL_EVENT_QUIT) quit = true;
 			if(event.type == SDL_EVENT_WINDOW_RESIZED) {
-				SDL_GetWindowSizeInPixels(m_pWindow, &m_Width, &m_Height);
+				int w,h;
+				SDL_GetWindowSizeInPixels(m_pWindow, &w, &h);
+				
+				m_Width = w;
+				m_Height = h;
 				
 			}
 		}
@@ -193,6 +252,9 @@ void Application::draw() {
 	// Wait for the GPU to finish, reset the fence
 	// 1000000000 is 1 second in nanoseconds. If the CPU has been stalling for more than 1000000000 nanoseconds, it tells the GPU to go fuck itself and then goes on anyways
 	VK_CHECK(vkWaitForFences(m_Device, 1, &getCurrentFrame().renderFence, true, 1000000000));
+	
+	getCurrentFrame().deletionQueue.flush();
+	
 	VK_CHECK(vkResetFences(m_Device, 1, &getCurrentFrame().renderFence));
 	
 	// Get a swapchain index for the next frame
@@ -205,20 +267,25 @@ void Application::draw() {
 	
 	VkCommandBufferBeginInfo cmdBeginInfo = vkinit::command_buffer_begin_info(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
 	// the flag one time submit basically tells the driver that we're only submitting and executing the command once
-	VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));
+	m_DrawExtent.width = m_DrawImage.imageExtent.width;
+	m_DrawExtent.height = m_DrawImage.imageExtent.height;
 	
-	// command buffer is now recording!
-	// -------------
+	VK_CHECK(vkBeginCommandBuffer(cmd, &cmdBeginInfo));	// command buffer is now recording!
+	
 	// make the swapchain image writeable
-	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+	vkutil::transition_image(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+	// START DRAW COMMANDS
 	
-	VkClearColorValue clearValue = {{0.0f, 0.0f, 0.0f, 1.0f}};
+	clearImage(cmd);
 	
-	VkImageSubresourceRange clearRange = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
+	// END DRAW COMMANDS
+
+	vkutil::transition_image(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 	
-	vkCmdClearColorImage(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
-	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-	// -------------
+	vkutil::copy_image_to_image(cmd, m_DrawImage.image, m_SwapchainImages[swapchainImageIndex], m_DrawExtent, m_SwapchainExtent);
+	
+	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 	VK_CHECK(vkEndCommandBuffer(cmd));
 	
 	VkCommandBufferSubmitInfo cmdinfo = vkinit::command_buffer_submit_info(cmd); // beautiful abstraction 🙏
@@ -229,6 +296,7 @@ void Application::draw() {
 	VkSubmitInfo2 submit = vkinit::submit_info(&cmdinfo, &signalInfo, &waitInfo);
 	
 	VK_CHECK(vkQueueSubmit2(m_GraphicsQueue, 1, &submit, getCurrentFrame().renderFence));
+	
 	// present prep
 	VkPresentInfoKHR presentInfo = {};
 	presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;

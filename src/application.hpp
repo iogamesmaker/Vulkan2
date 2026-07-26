@@ -11,8 +11,25 @@
 #include <vk_images.h> 			// vkguide.dev
 
 #include "VkBootstrap.h" // I fucking love this header file lol, makes setting up Vulkan a breeze.
+#include "vk_mem_alloc.h"
 
 // Pretty much all of the initialisation code is based on / taken from vkguide.dev.
+
+struct DeletionQueue { // high IQ play by the writer of vkguide.dev
+					   // they tell us this implementation isn't really scalable though
+	std::deque<std::function<void()>> deletors;
+	
+	void push(std::function<void()>&& func) {
+		deletors.push_back(func);
+	}
+	
+	void flush() {
+		for(auto it = deletors.rbegin(); it != deletors.rend(); it++) {
+			(*it)();
+		}
+		deletors.clear();
+	}
+};
 
 struct FrameData {
 	VkCommandPool commandPool;
@@ -26,25 +43,9 @@ struct FrameData {
 
 constexpr unsigned int FRAME_OVERLAP = 2;
 
-struct DeletionQueue { // high IQ play by the writer of vkguide.dev
-					   // they tell us this implementation isn't really scalable though
-	std::deque<std::function<void()>> deletors;
-	
-	void pushFunction(std::function<void()>&& func) {
-		deletors.push_back(func);
-	}
-	
-	void flush() {
-		for(auto it = deletors.rbegin(); it != deletors.rend(); it++) {
-			(*it)();
-		}
-		deletors.clear();
-	}
-};
-
 class Application {
 public:
-	Application(int width = 1280, int height = 720);	
+	Application(uint32_t width = 1280, uint32_t height = 720);
 	~Application();
 	
 	void run();
@@ -86,10 +87,16 @@ private:
 	
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
+	
+	void clearImage(VkCommandBuffer cmd);
 		
 	// variables	
-	int m_Width, m_Height;
+	uint32_t m_Width, m_Height;
 	SDL_Window* m_pWindow;
 	
 	DeletionQueue m_DeletionQueue;
+	VmaAllocator m_Allocator;
+	
+	AllocatedImage m_DrawImage;
+	VkExtent2D m_DrawExtent;
 };
