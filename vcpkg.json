@@ -7,6 +7,14 @@
     "vulkan-memory-allocator",
 	"fmt",
 	"stb",
+	{
+	  "name": "imgui",
+	  "default-features": true,
+	  "features": [
+	    "sdl3-binding",
+		"vulkan-binding"
+	  ]
+	},
     {
       "name": "sdl3",
       "default-features": true,

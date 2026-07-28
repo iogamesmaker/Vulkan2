@@ -3,6 +3,7 @@ project(Vulkan2 CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/..")
 
 find_package(Vulkan REQUIRED)
 find_package(SDL3 CONFIG REQUIRED)
@@ -11,6 +12,7 @@ find_package(fmt CONFIG REQUIRED)
 find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 find_package(vk-bootstrap CONFIG REQUIRED)
 find_package(Stb REQUIRED)
+find_package(imgui REQUIRED)
 
 add_library(vkguide_shared STATIC # copied from vkguide.dev
     src/base/vk_types.h
@@ -42,6 +44,7 @@ target_link_libraries(vkguide_shared PUBLIC
     SDL3::SDL3
     glm::glm
     fmt::fmt
+	imgui::imgui
     GPUOpen::VulkanMemoryAllocator
     vk-bootstrap::vk-bootstrap
 )
@@ -70,3 +73,40 @@ if (WIN32)
         -Wl,--allow-multiple-definition
     )
 endif()
+
+#
+# SHADER COMPILATION
+#
+
+find_program(GLSLC_EXECUTABLE glslc)
+if(NOT GLSLC_EXECUTABLE)
+    message(FATAL_ERROR "glslc not found, add the vulkan sdk to your path")
+endif()
+
+file(GLOB_RECURSE SHADER_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.vert"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.frag"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.comp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.glsl"
+)
+
+set(SPIRV_BINARIES "")
+
+foreach(SHADER ${SHADER_SOURCES})
+    get_filename_component(FILE_NAME ${SHADER} NAME)
+    
+    set(SPIRV_OUT "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/bin/${FILE_NAME}.spv")
+    
+    add_custom_command(
+        OUTPUT ${SPIRV_OUT}
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/bin"
+        COMMAND ${GLSLC_EXECUTABLE} ${SHADER} -o ${SPIRV_OUT}
+        DEPENDS ${SHADER}
+        COMMENT "compiling ${FILE_NAME} to bin/${FILE_NAME}.spv" # fuck this syntax
+    )
+    
+    list(APPEND SPIRV_BINARIES ${SPIRV_OUT})
+endforeach()
+
+add_custom_target(Shaders DEPENDS ${SPIRV_BINARIES})
+add_dependencies(${PROJECT_NAME} Shaders)
