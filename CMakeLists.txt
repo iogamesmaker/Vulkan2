@@ -10,10 +10,10 @@ find_package(SDL3 CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+find_package(fastgltf CONFIG REQUIRED)
 find_package(vk-bootstrap CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_package(imgui REQUIRED)
-
 add_library(vkguide_shared STATIC # copied from vkguide.dev
     src/base/vk_types.h
     src/base/vk_initializers.cpp
@@ -47,6 +47,7 @@ target_link_libraries(vkguide_shared PUBLIC
 	imgui::imgui
     GPUOpen::VulkanMemoryAllocator
     vk-bootstrap::vk-bootstrap
+	fastgltf::fastgltf
 )
 
 target_precompile_headers(vkguide_shared PUBLIC 
@@ -62,6 +63,7 @@ target_precompile_headers(vkguide_shared PUBLIC
 
 add_executable(${PROJECT_NAME} 
     src/main.cpp
+	src/loader.cpp
     src/application.cpp
 )
 

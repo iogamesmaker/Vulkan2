@@ -18,12 +18,13 @@
 #include <vk_descriptors.h>		// guess lol
 #include <vk_pipelines.h>		// vkguide.dev
 
-#include "VkBootstrap.h" // I fucking love this header file lol, makes setting up Vulkan a breeze.
-#include "vk_mem_alloc.h"
+#include "VkBootstrap.h" // saves like 100 lines of extra setup
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
+
+#include "loader.hpp"
 
 // Pretty much all of the initialisation code is based on / taken from vkguide.dev.
 
@@ -69,6 +70,11 @@ struct ComputeEffect {
 	ComputePushConstants data;
 };
 
+struct CompiledShader {
+	VkShaderModule shader;
+	VkPipelineShaderStageCreateInfo stageInfo;
+};
+
 constexpr unsigned int FRAME_OVERLAP = 2;
 
 class Application {
@@ -83,7 +89,12 @@ public:
 	void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
 	
 	ComputeEffect loadComputeShader(std::string path, std::string name, ComputePushConstants data);
+	CompiledShader loadShader(std::string path, VkShaderStageFlagBits stage);
 
+	AllocatedBuffer createBuffer(size_t size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
+	void destroyBuffer(const AllocatedBuffer& buffer) { vmaDestroyBuffer(m_Allocator, buffer.buffer, buffer.allocation); }
+	
+	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 	// vulkan shit
 	// initialising and physical device shit
 	VkInstance m_Instance;// Vulkan library handle
@@ -96,7 +107,7 @@ public:
 	VkFormat m_SwapchainFormat;
 	std::vector<VkImage> m_SwapchainImages;
 	std::vector<VkImageView> m_SwapchainImageViews;
-	VkExtent2D m_SwapchainExtent; // Resolution I guess?
+	VkExtent2D m_SwapchainExtent;
 	
 	// imgui shit
 	
@@ -124,6 +135,11 @@ public:
 	std::vector<ComputeEffect> shaders;
 	int m_CurrentShader{0};
 	
+	VkPipeline m_MainPipeline;
+	VkPipelineLayout m_MainLayout;
+		
+	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
+	
 private:
 	// functions
 	void initWindow();
@@ -137,17 +153,20 @@ private:
 	
 	void initPipelines();
 	void initBackgroundPipelines();
+	void initMainPipeline();
 	
 	void initImGui();
+	
+	void initDefaultData();
 	
 	void drawImGui(VkCommandBuffer cmd, VkImageView targetImageView);
 	
 	void createSwapchain(uint32_t width, uint32_t height);
 	void destroySwapchain();
 	
-	
 	void clearImage(VkCommandBuffer cmd);
-		
+	void drawGeometry(VkCommandBuffer cmd);
+
 	// variables	
 	uint32_t m_Width, m_Height;
 	SDL_Window* m_pWindow;
@@ -156,6 +175,10 @@ private:
 	VmaAllocator m_Allocator;
 	
 	AllocatedImage m_DrawImage;
+	AllocatedImage m_DepthBuffer;
+	
 	VkExtent2D m_DrawExtent;
+	
+	int meshIndex = 0;
 };
 #endif

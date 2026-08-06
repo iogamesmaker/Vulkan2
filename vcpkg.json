@@ -6,6 +6,7 @@
     "vk-bootstrap",
     "vulkan-memory-allocator",
 	"fmt",
+	"fastgltf",
 	"stb",
 	{
 	  "name": "imgui",

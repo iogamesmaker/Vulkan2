@@ -1,6 +1,8 @@
 // Application.cpp
 #define VMA_IMPLEMENTATION
-#include "vk_mem_alloc.h" // VMA my goat
+#include <glm/gtx/transform.hpp>
+#include "vk_mem_alloc.h"
+
 #include "application.hpp"
 
 constexpr bool useValidationLayers = true; // ?
@@ -17,6 +19,8 @@ Application::Application(uint32_t width, uint32_t height) : m_Width(width), m_He
 	initPipelines();
 	
 	initImGui();
+	
+	initDefaultData();
 	
 	m_InitDone = true;
 }
@@ -37,6 +41,10 @@ Application::~Application() {
 		
 		destroySwapchain();
 		
+		for(auto& mesh : testMeshes) {
+			destroyBuffer(mesh->meshBuffers.indexBuffer);
+			destroyBuffer(mesh->meshBuffers.vertexBuffer);
+		}
 		m_DeletionQueue.flush();
 	}
 	
@@ -133,21 +141,40 @@ void Application::initSwapchain() {
 	drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
 	drawImageUsages |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	
-	VkImageCreateInfo rimg_info = vkinit::image_create_info(m_DrawImage.imageFormat, drawImageUsages, drawImageExtent);
+	VkImageCreateInfo imageCI = vkinit::image_create_info(m_DrawImage.imageFormat, drawImageUsages, drawImageExtent);
 
-	VmaAllocationCreateInfo rimg_allocinfo = {};
-	rimg_allocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-	rimg_allocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	VmaAllocationCreateInfo imageAllocinfo = {};
+	imageAllocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	imageAllocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 	
-	vmaCreateImage(m_Allocator, &rimg_info, &rimg_allocinfo, &m_DrawImage.image, &m_DrawImage.allocation, nullptr);
+	vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &m_DrawImage.image, &m_DrawImage.allocation, nullptr);
 
 	VkImageViewCreateInfo rview_info = vkinit::imageview_create_info(m_DrawImage.imageFormat, m_DrawImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
 	
 	VK_CHECK(vkCreateImageView(m_Device, &rview_info, nullptr, &m_DrawImage.imageView));
 	
+	// depth buffer creation
+	
+	m_DepthBuffer.imageFormat = VK_FORMAT_D32_SFLOAT;
+	m_DepthBuffer.imageExtent = drawImageExtent;
+	
+	VkImageUsageFlags depthBufferUsages{};
+	depthBufferUsages |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	
+	VkImageCreateInfo depthBufferCI = vkinit::image_create_info(m_DepthBuffer.imageFormat, depthBufferUsages, drawImageExtent);
+	
+	vmaCreateImage(m_Allocator, &depthBufferCI, &imageAllocinfo, &m_DepthBuffer.image, &m_DepthBuffer.allocation, nullptr);
+	
+	VkImageViewCreateInfo depthViewCI = vkinit::imageview_create_info(m_DepthBuffer.imageFormat, m_DepthBuffer.image, VK_IMAGE_ASPECT_DEPTH_BIT);
+	
+	VK_CHECK(vkCreateImageView(m_Device, &depthViewCI, nullptr, &m_DepthBuffer.imageView));
+	
 	m_DeletionQueue.push([&]() {
 		vkDestroyImageView(m_Device, m_DrawImage.imageView, nullptr);
-		vmaDestroyImage(m_Allocator, m_DrawImage.image, m_DrawImage.allocation);	
+		vmaDestroyImage(m_Allocator, m_DrawImage.image, m_DrawImage.allocation);
+		
+		vkDestroyImageView(m_Device, m_DepthBuffer.imageView, nullptr);
+		vmaDestroyImage(m_Allocator, m_DepthBuffer.image, m_DepthBuffer.allocation);	
 	});
 }
 
@@ -233,32 +260,22 @@ void Application::initDescriptors() {
 }
 
 ComputeEffect Application::loadComputeShader(std::string path, std::string name, ComputePushConstants data) {
-	VkShaderModule shader;
-	std::string shaderPath = util::getpath(path);
-	
-	if(!vkutil::load_shader_module(shaderPath.c_str(), m_Device, &shader)) { fmt::print("Failed to create shader {} at {}\n", name, shaderPath); }
-	
-	VkPipelineShaderStageCreateInfo stageinfo{};
-	stageinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stageinfo.pNext = nullptr;
-	stageinfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-	stageinfo.module = shader;
-	stageinfo.pName = "main";
+	CompiledShader computeShader = loadShader(path, VK_SHADER_STAGE_COMPUTE_BIT);
 	
 	VkComputePipelineCreateInfo computePipelineCreateInfo{};
 	computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
 	computePipelineCreateInfo.pNext = nullptr;
 	computePipelineCreateInfo.layout = m_ComputeLayout;
-	computePipelineCreateInfo.stage = stageinfo;
+	computePipelineCreateInfo.stage = computeShader.stageInfo;
 	
-	ComputeEffect computeEffect; // 99 iq naming
+	ComputeEffect computeEffect;
 	computeEffect.layout = m_ComputeLayout;
 	computeEffect.name = name;
 	computeEffect.data = data;
 	
 	VK_CHECK(vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &computeEffect.pipeline));
 
-	vkDestroyShaderModule(m_Device, shader, nullptr);
+	vkDestroyShaderModule(m_Device, computeShader.shader, nullptr);
 	
 	VkPipeline pipeline = computeEffect.pipeline;
 	m_DeletionQueue.push([this, pipeline]() {
@@ -303,8 +320,67 @@ void Application::initBackgroundPipelines() {
 	});
 }
 
-void Application::initPipelines() {	
+CompiledShader Application::loadShader(std::string path, VkShaderStageFlagBits stageBits) {
+	VkShaderModule shader{};
+	
+	std::string shaderPath = util::getpath(path);
+	if(!vkutil::load_shader_module(shaderPath.c_str(), m_Device, &shader)) { fmt::print("Failed to create shader {}\n", shaderPath); }
+	
+	VkPipelineShaderStageCreateInfo stageInfo{};
+    stageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stageInfo.pNext = nullptr;
+    stageInfo.stage = stageBits;
+    stageInfo.module = shader;
+    stageInfo.pName = "main";
+	
+	return { shader, stageInfo };
+}
+
+void Application::initMainPipeline() {
+	CompiledShader fragmentShader = loadShader("src/shaders/bin/fragment.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+	CompiledShader   vertexShader = loadShader("src/shaders/bin/vertex.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+	
+	VkPushConstantRange bufferRange{};
+	bufferRange.offset = 0;
+	bufferRange.size = sizeof(GPUDrawPushConstants);
+	bufferRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	
+	VkPipelineLayoutCreateInfo pipelineLayoutInfo = vkinit::pipeline_layout_create_info();
+	pipelineLayoutInfo.pPushConstantRanges = &bufferRange;
+	pipelineLayoutInfo.pushConstantRangeCount = 1;
+	
+	VK_CHECK(vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_MainLayout));
+	
+	PipelineBuilder pipelineBuilder;
+	
+	pipelineBuilder._pipelineLayout = m_MainLayout;
+	pipelineBuilder.set_shaders(vertexShader.shader, fragmentShader.shader);
+	pipelineBuilder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	pipelineBuilder.set_polygon_mode(VK_POLYGON_MODE_FILL);
+	pipelineBuilder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+	
+	pipelineBuilder.set_multisampling_none();
+	pipelineBuilder.disable_blending();
+	pipelineBuilder.enable_depthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
+	
+	pipelineBuilder.set_color_attachment_format(m_DrawImage.imageFormat);
+	pipelineBuilder.set_depth_format(m_DepthBuffer.imageFormat);
+	
+	m_MainPipeline = pipelineBuilder.build_pipeline(m_Device);
+	
+	vkDestroyShaderModule(m_Device, fragmentShader.shader, nullptr);
+	vkDestroyShaderModule(m_Device, vertexShader.shader, nullptr);
+	
+	m_DeletionQueue.push([&]() {
+		vkDestroyPipelineLayout(m_Device, m_MainLayout, nullptr);
+		vkDestroyPipeline(m_Device, m_MainPipeline, nullptr);
+	});
+	
+}
+
+void Application::initPipelines() {
 	initBackgroundPipelines();
+	initMainPipeline();
 }
 
 void Application::initImGui() {
@@ -359,6 +435,70 @@ void Application::initImGui() {
 	});
 }
 
+AllocatedBuffer Application::createBuffer(size_t size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage) {
+	VkBufferCreateInfo bufferInfo = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+	bufferInfo.pNext = nullptr;
+	
+	bufferInfo.size = size;
+	bufferInfo.usage = usage;
+	
+	VmaAllocationCreateInfo vmaAllocInfo = {};
+	vmaAllocInfo.usage = memoryUsage;
+	vmaAllocInfo.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+	
+	AllocatedBuffer newBuffer;
+	
+	VK_CHECK(vmaCreateBuffer(m_Allocator, &bufferInfo, &vmaAllocInfo, &newBuffer.buffer, &newBuffer.allocation, &newBuffer.info));
+	
+	return newBuffer;
+}
+
+GPUMeshBuffers Application::uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices) {
+	const size_t vertexBufferSize = vertices.size() * sizeof(Vertex);
+	const size_t indexBufferSize = indices.size() * sizeof(uint32_t);
+	
+	GPUMeshBuffers newSurface;
+		
+	newSurface.vertexBuffer = createBuffer(vertexBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VMA_MEMORY_USAGE_GPU_ONLY );
+	
+	VkBufferDeviceAddressInfo deviceAddressInfo {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = newSurface.vertexBuffer.buffer };
+	newSurface.vertexBufferAddress = vkGetBufferDeviceAddress(m_Device, &deviceAddressInfo);
+	
+	newSurface.indexBuffer = createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	
+	AllocatedBuffer staging = createBuffer(vertexBufferSize + indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
+	
+	void* data = staging.allocation->GetMappedData();
+	
+	memcpy(data, vertices.data(), vertexBufferSize);
+	
+	memcpy((char*)data + vertexBufferSize, indices.data(), indexBufferSize);
+	
+	immediateSubmit([&](VkCommandBuffer cmd) {
+		VkBufferCopy vertexCopy { 0 };
+		vertexCopy.dstOffset = 0;
+		vertexCopy.srcOffset = 0;
+		vertexCopy.size = vertexBufferSize;
+		
+		vkCmdCopyBuffer(cmd, staging.buffer, newSurface.vertexBuffer.buffer, 1, &vertexCopy);
+		
+		VkBufferCopy indexCopy { 0 };
+		indexCopy.dstOffset = 0;
+		indexCopy.srcOffset = vertexBufferSize;
+		indexCopy.size = indexBufferSize;
+		
+		vkCmdCopyBuffer(cmd, staging.buffer, newSurface.indexBuffer.buffer, 1, &indexCopy);
+	});
+	
+	destroyBuffer(staging);
+	
+	return newSurface;
+}
+
+void Application::initDefaultData() {
+	testMeshes = loadGltfMeshes(this, "assets\\basicmesh.glb").value();
+}
+
 void Application::drawImGui(VkCommandBuffer cmd, VkImageView targetImageView) {
 	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(targetImageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	VkRenderingInfo renderInfo = vkinit::rendering_info(m_SwapchainExtent, &colorAttachment, nullptr);
@@ -405,6 +545,55 @@ void Application::clearImage(VkCommandBuffer cmd) {
 	vkCmdClearColorImage(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
 }
 
+void Application::drawGeometry(VkCommandBuffer cmd) {
+	VkClearValue depthClear{};
+    depthClear.depthStencil.depth = 0.0f;
+	
+	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(m_DrawImage.imageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	VkRenderingAttachmentInfo depthAttachment = vkinit::attachment_info(m_DepthBuffer.imageView, &depthClear, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+	
+	VkRenderingInfo renderInfo = vkinit::rendering_info(m_DrawExtent, &colorAttachment, &depthAttachment);
+	vkCmdBeginRendering(cmd, &renderInfo);
+	
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MainPipeline);
+	
+	VkViewport viewport = {};
+	viewport.x = 0;
+	viewport.y = 0;	
+	viewport.width = m_DrawExtent.width;
+	viewport.height = m_DrawExtent.height;
+	viewport.minDepth = 0.f;
+	viewport.maxDepth = 1.f;
+	
+	vkCmdSetViewport(cmd, 0, 1, &viewport);
+	
+	VkRect2D scissor = {};
+	scissor.offset.x = 0;
+	scissor.offset.y = 0;
+	scissor.extent.width = m_DrawExtent.width;
+	scissor.extent.height = m_DrawExtent.height;
+	
+	vkCmdSetScissor(cmd, 0, 1, &scissor);
+	
+	GPUDrawPushConstants pushConstants;
+	// calculate matrices
+	glm::mat4 view = glm::translate(glm::vec3{0,0,-5});
+	glm::mat4 projection = glm::perspective(glm::radians(70.f), (float)m_DrawExtent.width / (float)m_DrawExtent.height, 10000.f, 0.1f); // reversing the depth buffer apparently increases precision
+	
+	projection[1][1] *= -1; // vulkan had to go out of its way to break the standard and make the Y axis reversed ):
+	
+	pushConstants.worldMatrix = projection * view;
+		
+	pushConstants.vertexBuffer = testMeshes[meshIndex]->meshBuffers.vertexBufferAddress;
+	
+	vkCmdPushConstants(cmd, m_MainLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &pushConstants);
+	vkCmdBindIndexBuffer(cmd, testMeshes[meshIndex]->meshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
+	
+	vkCmdDrawIndexed(cmd, testMeshes[meshIndex]->surfaces[0].count, 1, testMeshes[2]->surfaces[0].startIndex, 0, 0);
+	
+	vkCmdEndRendering(cmd);
+}
+
 void Application::run() {
 	bool quit = false;
 	
@@ -441,9 +630,8 @@ void Application::run() {
 			
 			ComputeEffect& selected = shaders[m_CurrentShader];
 		
-			//ImGui::Text("Selected effect: ", selected.name);
-		
 			ImGui::SliderInt("Effect Index", &m_CurrentShader,0, shaders.size() - 1);
+			ImGui::SliderInt("Model index", &meshIndex, 0, 2);
 		
 			ImGui::InputFloat4("data1",(float*)& selected.data.data1);
 			ImGui::InputFloat4("data2",(float*)& selected.data.data2);
@@ -460,7 +648,6 @@ void Application::run() {
 
 void Application::draw() {
 	// Wait for the GPU to finish, reset the fence
-	// 1000000000 is 1 second in nanoseconds. If the CPU has been stalling for more than 1000000000 nanoseconds, it tells the GPU to go fuck itself and then goes on anyways
 	VK_CHECK(vkWaitForFences(m_Device, 1, &getCurrentFrame().renderFence, true, 1000000000));
 	
 	getCurrentFrame().deletionQueue.flush();
@@ -498,11 +685,16 @@ void Application::draw() {
 	vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &effect.data);
 	
 	vkCmdDispatch(cmd, std::ceil(m_DrawExtent.width / 16.0f), std::ceil(m_DrawExtent.height / 16.0f), 1);
+	// finished compute shader background
 	
+	vkutil::transition_image(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	vkutil::transition_image(cmd, m_DepthBuffer.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+	
+	drawGeometry(cmd);
 	// END DRAW COMMANDS
 
 	// set the draw image to read mode
-	vkutil::transition_image(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	vkutil::transition_image(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 	// set the swapchain to write mode
 	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
