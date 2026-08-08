@@ -2,10 +2,11 @@
 
 layout (local_size_x = 16, local_size_y = 16) in; // 16*16*1 lanes working together?!
 
-layout (rgba16f,set = 0, binding = 0) uniform image2D image; // texture in
+layout (r32f,	 set = 0, binding = 0) uniform image2D height;
 
 layout ( push_constant ) uniform constants {
-	vec4 data1;
+	vec2 position; // Position of the central pixel
+	vec2 offset; // How much X and Y offset it has to do compared to the input image.
 	vec4 data2;
 	vec4 data3;
 	vec4 data4;
@@ -14,11 +15,11 @@ layout ( push_constant ) uniform constants {
 void main() {
 	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 size = imageSize(image);
+
+	// Step 1: 
 	
 	if(texelCoord.x < size.x && texelCoord.y < size.y) {
 		
-		float blend = float(texelCoord.y) / (size.y);
-		
-		imageStore(image, texelCoord, mix(pc.data2, pc.data1, blend));
+		imageStore(image, texelCoord, 1.0f);
 	}
 }

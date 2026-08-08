@@ -128,7 +128,7 @@ void Application::initVulkan() {
 }
 
 void Application::initSwapchain() {
-	createSwapchain(static_cast<uint32_t>(m_Width), static_cast<uint32_t>(m_Height));
+	createSwapchain(m_Width, m_Height);
 	
 	VkExtent3D drawImageExtent = { m_Width, m_Height, 1 };
 	
@@ -169,13 +169,23 @@ void Application::initSwapchain() {
 	
 	VK_CHECK(vkCreateImageView(m_Device, &depthViewCI, nullptr, &m_DepthBuffer.imageView));
 	
-	m_DeletionQueue.push([&]() {
-		vkDestroyImageView(m_Device, m_DrawImage.imageView, nullptr);
-		vmaDestroyImage(m_Allocator, m_DrawImage.image, m_DrawImage.allocation);
+	if(m_DrawImageDescriptors != VK_NULL_HANDLE) {
+		VkDescriptorImageInfo imgInfo{};
 		
-		vkDestroyImageView(m_Device, m_DepthBuffer.imageView, nullptr);
-		vmaDestroyImage(m_Allocator, m_DepthBuffer.image, m_DepthBuffer.allocation);	
-	});
+		imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+		imgInfo.imageView = m_DrawImage.imageView;
+		
+		VkWriteDescriptorSet drawImageWrite = {};
+		drawImageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		drawImageWrite.pNext = nullptr;
+		drawImageWrite.dstBinding = 0;
+		drawImageWrite.dstSet = m_DrawImageDescriptors;
+		drawImageWrite.descriptorCount = 1;
+		drawImageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		drawImageWrite.pImageInfo = &imgInfo;
+		
+		vkUpdateDescriptorSets(m_Device, 1, &drawImageWrite, 0, nullptr);
+	}
 }
 
 void Application::initCommands() {
@@ -320,6 +330,10 @@ void Application::initBackgroundPipelines() {
 	});
 }
 
+void Application::initComputePipelines() {
+
+}
+
 CompiledShader Application::loadShader(std::string path, VkShaderStageFlagBits stageBits) {
 	VkShaderModule shader{};
 	
@@ -360,7 +374,7 @@ void Application::initMainPipeline() {
 	pipelineBuilder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
 	
 	pipelineBuilder.set_multisampling_none();
-	pipelineBuilder.disable_blending();
+	pipelineBuilder.enable_blending_additive();
 	pipelineBuilder.enable_depthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
 	
 	pipelineBuilder.set_color_attachment_format(m_DrawImage.imageFormat);
@@ -529,12 +543,31 @@ void Application::createSwapchain(uint32_t width, uint32_t height) {
 	m_SwapchainImages = vkbSwapchain.get_images().value();
 	m_SwapchainImageViews = vkbSwapchain.get_image_views().value();
 }
+void Application::resizeSwapchain() {
+	vkDeviceWaitIdle(m_Device);
+	destroySwapchain();
+	
+	int w,h;
+	SDL_GetWindowSizeInPixels(m_pWindow, &w, &h);
+	m_Width = w * m_RenderScale;
+	m_Height = h * m_RenderScale;
+	
+	initSwapchain();
+	
+	m_Resized = false;
+}
 void Application::destroySwapchain() {
 	vkDestroySwapchainKHR(m_Device, m_Swapchain, nullptr);
 	
 	for(int i = 0; i < m_SwapchainImageViews.size(); i++) {
 		vkDestroyImageView(m_Device, m_SwapchainImageViews[i], nullptr);
 	}
+	
+	vkDestroyImageView(m_Device, m_DrawImage.imageView, nullptr);
+	vmaDestroyImage(m_Allocator, m_DrawImage.image, m_DrawImage.allocation);
+		
+	vkDestroyImageView(m_Device, m_DepthBuffer.imageView, nullptr);
+	vmaDestroyImage(m_Allocator, m_DepthBuffer.image, m_DepthBuffer.allocation);	
 }
 
 void Application::clearImage(VkCommandBuffer cmd) {
@@ -589,7 +622,7 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	vkCmdPushConstants(cmd, m_MainLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &pushConstants);
 	vkCmdBindIndexBuffer(cmd, testMeshes[meshIndex]->meshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 	
-	vkCmdDrawIndexed(cmd, testMeshes[meshIndex]->surfaces[0].count, 1, testMeshes[2]->surfaces[0].startIndex, 0, 0);
+	vkCmdDrawIndexed(cmd, testMeshes[meshIndex]->surfaces[0].count, 1, testMeshes[meshIndex]->surfaces[0].startIndex, 0, 0);
 	
 	vkCmdEndRendering(cmd);
 }
@@ -609,16 +642,10 @@ void Application::run() {
 		
 		while(SDL_PollEvent(&event)) {
 			if(event.type == SDL_EVENT_QUIT) quit = true;
-			if(event.type == SDL_EVENT_WINDOW_RESIZED) {
-				int w,h;
-				SDL_GetWindowSizeInPixels(m_pWindow, &w, &h);
-				
-				m_Width = w;
-				m_Height = h;
-				
-			}
+			if(event.type == SDL_EVENT_WINDOW_RESIZED) m_Resized = true;
 			ImGui_ImplSDL3_ProcessEvent(&event);
 		}
+		
 		// imgui new frame
 		ImGui_ImplVulkan_NewFrame();
 		ImGui_ImplSDL3_NewFrame();
@@ -632,6 +659,7 @@ void Application::run() {
 		
 			ImGui::SliderInt("Effect Index", &m_CurrentShader,0, shaders.size() - 1);
 			ImGui::SliderInt("Model index", &meshIndex, 0, 2);
+			if(ImGui::SliderFloat("Render scale", &m_RenderScale, 0.1f, 2.f)) {m_Resized = true;}
 		
 			ImGui::InputFloat4("data1",(float*)& selected.data.data1);
 			ImGui::InputFloat4("data2",(float*)& selected.data.data2);
@@ -647,6 +675,8 @@ void Application::run() {
 }
 
 void Application::draw() {
+	if(m_Resized) resizeSwapchain();
+	
 	// Wait for the GPU to finish, reset the fence
 	VK_CHECK(vkWaitForFences(m_Device, 1, &getCurrentFrame().renderFence, true, 1000000000));
 	
@@ -657,7 +687,11 @@ void Application::draw() {
 	// Get a swapchain index for the next frame
 	uint32_t swapchainImageIndex;
 	// If the swapchain is full, it'll wait up to a second
-	VK_CHECK(vkAcquireNextImageKHR(m_Device, m_Swapchain, 1000000000, getCurrentFrame().swapchainSemaphore, nullptr, &swapchainImageIndex));
+	VkResult e = vkAcquireNextImageKHR(m_Device, m_Swapchain, 1000000000, getCurrentFrame().swapchainSemaphore, nullptr, &swapchainImageIndex);
+	if(e == VK_ERROR_OUT_OF_DATE_KHR) {
+		m_Resized = true;
+		return;
+	}
 	
 	VkCommandBuffer cmd = getCurrentFrame().commandBuffer;
 	VK_CHECK(vkResetCommandBuffer(cmd, 0));
@@ -728,7 +762,10 @@ void Application::draw() {
 	
 	presentInfo.pImageIndices = &swapchainImageIndex;
 	
-	VK_CHECK(vkQueuePresentKHR(m_GraphicsQueue, &presentInfo));
+	VkResult presentResult = vkQueuePresentKHR(m_GraphicsQueue, &presentInfo);
+	if(presentResult == VK_ERROR_OUT_OF_DATE_KHR) {
+		m_Resized = true;
+	}
 	
 	m_FrameNumber++;
 }

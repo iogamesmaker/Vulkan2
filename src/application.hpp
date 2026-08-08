@@ -154,6 +154,7 @@ private:
 	void initPipelines();
 	void initBackgroundPipelines();
 	void initMainPipeline();
+	void initComputePipelines();
 	
 	void initImGui();
 	
@@ -162,6 +163,7 @@ private:
 	void drawImGui(VkCommandBuffer cmd, VkImageView targetImageView);
 	
 	void createSwapchain(uint32_t width, uint32_t height);
+	void resizeSwapchain();
 	void destroySwapchain();
 	
 	void clearImage(VkCommandBuffer cmd);
@@ -169,6 +171,10 @@ private:
 
 	// variables	
 	uint32_t m_Width, m_Height;
+	
+	float m_RenderScale = 1.f;
+	
+	bool m_Resized = true;
 	SDL_Window* m_pWindow;
 	
 	DeletionQueue m_DeletionQueue;
@@ -176,6 +182,8 @@ private:
 	
 	AllocatedImage m_DrawImage;
 	AllocatedImage m_DepthBuffer;
+	
+	AllocatedImage m_Heightmap;
 	
 	VkExtent2D m_DrawExtent;
 	
