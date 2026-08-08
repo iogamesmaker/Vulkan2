@@ -21,7 +21,7 @@ Application::Application(uint32_t width, uint32_t height) : m_Width(width), m_He
 	initImGui();
 	
 	initDefaultData();
-	
+		
 	m_InitDone = true;
 }
 
@@ -138,7 +138,7 @@ void Application::initSwapchain() {
 	VkImageUsageFlags drawImageUsages{};
 	drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
+	//drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
 	drawImageUsages |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	
 	VkImageCreateInfo imageCI = vkinit::image_create_info(m_DrawImage.imageFormat, drawImageUsages, drawImageExtent);
@@ -168,24 +168,6 @@ void Application::initSwapchain() {
 	VkImageViewCreateInfo depthViewCI = vkinit::imageview_create_info(m_DepthBuffer.imageFormat, m_DepthBuffer.image, VK_IMAGE_ASPECT_DEPTH_BIT);
 	
 	VK_CHECK(vkCreateImageView(m_Device, &depthViewCI, nullptr, &m_DepthBuffer.imageView));
-	
-	if(m_DrawImageDescriptors != VK_NULL_HANDLE) {
-		VkDescriptorImageInfo imgInfo{};
-		
-		imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-		imgInfo.imageView = m_DrawImage.imageView;
-		
-		VkWriteDescriptorSet drawImageWrite = {};
-		drawImageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		drawImageWrite.pNext = nullptr;
-		drawImageWrite.dstBinding = 0;
-		drawImageWrite.dstSet = m_DrawImageDescriptors;
-		drawImageWrite.descriptorCount = 1;
-		drawImageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-		drawImageWrite.pImageInfo = &imgInfo;
-		
-		vkUpdateDescriptorSets(m_Device, 1, &drawImageWrite, 0, nullptr);
-	}
 }
 
 void Application::initCommands() {
@@ -237,39 +219,14 @@ void Application::initDescriptors() {
 		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 }
 	};
 	
-	g_DescriptorAllocator.init_pool(m_Device, 10, sizes); // 10 sets, 1 image per set
-	
-	{
-		DescriptorLayoutBuilder builder;
-		builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-		m_DrawImageDescriptorLayout = builder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
-	}
-	
-	m_DrawImageDescriptors = g_DescriptorAllocator.allocate(m_Device, m_DrawImageDescriptorLayout);
-	
-	VkDescriptorImageInfo imgInfo{};
-	imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-	imgInfo.imageView = m_DrawImage.imageView;
-	
-	VkWriteDescriptorSet drawImageWrite = {};
-	drawImageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	drawImageWrite.pNext = nullptr;
-	
-	drawImageWrite.dstBinding = 0;
-	drawImageWrite.dstSet = m_DrawImageDescriptors;
-	drawImageWrite.descriptorCount = 1;
-	drawImageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	drawImageWrite.pImageInfo = &imgInfo;
-	
-	vkUpdateDescriptorSets(m_Device, 1, &drawImageWrite, 0, nullptr);
+	g_DescriptorAllocator.init_pool(m_Device, 10, sizes);
 	
 	m_DeletionQueue.push([&]() {
 		g_DescriptorAllocator.destroy_pool(m_Device);
-		vkDestroyDescriptorSetLayout(m_Device, m_DrawImageDescriptorLayout, nullptr);
 	});
 }
 
-ComputeEffect Application::loadComputeShader(std::string path, std::string name, ComputePushConstants data) {
+ComputeEffect Application::loadComputeShader(std::string path, std::string name, HeightmapPushConstants data) {
 	CompiledShader computeShader = loadShader(path, VK_SHADER_STAGE_COMPUTE_BIT);
 	
 	VkComputePipelineCreateInfo computePipelineCreateInfo{};
@@ -295,43 +252,84 @@ ComputeEffect Application::loadComputeShader(std::string path, std::string name,
 	return computeEffect;
 }
 
-void Application::initBackgroundPipelines() {
-	// set up compute shader shit
-	VkPipelineLayoutCreateInfo computeLayout{};
+void Application::initComputePipelines() {
+	// create descriptor set layout for heightmap
+	DescriptorLayoutBuilder builder;
+	builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	m_HeightmapDescriptorLayout = builder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	
-	computeLayout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	computeLayout.pNext = nullptr;
-	computeLayout.pSetLayouts = &m_DrawImageDescriptorLayout;
-	computeLayout.setLayoutCount = 1;
+	m_HeightmapDescriptors = g_DescriptorAllocator.allocate(m_Device, m_HeightmapDescriptorLayout);
+	// create the compute shader pipeline
+	VkPipelineLayoutCreateInfo computeLayoutCI{};
+		
+	computeLayoutCI.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	computeLayoutCI.pNext = nullptr;
+	computeLayoutCI.pSetLayouts = &m_HeightmapDescriptorLayout;
+	computeLayoutCI.setLayoutCount = 1;
 	
-	VkPushConstantRange pushConstant{};
+	VkPushConstantRange pushConstantRange{};
 	
-	pushConstant.offset = 0;
-	pushConstant.size = sizeof(ComputePushConstants);
-	pushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	pushConstantRange.offset = 0;
+	pushConstantRange.size = sizeof(HeightmapPushConstants);
+	pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	
-	computeLayout.pPushConstantRanges = &pushConstant;
-	computeLayout.pushConstantRangeCount = 1;
+	computeLayoutCI.pPushConstantRanges = &pushConstantRange;
+	computeLayoutCI.pushConstantRangeCount = 1;
 	
-	VK_CHECK(vkCreatePipelineLayout(m_Device, &computeLayout, nullptr, &m_ComputeLayout));
-	// load shaders
-	
-	ComputePushConstants pc{};
-	pc.data1 = glm::vec4(1,0,0,1);
-	pc.data2 = glm::vec4(0,0,1,1);
-	
-	shaders.push_back(loadComputeShader( "src/shaders/bin/gradient.comp.spv", "gradient", pc));
-	pc.data1 = glm::vec4(0.1,0.2,0.4,0.97);
-	shaders.push_back(loadComputeShader("src/shaders/bin/gradient2.comp.spv", "sky", pc));
-	
+	VK_CHECK(vkCreatePipelineLayout(m_Device, &computeLayoutCI, nullptr, &m_ComputeLayout));
 	
 	m_DeletionQueue.push([&]() {
 		vkDestroyPipelineLayout(m_Device, m_ComputeLayout, nullptr);
+		vkDestroyDescriptorSetLayout(m_Device, m_HeightmapDescriptorLayout, nullptr);
 	});
-}
+	
+	// create heightmap image
 
-void Application::initComputePipelines() {
+	VkExtent3D heightmapExtent = {4096, 4096, 1}; // Resolution of world data thing
+	
+	m_Heightmap.imageFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
+	m_Heightmap.imageExtent = heightmapExtent ;
+	
+	VkImageUsageFlags drawImageUsages{};
+	drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	drawImageUsages |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
+	drawImageUsages |= VK_IMAGE_USAGE_SAMPLED_BIT;
+	
+	VkImageCreateInfo imageCI = vkinit::image_create_info(m_Heightmap.imageFormat, drawImageUsages, heightmapExtent);
 
+	VmaAllocationCreateInfo imageAllocinfo = {};
+	imageAllocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+	imageAllocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	
+	vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &m_Heightmap.image, &m_Heightmap.allocation, nullptr);
+
+	VkImageViewCreateInfo rview_info = vkinit::imageview_create_info(m_Heightmap.imageFormat, m_Heightmap.image, VK_IMAGE_ASPECT_COLOR_BIT);
+	
+	VK_CHECK(vkCreateImageView(m_Device, &rview_info, nullptr, &m_Heightmap.imageView));
+	
+	// create the compute shader to generate heightmap
+	VkDescriptorImageInfo heightmapImgInfo{};
+	
+	heightmapImgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	heightmapImgInfo.imageView = m_Heightmap.imageView;
+	
+	VkWriteDescriptorSet heightmapWrite = {};
+	heightmapWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	heightmapWrite.pNext = nullptr;
+	heightmapWrite.dstBinding = 0;
+	heightmapWrite.dstSet = m_HeightmapDescriptors;
+	heightmapWrite.descriptorCount = 1;
+	heightmapWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	heightmapWrite.pImageInfo = &heightmapImgInfo;
+	
+	vkUpdateDescriptorSets(m_Device, 1, &heightmapWrite, 0, nullptr);
+	
+	
+	HeightmapPushConstants pc{};
+	pc.updateRegion = {0,0};
+	pc.offset = {0,0};
+	m_HeightmapEffect = loadComputeShader("src/shaders/bin/heightmap.comp.spv", "heightmap shader", pc);
 }
 
 CompiledShader Application::loadShader(std::string path, VkShaderStageFlagBits stageBits) {
@@ -374,7 +372,7 @@ void Application::initMainPipeline() {
 	pipelineBuilder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
 	
 	pipelineBuilder.set_multisampling_none();
-	pipelineBuilder.enable_blending_additive();
+	pipelineBuilder.disable_blending();
 	pipelineBuilder.enable_depthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
 	
 	pipelineBuilder.set_color_attachment_format(m_DrawImage.imageFormat);
@@ -393,7 +391,7 @@ void Application::initMainPipeline() {
 }
 
 void Application::initPipelines() {
-	initBackgroundPipelines();
+	initComputePipelines();
 	initMainPipeline();
 }
 
@@ -511,6 +509,27 @@ GPUMeshBuffers Application::uploadMesh(std::span<uint32_t> indices, std::span<Ve
 
 void Application::initDefaultData() {
 	testMeshes = loadGltfMeshes(this, "assets\\basicmesh.glb").value();
+	
+	generateHeightmap();
+	
+	VkSamplerCreateInfo samplerCI = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+	
+	samplerCI.magFilter = VK_FILTER_LINEAR;
+	samplerCI.minFilter = VK_FILTER_LINEAR;
+	
+	vkCreateSampler(m_Device, &samplerCI, nullptr, &m_Sampler);
+	
+	samplerCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerCI.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	
+	vkCreateSampler(m_Device, &samplerCI, nullptr, &m_HeightmapSampler);
+	
+	m_HeightmapImGuiDescriptors = ImGui_ImplVulkan_AddTexture(m_HeightmapSampler, m_Heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	
+	m_DeletionQueue.push([&]() {
+		vkDestroySampler(m_Device, m_Sampler, nullptr);
+		vkDestroySampler(m_Device, m_HeightmapSampler, nullptr);
+	});
 }
 
 void Application::drawImGui(VkCommandBuffer cmd, VkImageView targetImageView) {
@@ -543,6 +562,7 @@ void Application::createSwapchain(uint32_t width, uint32_t height) {
 	m_SwapchainImages = vkbSwapchain.get_images().value();
 	m_SwapchainImageViews = vkbSwapchain.get_image_views().value();
 }
+
 void Application::resizeSwapchain() {
 	vkDeviceWaitIdle(m_Device);
 	destroySwapchain();
@@ -556,6 +576,7 @@ void Application::resizeSwapchain() {
 	
 	m_Resized = false;
 }
+
 void Application::destroySwapchain() {
 	vkDestroySwapchainKHR(m_Device, m_Swapchain, nullptr);
 	
@@ -576,6 +597,29 @@ void Application::clearImage(VkCommandBuffer cmd) {
 	VkImageSubresourceRange clearRange = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
 	
 	vkCmdClearColorImage(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_GENERAL, &clearValue, 1, &clearRange);
+}
+
+void Application::generateHeightmap() {
+	immediateSubmit([&](VkCommandBuffer cmd) {
+		std::cout << "Hi" << std::endl;
+		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+		
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComputeLayout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
+		
+		HeightmapPushConstants pc{};
+		pc.offset = {0,0};
+		pc.updateRegion = {4096, 4096};
+		pc.test = test;
+		
+		vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pc);
+		
+		uint32_t groupNX = std::ceil(4096.f / 16.f);
+		uint32_t groupNY = std::ceil(4096.f / 16.f);
+		vkCmdDispatch(cmd, groupNX, groupNY, 1);
+		
+		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	});
 }
 
 void Application::drawGeometry(VkCommandBuffer cmd) {
@@ -610,9 +654,8 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	
 	GPUDrawPushConstants pushConstants;
 	// calculate matrices
-	glm::mat4 view = glm::translate(glm::vec3{0,0,-5});
+	glm::mat4 view = m_Camera.getViewMatrix();
 	glm::mat4 projection = glm::perspective(glm::radians(70.f), (float)m_DrawExtent.width / (float)m_DrawExtent.height, 10000.f, 0.1f); // reversing the depth buffer apparently increases precision
-	
 	projection[1][1] *= -1; // vulkan had to go out of its way to break the standard and make the Y axis reversed ):
 	
 	pushConstants.worldMatrix = projection * view;
@@ -632,7 +675,6 @@ void Application::run() {
 	
 	SDL_Event event;
 	
-	// SDL_SetWindowRelativeMouseMode(m_pWindow, true); // lock the mouse, set to false to unlock
 	Uint64 lastTime = SDL_GetTicks();
 	
 	while(!quit) {
@@ -643,9 +685,13 @@ void Application::run() {
 		while(SDL_PollEvent(&event)) {
 			if(event.type == SDL_EVENT_QUIT) quit = true;
 			if(event.type == SDL_EVENT_WINDOW_RESIZED) m_Resized = true;
-			ImGui_ImplSDL3_ProcessEvent(&event);
+			if(event.type == SDL_EVENT_KEY_UP) { if(event.key.key == SDLK_ESCAPE) m_Mouselock = !m_Mouselock; }
+			if(m_Mouselock) m_Camera.processSDLEvent(event);
+			if(!m_Mouselock) ImGui_ImplSDL3_ProcessEvent(&event);
+			SDL_SetWindowRelativeMouseMode(m_pWindow, m_Mouselock);
 		}
-		
+		m_Camera.update(deltatime);
+
 		// imgui new frame
 		ImGui_ImplVulkan_NewFrame();
 		ImGui_ImplSDL3_NewFrame();
@@ -653,19 +699,21 @@ void Application::run() {
 		//some imgui UI
 		ImGui::NewFrame();
 		
-		if (ImGui::Begin("background")) {
-			
-			ComputeEffect& selected = shaders[m_CurrentShader];
-		
-			ImGui::SliderInt("Effect Index", &m_CurrentShader,0, shaders.size() - 1);
+		if (ImGui::Begin("settings")) {
+					
 			ImGui::SliderInt("Model index", &meshIndex, 0, 2);
 			if(ImGui::SliderFloat("Render scale", &m_RenderScale, 0.1f, 2.f)) {m_Resized = true;}
-		
-			ImGui::InputFloat4("data1",(float*)& selected.data.data1);
-			ImGui::InputFloat4("data2",(float*)& selected.data.data2);
-			ImGui::InputFloat4("data3",(float*)& selected.data.data3);
-			ImGui::InputFloat4("data4",(float*)& selected.data.data4);
+			if(ImGui::SliderFloat("Test", &test, 0.0f, 1.f)) {generateHeightmap();}
 		}
+		ImGui::End();
+
+		if (ImGui::Begin("heightmap")) {
+			ImVec2 panelSize = ImGui::GetContentRegionAvail();
+			panelSize.x = std::min(std::min(panelSize.x, 4096.f), panelSize.y);
+			panelSize.y = panelSize.x;
+			ImGui::Image((ImTextureID)m_HeightmapImGuiDescriptors, panelSize);
+		}
+		
 		ImGui::End();
 
 		ImGui::Render();
@@ -709,18 +757,6 @@ void Application::draw() {
 	
 	clearImage(cmd);
 	
-	ComputeEffect effect = shaders[m_CurrentShader];
-	
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, effect.pipeline);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComputeLayout, 0, 1, &m_DrawImageDescriptors, 0, nullptr);
-	
-	// Push the constants to shader
-	
-	vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ComputePushConstants), &effect.data);
-	
-	vkCmdDispatch(cmd, std::ceil(m_DrawExtent.width / 16.0f), std::ceil(m_DrawExtent.height / 16.0f), 1);
-	// finished compute shader background
-	
 	vkutil::transition_image(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	vkutil::transition_image(cmd, m_DepthBuffer.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 	
@@ -736,7 +772,7 @@ void Application::draw() {
 
 	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-	drawImGui(cmd, m_SwapchainImageViews[swapchainImageIndex]);
+	if(!m_Mouselock) { drawImGui(cmd, m_SwapchainImageViews[swapchainImageIndex]); }
 		
 	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 	VK_CHECK(vkEndCommandBuffer(cmd));

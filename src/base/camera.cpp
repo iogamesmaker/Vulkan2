@@ -25,28 +25,27 @@ glm::mat4 Camera::getRotationMatrix() const
 
 void Camera::processSDLEvent(SDL_Event& e)
 {
-	if (e.type == SDL_EVENT_KEY_DOWN) {
-        if (e.key.key == SDLK_W) { velocity.z = -1; }
-        if (e.key.key == SDLK_S) { velocity.z = 1; }
-        if (e.key.key == SDLK_A) { velocity.x = -1; }
-        if (e.key.key == SDLK_D) { velocity.x = 1; }
-    }
-
-    if (e.type == SDL_EVENT_KEY_UP) {
-        if (e.key.key == SDLK_W) { velocity.z = 0; }
-        if (e.key.key == SDLK_S) { velocity.z = 0; }
-        if (e.key.key == SDLK_A) { velocity.x = 0; }
-        if (e.key.key == SDLK_D) { velocity.x = 0; }
-    }
-
     if (e.type == SDL_EVENT_MOUSE_MOTION) {
-        yaw += (float)e.motion.xrel / 200.f;
-        pitch -= (float)e.motion.yrel / 200.f;
+        yaw += (float)e.motion.xrel / 150.f;
+        pitch -= (float)e.motion.yrel / 150.f;
     }
 }
 
-void Camera::update()
+void Camera::update(float deltatime)
 {
+    const bool* state = SDL_GetKeyboardState(NULL);
+
+    glm::vec3 moveDir(0.0f);
+
+    if (state[SDL_SCANCODE_W]) { moveDir.z -= 1.0f; }
+    if (state[SDL_SCANCODE_S]) { moveDir.z += 1.0f; }
+    if (state[SDL_SCANCODE_A]) { moveDir.x -= 1.0f; }
+    if (state[SDL_SCANCODE_D]) { moveDir.x += 1.0f; }
+
+    if (glm::length(moveDir) > 0.0f) {
+        moveDir = glm::normalize(moveDir);
+    }
+
     glm::mat4 cameraRotation = getRotationMatrix();
-    position += glm::vec3(cameraRotation * glm::vec4(velocity * 0.5f, 0.f));
+    position += glm::vec3(cameraRotation * glm::vec4(moveDir * 2.5f * deltatime, 0.0f));
 }

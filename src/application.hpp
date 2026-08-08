@@ -17,6 +17,7 @@
 #include <vk_images.h> 			// vkguide.dev
 #include <vk_descriptors.h>		// guess lol
 #include <vk_pipelines.h>		// vkguide.dev
+#include <camera.h> 			// vkguide.dev
 
 #include "VkBootstrap.h" // saves like 100 lines of extra setup
 
@@ -28,11 +29,11 @@
 
 // Pretty much all of the initialisation code is based on / taken from vkguide.dev.
 
-struct ComputePushConstants {
-	glm::vec4 data1;
-	glm::vec4 data2;
-	glm::vec4 data3;
-	glm::vec4 data4;
+float test = 0.5f;
+struct HeightmapPushConstants {
+	glm::ivec2 offset;
+	glm::ivec2 updateRegion;
+	float test;
 };
 
 struct DeletionQueue { // high IQ play by the writer of vkguide.dev
@@ -67,7 +68,7 @@ struct ComputeEffect {
 	VkPipeline pipeline;
 	VkPipelineLayout layout;
 	
-	ComputePushConstants data;
+	HeightmapPushConstants data;
 };
 
 struct CompiledShader {
@@ -88,7 +89,7 @@ public:
 	
 	void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
 	
-	ComputeEffect loadComputeShader(std::string path, std::string name, ComputePushConstants data);
+	ComputeEffect loadComputeShader(std::string path, std::string name, HeightmapPushConstants data);
 	CompiledShader loadShader(std::string path, VkShaderStageFlagBits stage);
 
 	AllocatedBuffer createBuffer(size_t size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
@@ -129,12 +130,12 @@ public:
 	VkPipelineLayout m_ComputeLayout;
 	
 	DescriptorAllocator g_DescriptorAllocator;
-	VkDescriptorSet m_DrawImageDescriptors;
-	VkDescriptorSetLayout m_DrawImageDescriptorLayout;
 	
-	std::vector<ComputeEffect> shaders;
-	int m_CurrentShader{0};
-	
+	VkDescriptorSet m_HeightmapDescriptors;
+	VkDescriptorSetLayout m_HeightmapDescriptorLayout;
+	ComputeEffect m_HeightmapEffect;
+	VkDescriptorSet m_HeightmapImGuiDescriptors;
+		
 	VkPipeline m_MainPipeline;
 	VkPipelineLayout m_MainLayout;
 		
@@ -152,7 +153,6 @@ private:
 	void initDescriptors();
 	
 	void initPipelines();
-	void initBackgroundPipelines();
 	void initMainPipeline();
 	void initComputePipelines();
 	
@@ -168,6 +168,8 @@ private:
 	
 	void clearImage(VkCommandBuffer cmd);
 	void drawGeometry(VkCommandBuffer cmd);
+	
+	void generateHeightmap();
 
 	// variables	
 	uint32_t m_Width, m_Height;
@@ -175,6 +177,7 @@ private:
 	float m_RenderScale = 1.f;
 	
 	bool m_Resized = true;
+	bool m_Mouselock = false;
 	SDL_Window* m_pWindow;
 	
 	DeletionQueue m_DeletionQueue;
@@ -186,6 +189,11 @@ private:
 	AllocatedImage m_Heightmap;
 	
 	VkExtent2D m_DrawExtent;
+	
+	VkSampler m_Sampler;
+	VkSampler m_HeightmapSampler;
+	
+	Camera m_Camera;
 	
 	int meshIndex = 0;
 };
