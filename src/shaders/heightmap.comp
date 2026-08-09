@@ -6,8 +6,9 @@ layout (local_size_x = 16, local_size_y = 16) in;
 layout (rgba32f, set = 0, binding = 0) uniform image2D image;
 
 layout ( push_constant ) uniform constants {
+	ivec2 textureSize;
     ivec2 offset;
-    ivec2 updateRegion;
+	ivec2 dirtyMin;
 	float test;
 } pc;
 
@@ -242,18 +243,20 @@ float GetHeight(vec2 p) {
 }
 
 void main() {
-    ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy) + pc.dirtyMin;
     ivec2 size = imageSize(image);
     
-    if(texelCoord.x < size.x && texelCoord.y < size.y) {
-        // Tweak the 0.005 scale value to zoom in/out on your world.
-        vec2 p = vec2(texelCoord + pc.offset) * 0.005;
-        
-        float height = GetHeight(p * 0.05f);
+    //if(texelCoord.x < size.x && texelCoord.y < size.y) {
+		vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset);
 		
-		if(height < pc.test) height = 1000.0f;
-    
-        // Writing grayscale height data
-        imageStore(image, texelCoord, vec4(height, height, height, 1.0));
-    }
+        vec2 p = vec2(worldPos) * 0.0003;
+        
+        float height = GetHeight(p);
+		
+		ivec2 physicalCoord = (texelCoord % pc.textureSize + pc.textureSize) % pc.textureSize;
+		
+		if(physicalCoord.x < 0.0 || physicalCoord.y < 0.0) p = vec2(1,1);
+		    
+        imageStore(image, physicalCoord, vec4(height, height, pc.test, 1.0));
+    //}
 }

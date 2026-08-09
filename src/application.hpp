@@ -31,9 +31,14 @@
 
 float test = 0.5f;
 struct HeightmapPushConstants {
+	glm::ivec2 textureSize;
 	glm::ivec2 offset;
-	glm::ivec2 updateRegion;
+	glm::ivec2 dirtyMin;
 	float test;
+};
+
+struct TesselationPushConstants {
+	
 };
 
 struct DeletionQueue { // high IQ play by the writer of vkguide.dev
@@ -67,8 +72,6 @@ struct ComputeEffect {
 	
 	VkPipeline pipeline;
 	VkPipelineLayout layout;
-	
-	HeightmapPushConstants data;
 };
 
 struct CompiledShader {
@@ -89,7 +92,7 @@ public:
 	
 	void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
 	
-	ComputeEffect loadComputeShader(std::string path, std::string name, HeightmapPushConstants data);
+	ComputeEffect loadComputeShader(std::string path, std::string name);
 	CompiledShader loadShader(std::string path, VkShaderStageFlagBits stage);
 
 	AllocatedBuffer createBuffer(size_t size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
@@ -134,6 +137,7 @@ public:
 	VkDescriptorSet m_HeightmapDescriptors;
 	VkDescriptorSetLayout m_HeightmapDescriptorLayout;
 	ComputeEffect m_HeightmapEffect;
+	HeightmapPushConstants m_HeightmapPC;
 	VkDescriptorSet m_HeightmapImGuiDescriptors;
 		
 	VkPipeline m_MainPipeline;
@@ -170,6 +174,7 @@ private:
 	void drawGeometry(VkCommandBuffer cmd);
 	
 	void generateHeightmap();
+	void updateHeightmap();
 
 	// variables	
 	uint32_t m_Width, m_Height;
@@ -193,7 +198,8 @@ private:
 	VkSampler m_Sampler;
 	VkSampler m_HeightmapSampler;
 	
-	Camera m_Camera;
+	Camera m_Camera{};
+	glm::ivec2 m_MapOffset;
 	
 	int meshIndex = 0;
 };

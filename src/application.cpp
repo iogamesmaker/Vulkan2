@@ -93,12 +93,18 @@ void Application::initVulkan() {
 	features12.bufferDeviceAddress = true;
 	features12.descriptorIndexing = true;
 	
+	// Base features
+	VkPhysicalDeviceFeatures features10 {};
+	features10.tessellationShader = VK_TRUE;
+	
+	
 	// GPU selection
 	vkb::PhysicalDeviceSelector selector { vkb_instance };
 	vkb::PhysicalDevice physicalDevice = selector
 										 .set_minimum_version(1, 3)
 										 .set_required_features_13(features13)
 										 .set_required_features_12(features12)
+										 .set_required_features(features10)
 										 .set_surface(m_Surface)
 										 .select()
 										 .value();
@@ -226,7 +232,7 @@ void Application::initDescriptors() {
 	});
 }
 
-ComputeEffect Application::loadComputeShader(std::string path, std::string name, HeightmapPushConstants data) {
+ComputeEffect Application::loadComputeShader(std::string path, std::string name) {
 	CompiledShader computeShader = loadShader(path, VK_SHADER_STAGE_COMPUTE_BIT);
 	
 	VkComputePipelineCreateInfo computePipelineCreateInfo{};
@@ -238,7 +244,6 @@ ComputeEffect Application::loadComputeShader(std::string path, std::string name,
 	ComputeEffect computeEffect;
 	computeEffect.layout = m_ComputeLayout;
 	computeEffect.name = name;
-	computeEffect.data = data;
 	
 	VK_CHECK(vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &computeEffect.pipeline));
 
@@ -326,10 +331,16 @@ void Application::initComputePipelines() {
 	vkUpdateDescriptorSets(m_Device, 1, &heightmapWrite, 0, nullptr);
 	
 	
-	HeightmapPushConstants pc{};
-	pc.updateRegion = {0,0};
-	pc.offset = {0,0};
-	m_HeightmapEffect = loadComputeShader("src/shaders/bin/heightmap.comp.spv", "heightmap shader", pc);
+	m_HeightmapPC.textureSize = {heightmapExtent.width, heightmapExtent.height};
+	m_HeightmapPC.offset = {0,0};
+	m_HeightmapPC.dirtyMin = {0,0};
+	m_HeightmapPC.test = 0.0f;
+	m_HeightmapEffect = loadComputeShader("src/shaders/bin/heightmap.comp.spv", "heightmap shader");
+	
+	m_DeletionQueue.push([&]() {
+		vkDestroyImageView(m_Device, m_Heightmap.imageView, nullptr);
+		vmaDestroyImage(m_Allocator, m_Heightmap.image, m_Heightmap.allocation);
+	});
 }
 
 CompiledShader Application::loadShader(std::string path, VkShaderStageFlagBits stageBits) {
@@ -601,16 +612,12 @@ void Application::clearImage(VkCommandBuffer cmd) {
 
 void Application::generateHeightmap() {
 	immediateSubmit([&](VkCommandBuffer cmd) {
-		std::cout << "Hi" << std::endl;
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 		
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComputeLayout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
 		
-		HeightmapPushConstants pc{};
-		pc.offset = {0,0};
-		pc.updateRegion = {4096, 4096};
-		pc.test = test;
+		HeightmapPushConstants pc = m_HeightmapPC;
 		
 		vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pc);
 		
@@ -620,6 +627,72 @@ void Application::generateHeightmap() {
 		
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	});
+}
+
+void Application::updateHeightmap() {
+	glm::ivec2 pos;
+	pos.x = std::round(m_Camera.position.x);
+	pos.y = std::round(m_Camera.position.z);
+	
+	glm::ivec2 delta = (m_HeightmapPC.offset / glm::ivec2(16)) - pos;
+	if(delta.x == 0 && delta.y == 0) return;
+		
+	m_MapOffset += delta;
+	m_HeightmapPC.offset = pos * glm::ivec2(16);
+	
+	immediateSubmit([&](VkCommandBuffer cmd) {
+		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+		
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComputeLayout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
+		
+		HeightmapPushConstants pc = m_HeightmapPC;
+		
+		glm::ivec2 dirtyMin;
+		dirtyMin.x = (pos.x * 16) % pc.textureSize.x;
+		dirtyMin.y = (pos.y * 16) % pc.textureSize.y;
+		if(dirtyMin.x < 0) dirtyMin.x += pc.textureSize.x;
+		if(dirtyMin.y < 0) dirtyMin.y += pc.textureSize.y;
+		
+		pc.dirtyMin = dirtyMin;
+		if(delta.x != 0) {
+			uint32_t dispatchWidth = std::min((uint32_t)pc.textureSize.x,(uint32_t)std::abs(delta.x) * 16);
+			uint32_t dispatchHeight  = pc.textureSize.y;
+			
+			HeightmapPushConstants pcX = pc;
+			
+			if(delta.x < 0) {
+				uint32_t offsetX = pc.textureSize.x - dispatchWidth;
+				pcX.offset.x += offsetX;
+				pcX.dirtyMin.x = (pcX.dirtyMin.x + offsetX) % pc.textureSize.x;
+			}
+			
+			vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pcX);
+			uint32_t groupNX = std::ceil(dispatchWidth / 16.f);
+			uint32_t groupNY = std::ceil(dispatchHeight / 16.f);
+			
+			vkCmdDispatch(cmd, groupNX, groupNY, 1);
+		}
+		if(delta.y != 0) {
+			HeightmapPushConstants pcY = pc;
+			
+			uint32_t dispatchWidth  = pc.textureSize.x;
+			uint32_t dispatchHeight = std::min((uint32_t)pc.textureSize.y,(uint32_t)std::abs(delta.y) * 16);
+			
+			if(delta.y < 0) {
+				uint32_t offsetY = pc.textureSize.y - dispatchHeight;
+				pcY.offset.y += offsetY;
+				pcY.dirtyMin.y = (pcY.dirtyMin.y + offsetY) % pc.textureSize.y;
+			}
+			
+			vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pcY);
+			uint32_t groupNX = std::ceil(dispatchWidth / 16.f);
+			uint32_t groupNY = std::ceil(dispatchHeight / 16.f);
+			
+			vkCmdDispatch(cmd, groupNX, groupNY, 1);
+		}
+		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	});	
 }
 
 void Application::drawGeometry(VkCommandBuffer cmd) {
@@ -691,33 +764,34 @@ void Application::run() {
 			SDL_SetWindowRelativeMouseMode(m_pWindow, m_Mouselock);
 		}
 		m_Camera.update(deltatime);
+		if(!m_Mouselock) {
+			// imgui new frame
+			ImGui_ImplVulkan_NewFrame();
+			ImGui_ImplSDL3_NewFrame();
 
-		// imgui new frame
-		ImGui_ImplVulkan_NewFrame();
-		ImGui_ImplSDL3_NewFrame();
+			//some imgui UI
+			ImGui::NewFrame();
+			
+			if (ImGui::Begin("settings")) {
+						
+				ImGui::SliderInt("Model index", &meshIndex, 0, 2);
+				if(ImGui::SliderFloat("Render scale", &m_RenderScale, 0.1f, 2.f)) {m_Resized = true;}
+				if(ImGui::SliderFloat("Test", &test, 0.0f, 1.f)) { m_HeightmapPC.test = test; }
+			}
+			ImGui::End();
 
-		//some imgui UI
-		ImGui::NewFrame();
-		
-		if (ImGui::Begin("settings")) {
-					
-			ImGui::SliderInt("Model index", &meshIndex, 0, 2);
-			if(ImGui::SliderFloat("Render scale", &m_RenderScale, 0.1f, 2.f)) {m_Resized = true;}
-			if(ImGui::SliderFloat("Test", &test, 0.0f, 1.f)) {generateHeightmap();}
+			if (ImGui::Begin("heightmap")) {
+				ImVec2 panelSize = ImGui::GetContentRegionAvail();
+				panelSize.x = std::min(std::min(panelSize.x, 4096.f), panelSize.y);
+				panelSize.y = panelSize.x;
+				ImGui::Image((ImTextureID)m_HeightmapImGuiDescriptors, panelSize);
+			}
+			
+			ImGui::End();
+
+			ImGui::Render();
 		}
-		ImGui::End();
-
-		if (ImGui::Begin("heightmap")) {
-			ImVec2 panelSize = ImGui::GetContentRegionAvail();
-			panelSize.x = std::min(std::min(panelSize.x, 4096.f), panelSize.y);
-			panelSize.y = panelSize.x;
-			ImGui::Image((ImTextureID)m_HeightmapImGuiDescriptors, panelSize);
-		}
-		
-		ImGui::End();
-
-		ImGui::Render();
-		
+		//updateHeightmap();
 		draw();
 	}
 }

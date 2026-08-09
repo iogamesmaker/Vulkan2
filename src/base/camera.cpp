@@ -41,11 +41,16 @@ void Camera::update(float deltatime)
     if (state[SDL_SCANCODE_S]) { moveDir.z += 1.0f; }
     if (state[SDL_SCANCODE_A]) { moveDir.x -= 1.0f; }
     if (state[SDL_SCANCODE_D]) { moveDir.x += 1.0f; }
+    if (state[SDL_SCANCODE_Q]) { moveDir.y -= 1.0f; }
+    if (state[SDL_SCANCODE_E]) { moveDir.y += 1.0f; }
 
     if (glm::length(moveDir) > 0.0f) {
         moveDir = glm::normalize(moveDir);
     }
 
+	float mul = 2.5f;
+	
+	if(state[SDL_SCANCODE_LSHIFT]) mul = 10.0f;
     glm::mat4 cameraRotation = getRotationMatrix();
-    position += glm::vec3(cameraRotation * glm::vec4(moveDir * 2.5f * deltatime, 0.0f));
+    position += glm::vec3(cameraRotation * glm::vec4(moveDir * mul * deltatime, 0.0f));
 }

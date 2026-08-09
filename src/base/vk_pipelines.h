@@ -15,6 +15,7 @@ public:
     VkPipelineDepthStencilStateCreateInfo _depthStencil;
     VkPipelineRenderingCreateInfo _renderInfo;
     VkFormat _colorAttachmentformat;
+	VkPipelineTessellationStateCreateInfo _tessellationState;
 
 	PipelineBuilder(){ clear(); }
 
@@ -22,6 +23,8 @@ public:
 
     VkPipeline build_pipeline(VkDevice device);
 //< pipeline
+	void set_tessellation_shaders(VkShaderModule tcs, VkShaderModule tes);
+	void set_tessellation_patch(uint32_t controlPoints);
     void set_shaders(VkShaderModule vertexShader, VkShaderModule fragmentShader);
     void set_input_topology(VkPrimitiveTopology topology);
     void set_polygon_mode(VkPolygonMode mode);

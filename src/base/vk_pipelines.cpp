@@ -21,6 +21,8 @@ void PipelineBuilder::clear()
     _depthStencil = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
 
     _renderInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+	
+	_tessellationState = { .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO };
 
     _shaderStages.clear();
 }
@@ -72,6 +74,8 @@ VkPipeline PipelineBuilder::build_pipeline(VkDevice device)
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDepthStencilState = &_depthStencil;
     pipelineInfo.layout = _pipelineLayout;
+	
+	if(_inputAssembly.topology == VK_PRIMITIVE_TOPOLOGY_PATCH_LIST) pipelineInfo.pTessellationState = &_tessellationState;
 
     //< build_pipeline_2
     //> build_pipeline_3
@@ -96,6 +100,16 @@ VkPipeline PipelineBuilder::build_pipeline(VkDevice device)
         return newPipeline;
     }
     //< build_pipeline_4
+}
+void PipelineBuilder::set_tessellation_shaders(VkShaderModule tcs, VkShaderModule tes) {
+	_shaderStages.push_back(
+		vkinit::pipeline_shader_stage_create_info(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, tcs));
+	_shaderStages.push_back(
+		vkinit::pipeline_shader_stage_create_info(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, tes));
+}
+
+void PipelineBuilder::set_tessellation_patch(uint32_t controlPoints) {
+	_tessellationState.patchControlPoints = controlPoints;
 }
 //> set_shaders
 void PipelineBuilder::set_shaders(VkShaderModule vertexShader, VkShaderModule fragmentShader)
