@@ -18,6 +18,8 @@ Application::Application(uint32_t width, uint32_t height) : m_Width(width), m_He
 	initDescriptors();
 	initPipelines();
 	
+	initTerrainPatches();
+	
 	initImGui();
 	
 	initDefaultData();
@@ -53,7 +55,7 @@ Application::~Application() {
         SDL_DestroyWindow(m_pWindow);
     }
     SDL_Quit();
-	std::cout << "brr brr patapim" << std::endl;
+	std::cout << "successfully shut down" << std::endl;
 }
 
 void Application::initWindow() {
@@ -222,12 +224,28 @@ void Application::initSyncStructures() {
 
 void Application::initDescriptors() {
 	std::vector<DescriptorAllocator::PoolSizeRatio> sizes = {
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 }
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 }
 	};
 	
 	g_DescriptorAllocator.init_pool(m_Device, 10, sizes);
+		
+	VkSamplerCreateInfo samplerCI = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
 	
+	samplerCI.magFilter = VK_FILTER_LINEAR;
+	samplerCI.minFilter = VK_FILTER_LINEAR;
+	
+	vkCreateSampler(m_Device, &samplerCI, nullptr, &m_Sampler);
+	
+	samplerCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	samplerCI.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	
+	vkCreateSampler(m_Device, &samplerCI, nullptr, &m_HeightmapSampler);
+		
 	m_DeletionQueue.push([&]() {
+		vkDestroySampler(m_Device, m_Sampler, nullptr);
+		vkDestroySampler(m_Device, m_HeightmapSampler, nullptr);
+		
 		g_DescriptorAllocator.destroy_pool(m_Device);
 	});
 }
@@ -290,7 +308,7 @@ void Application::initComputePipelines() {
 	
 	// create heightmap image
 
-	VkExtent3D heightmapExtent = {4096, 4096, 1}; // Resolution of world data thing
+	VkExtent3D heightmapExtent = {static_cast<uint32_t>(m_HeightmapSize), static_cast<uint32_t>(m_HeightmapSize), 1}; // Resolution of world data thing
 	
 	m_Heightmap.imageFormat = VK_FORMAT_R32G32B32A32_SFLOAT;
 	m_Heightmap.imageExtent = heightmapExtent ;
@@ -360,8 +378,8 @@ CompiledShader Application::loadShader(std::string path, VkShaderStageFlagBits s
 }
 
 void Application::initMainPipeline() {
-	CompiledShader fragmentShader = loadShader("src/shaders/bin/fragment.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
 	CompiledShader   vertexShader = loadShader("src/shaders/bin/vertex.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+	CompiledShader fragmentShader = loadShader("src/shaders/bin/fragment.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
 	
 	VkPushConstantRange bufferRange{};
 	bufferRange.offset = 0;
@@ -398,11 +416,104 @@ void Application::initMainPipeline() {
 		vkDestroyPipelineLayout(m_Device, m_MainLayout, nullptr);
 		vkDestroyPipeline(m_Device, m_MainPipeline, nullptr);
 	});
-	
 }
+void Application::initTessellationPipeline() {
+	CompiledShader   vertexShader = loadShader("src/shaders/bin/terrain.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+	CompiledShader fragmentShader = loadShader("src/shaders/bin/terrain.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+	CompiledShader     tescShader = loadShader("src/shaders/bin/terrain.tesc.spv", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
+	CompiledShader     teseShader = loadShader("src/shaders/bin/terrain.tese.spv", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
+	
+	DescriptorLayoutBuilder builder;
+	builder.add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	m_TerrainDescriptorLayout = builder.build(m_Device, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
+	m_TerrainDescriptors = g_DescriptorAllocator.allocate(m_Device, m_TerrainDescriptorLayout);
+
+
+	VkPushConstantRange bufferRange{};
+	bufferRange.offset = 0;
+	bufferRange.size = sizeof(TessellationPushConstants);
+	bufferRange.stageFlags = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+	
+	VkPipelineLayoutCreateInfo pipelineLayoutInfo = vkinit::pipeline_layout_create_info();
+	pipelineLayoutInfo.pPushConstantRanges = &bufferRange;
+	pipelineLayoutInfo.pushConstantRangeCount = 1;
+	pipelineLayoutInfo.pSetLayouts = &m_TerrainDescriptorLayout;
+	pipelineLayoutInfo.setLayoutCount = 1;
+	
+	VK_CHECK(vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_TerrainLayout));
+	
+	VkVertexInputBindingDescription vertexBinding{};
+	vertexBinding.binding = 0;
+	vertexBinding.stride = sizeof(Vertex);
+	vertexBinding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	
+	std::vector<VkVertexInputAttributeDescription> attributes(2);
+	
+	attributes[0].binding = 0; // layout 0 -- vertex positions
+	attributes[0].location = 0;
+	attributes[0].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+	attributes[0].offset = offsetof(Vertex, position);
+	
+	attributes[1].binding = 0; // layout 1 -- uv coordinates
+	attributes[1].location = 1;
+	attributes[1].format = VK_FORMAT_R32G32_SFLOAT;
+	attributes[1].offset = offsetof(Vertex, uv);
+	
+	PipelineBuilder pipelineBuilder;
+		
+	pipelineBuilder._pipelineLayout = m_TerrainLayout;
+	pipelineBuilder.set_shaders(vertexShader.shader, fragmentShader.shader);
+	pipelineBuilder.set_tessellation_shaders(tescShader.shader, teseShader.shader);
+	pipelineBuilder.set_tessellation_patch(4);
+	pipelineBuilder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_PATCH_LIST);
+	pipelineBuilder.set_polygon_mode(VK_POLYGON_MODE_FILL);
+	pipelineBuilder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+	
+	pipelineBuilder.set_vertex_input({vertexBinding}, attributes);
+	
+	pipelineBuilder.set_multisampling_none();
+	pipelineBuilder.disable_blending();
+	pipelineBuilder.enable_depthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
+	
+	pipelineBuilder.set_color_attachment_format(m_DrawImage.imageFormat);
+	pipelineBuilder.set_depth_format(m_DepthBuffer.imageFormat);
+	
+	m_TerrainPipeline = pipelineBuilder.build_pipeline(m_Device);
+	
+	VkDescriptorImageInfo terrainImgInfo{};
+	
+	terrainImgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	terrainImgInfo.imageView = m_Heightmap.imageView;
+	terrainImgInfo.sampler = m_HeightmapSampler;
+	
+	VkWriteDescriptorSet descriptorWrite = {};
+	descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	descriptorWrite.pNext = nullptr;
+	descriptorWrite.dstBinding = 0;
+	descriptorWrite.dstSet = m_TerrainDescriptors;
+	descriptorWrite.descriptorCount = 1;
+	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	descriptorWrite.pImageInfo = &terrainImgInfo;
+	
+	vkUpdateDescriptorSets(m_Device, 1, &descriptorWrite, 0, nullptr);
+	
+	vkDestroyShaderModule(m_Device, fragmentShader.shader, nullptr);
+	vkDestroyShaderModule(m_Device, vertexShader.shader, nullptr);
+	vkDestroyShaderModule(m_Device, tescShader.shader, nullptr);
+	vkDestroyShaderModule(m_Device, teseShader.shader, nullptr);
+	
+	
+	m_DeletionQueue.push([&]() {
+		vkDestroyPipelineLayout(m_Device, m_TerrainLayout, nullptr);
+		vkDestroyPipeline(m_Device, m_TerrainPipeline, nullptr);
+		vkDestroyDescriptorSetLayout(m_Device, m_TerrainDescriptorLayout, nullptr);
+	});
+}
+
 
 void Application::initPipelines() {
 	initComputePipelines();
+	initTessellationPipeline();
 	initMainPipeline();
 }
 
@@ -452,6 +563,8 @@ void Application::initImGui() {
 	
 	ImGui_ImplVulkan_Init(&init_info);
 	
+	m_HeightmapImGuiDescriptors = ImGui_ImplVulkan_AddTexture(m_HeightmapSampler, m_Heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
 	m_DeletionQueue.push([&]() {
 		ImGui_ImplVulkan_Shutdown();
 		vkDestroyDescriptorPool(m_Device, imguiPool, nullptr);
@@ -522,24 +635,72 @@ void Application::initDefaultData() {
 	testMeshes = loadGltfMeshes(this, "assets\\basicmesh.glb").value();
 	
 	generateHeightmap();
+}
+
+void Application::initTerrainPatches() {
+	m_PatchVertices.clear();
+	Vertex vertex{};
+	vertex.position.y = 0.0f;
+	unsigned rez = 64;
+	float width = m_WorldSize;
+	float height = m_WorldSize;
+	for(unsigned i = 0; i <= rez-1; i++) // https://learnopengl.com/Guest-Articles/2021/Tessellation/Tessellation
+	{
+		for(unsigned j = 0; j <= rez-1; j++)
+		{
+			vertex.position.x = -width /2.0f + width *i/(float)rez; // v.x
+			vertex.position.z = -height/2.0f + height*j/(float)rez; // v.z
+			vertex.uv.x = i / (float)rez; // u
+			vertex.uv.y = j / (float)rez; // v
+			m_PatchVertices.push_back(vertex);
+
+			vertex.position.x = -width /2.0f + width *(i+1)/(float)rez; // v.x
+			vertex.position.z = -height/2.0f + height*j/(float)rez;		// v.z
+			vertex.uv.x = (i+1) / (float)rez; // u
+			vertex.uv.y =  j    / (float)rez; // v
+			m_PatchVertices.push_back(vertex);
+
+			vertex.position.x = -width /2.0f + width *i/(float)rez;		// v.x
+			vertex.position.z = -height/2.0f + height*(j+1)/(float)rez; // v.z
+			vertex.uv.x = i / (float)rez; // u
+			vertex.uv.y = (j+1) / (float)rez; // v
+			m_PatchVertices.push_back(vertex);
+
+			vertex.position.x = -width /2.0f + width *(i+1)/(float)rez; // v.x
+			vertex.position.z = -height/2.0f + height*(j+1)/(float)rez; // v.z
+			vertex.uv.x = (i+1) / (float)rez; // u
+			vertex.uv.y = (j+1) / (float)rez; // v
+			m_PatchVertices.push_back(vertex);
+		}
+	}
+	// upload the shit to the GPU
+	// similar to uploadMesh but without indexBuffer
+	const size_t bufferSize = m_PatchVertices.size() * sizeof(Vertex);
 	
-	VkSamplerCreateInfo samplerCI = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+	m_TerrainVertexBuffer = createBuffer(bufferSize,
+		VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		VMA_MEMORY_USAGE_GPU_ONLY);
+		
+	VkBufferDeviceAddressInfo deviceAddressInfo {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = m_TerrainVertexBuffer.buffer };
+	m_TerrainVertexAddress = vkGetBufferDeviceAddress(m_Device, &deviceAddressInfo);
 	
-	samplerCI.magFilter = VK_FILTER_LINEAR;
-	samplerCI.minFilter = VK_FILTER_LINEAR;
+	AllocatedBuffer staging = createBuffer(bufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
 	
-	vkCreateSampler(m_Device, &samplerCI, nullptr, &m_Sampler);
+	void* data = staging.allocation->GetMappedData();
+	memcpy(data, m_PatchVertices.data(), bufferSize);
 	
-	samplerCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerCI.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	immediateSubmit([&](VkCommandBuffer cmd) {
+		VkBufferCopy vertexCopy {0};
+		vertexCopy.dstOffset = 0;
+		vertexCopy.srcOffset = 0;
+		vertexCopy.size = bufferSize;
+
+		vkCmdCopyBuffer(cmd, staging.buffer, m_TerrainVertexBuffer.buffer, 1, &vertexCopy);
+	});
 	
-	vkCreateSampler(m_Device, &samplerCI, nullptr, &m_HeightmapSampler);
-	
-	m_HeightmapImGuiDescriptors = ImGui_ImplVulkan_AddTexture(m_HeightmapSampler, m_Heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	
+	destroyBuffer(staging);
 	m_DeletionQueue.push([&]() {
-		vkDestroySampler(m_Device, m_Sampler, nullptr);
-		vkDestroySampler(m_Device, m_HeightmapSampler, nullptr);
+		destroyBuffer(m_TerrainVertexBuffer);
 	});
 }
 
@@ -582,6 +743,7 @@ void Application::resizeSwapchain() {
 	SDL_GetWindowSizeInPixels(m_pWindow, &w, &h);
 	m_Width = w * m_RenderScale;
 	m_Height = h * m_RenderScale;
+	m_TerrainPC.screen = {m_Width, m_Height};
 	
 	initSwapchain();
 	
@@ -603,7 +765,7 @@ void Application::destroySwapchain() {
 }
 
 void Application::clearImage(VkCommandBuffer cmd) {
-	VkClearColorValue clearValue = {{0.0f, 0.0f, 0.0f, 1.0f}};
+	VkClearColorValue clearValue = {{0.0f, 0.0f, 0.1f, 1.0f}};
 	
 	VkImageSubresourceRange clearRange = vkinit::image_subresource_range(VK_IMAGE_ASPECT_COLOR_BIT);
 	
@@ -621,8 +783,8 @@ void Application::generateHeightmap() {
 		
 		vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pc);
 		
-		uint32_t groupNX = std::ceil(4096.f / 16.f);
-		uint32_t groupNY = std::ceil(4096.f / 16.f);
+		uint32_t groupNX = std::ceil(static_cast<float>(m_HeightmapSize) / 16.f);
+		uint32_t groupNY = std::ceil(static_cast<float>(m_HeightmapSize) / 16.f);
 		vkCmdDispatch(cmd, groupNX, groupNY, 1);
 		
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -634,11 +796,11 @@ void Application::updateHeightmap() {
 	pos.x = std::round(m_Camera.position.x);
 	pos.y = std::round(m_Camera.position.z);
 	
-	glm::ivec2 delta = (m_HeightmapPC.offset / glm::ivec2(16)) - pos;
-	if(delta.x == 0 && delta.y == 0) return;
+	glm::ivec2 delta = (m_HeightmapPC.offset / glm::ivec2(m_CoordinateMultiplier)) - pos;
+	if(std::abs(delta.x) <= 4 && std::abs(delta.y) <= 4) return;
 		
-	m_MapOffset += delta;
-	m_HeightmapPC.offset = pos * glm::ivec2(16);
+	m_MapOffset = pos * glm::ivec2(m_CoordinateMultiplier);
+	m_HeightmapPC.offset = m_MapOffset;
 	
 	immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
@@ -649,14 +811,14 @@ void Application::updateHeightmap() {
 		HeightmapPushConstants pc = m_HeightmapPC;
 		
 		glm::ivec2 dirtyMin;
-		dirtyMin.x = (pos.x * 16) % pc.textureSize.x;
-		dirtyMin.y = (pos.y * 16) % pc.textureSize.y;
+		dirtyMin.x = (pos.x * m_CoordinateMultiplier) % pc.textureSize.x;
+		dirtyMin.y = (pos.y * m_CoordinateMultiplier) % pc.textureSize.y;
 		if(dirtyMin.x < 0) dirtyMin.x += pc.textureSize.x;
 		if(dirtyMin.y < 0) dirtyMin.y += pc.textureSize.y;
 		
 		pc.dirtyMin = dirtyMin;
 		if(delta.x != 0) {
-			uint32_t dispatchWidth = std::min((uint32_t)pc.textureSize.x,(uint32_t)std::abs(delta.x) * 16);
+			uint32_t dispatchWidth = std::min((uint32_t)pc.textureSize.x,(uint32_t)std::abs(delta.x) * m_CoordinateMultiplier);
 			uint32_t dispatchHeight  = pc.textureSize.y;
 			
 			HeightmapPushConstants pcX = pc;
@@ -677,7 +839,7 @@ void Application::updateHeightmap() {
 			HeightmapPushConstants pcY = pc;
 			
 			uint32_t dispatchWidth  = pc.textureSize.x;
-			uint32_t dispatchHeight = std::min((uint32_t)pc.textureSize.y,(uint32_t)std::abs(delta.y) * 16);
+			uint32_t dispatchHeight = std::min((uint32_t)pc.textureSize.y,(uint32_t)std::abs(delta.y) * m_CoordinateMultiplier);
 			
 			if(delta.y < 0) {
 				uint32_t offsetY = pc.textureSize.y - dispatchHeight;
@@ -705,8 +867,6 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	VkRenderingInfo renderInfo = vkinit::rendering_info(m_DrawExtent, &colorAttachment, &depthAttachment);
 	vkCmdBeginRendering(cmd, &renderInfo);
 	
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MainPipeline);
-	
 	VkViewport viewport = {};
 	viewport.x = 0;
 	viewport.y = 0;	
@@ -724,22 +884,37 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	scissor.extent.height = m_DrawExtent.height;
 	
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
-	
-	GPUDrawPushConstants pushConstants;
 	// calculate matrices
-	glm::mat4 view = m_Camera.getViewMatrix();
+	glm::mat4 view = m_Camera.getViewMatrix({m_MapOffset.x / static_cast<float>(m_CoordinateMultiplier), 0.0, m_MapOffset.y / static_cast<float>(m_CoordinateMultiplier)});
 	glm::mat4 projection = glm::perspective(glm::radians(70.f), (float)m_DrawExtent.width / (float)m_DrawExtent.height, 10000.f, 0.1f); // reversing the depth buffer apparently increases precision
 	projection[1][1] *= -1; // vulkan had to go out of its way to break the standard and make the Y axis reversed ):
+	// ---
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MainPipeline);
 	
+	GPUDrawPushConstants pushConstants;
 	pushConstants.worldMatrix = projection * view;
-		
+	
 	pushConstants.vertexBuffer = testMeshes[meshIndex]->meshBuffers.vertexBufferAddress;
 	
 	vkCmdPushConstants(cmd, m_MainLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &pushConstants);
 	vkCmdBindIndexBuffer(cmd, testMeshes[meshIndex]->meshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 	
 	vkCmdDrawIndexed(cmd, testMeshes[meshIndex]->surfaces[0].count, 1, testMeshes[meshIndex]->surfaces[0].startIndex, 0, 0);
+	// ---
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainPipeline);
 	
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainLayout, 0, 1, &m_TerrainDescriptors, 0, nullptr);
+	
+	m_TerrainPC.view = view;
+	m_TerrainPC.projection = projection;
+	m_TerrainPC.worldoffset = m_MapOffset;
+	
+	vkCmdPushConstants(cmd, m_TerrainLayout, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(TessellationPushConstants), &m_TerrainPC);
+	
+	VkDeviceSize offset = 0;
+	vkCmdBindVertexBuffers(cmd, 0, 1, &m_TerrainVertexBuffer.buffer, &offset);
+	
+	vkCmdDraw(cmd, static_cast<uint32_t>(m_PatchVertices.size()), 1, 0, 0);
 	vkCmdEndRendering(cmd);
 }
 
@@ -773,16 +948,18 @@ void Application::run() {
 			ImGui::NewFrame();
 			
 			if (ImGui::Begin("settings")) {
+				float var;
 						
 				ImGui::SliderInt("Model index", &meshIndex, 0, 2);
 				if(ImGui::SliderFloat("Render scale", &m_RenderScale, 0.1f, 2.f)) {m_Resized = true;}
-				if(ImGui::SliderFloat("Test", &test, 0.0f, 1.f)) { m_HeightmapPC.test = test; }
+				ImGui::SliderFloat("Depth factor", &m_TerrainPC.factor, 0.0f, static_cast<float>(m_WorldSize) * 0.5);
+				ImGui::SliderFloat("Tessellation Factor", &m_TerrainPC.tessellationFactor, 0.0f, 1.f);
 			}
 			ImGui::End();
 
 			if (ImGui::Begin("heightmap")) {
 				ImVec2 panelSize = ImGui::GetContentRegionAvail();
-				panelSize.x = std::min(std::min(panelSize.x, 4096.f), panelSize.y);
+				panelSize.x = std::min(std::min(panelSize.x, static_cast<float>(m_HeightmapSize)), panelSize.y);
 				panelSize.y = panelSize.x;
 				ImGui::Image((ImTextureID)m_HeightmapImGuiDescriptors, panelSize);
 			}
@@ -791,7 +968,7 @@ void Application::run() {
 
 			ImGui::Render();
 		}
-		//updateHeightmap();
+		updateHeightmap();
 		draw();
 	}
 }

@@ -24,7 +24,12 @@ void PipelineBuilder::clear()
 	
 	_tessellationState = { .sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO };
 
+	_vertexInputInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+
     _shaderStages.clear();
+	
+	_vertexBindings.clear();
+	_vertexAttributes.clear();
 }
 //< pipe_clear
 
@@ -50,9 +55,6 @@ VkPipeline PipelineBuilder::build_pipeline(VkDevice device)
     colorBlending.logicOp = VK_LOGIC_OP_COPY;
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &_colorBlendAttachment;
-
-    // completely clear VertexInputStateCreateInfo, as we have no need for it
-    VkPipelineVertexInputStateCreateInfo _vertexInputInfo = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
 
     //< build_pipeline_1
 
@@ -101,6 +103,18 @@ VkPipeline PipelineBuilder::build_pipeline(VkDevice device)
     }
     //< build_pipeline_4
 }
+
+void PipelineBuilder::set_vertex_input(const std::vector<VkVertexInputBindingDescription>& bindings, const std::vector<VkVertexInputAttributeDescription>& attributes) {
+	_vertexBindings = bindings;
+	_vertexAttributes = attributes;
+	
+	_vertexInputInfo.vertexBindingDescriptionCount = static_cast<uint32_t>(_vertexBindings.size());
+	_vertexInputInfo.pVertexBindingDescriptions = _vertexBindings.data();
+	
+	_vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(_vertexAttributes.size());
+	_vertexInputInfo.pVertexAttributeDescriptions = _vertexAttributes.data();
+}
+
 void PipelineBuilder::set_tessellation_shaders(VkShaderModule tcs, VkShaderModule tes) {
 	_shaderStages.push_back(
 		vkinit::pipeline_shader_stage_create_info(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, tcs));

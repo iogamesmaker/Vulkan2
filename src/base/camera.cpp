@@ -2,12 +2,12 @@
 #include "glm/gtx/quaternion.hpp"
 #include "glm/gtx/transform.hpp"
 
-glm::mat4 Camera::getViewMatrix() const
+glm::mat4 Camera::getViewMatrix(glm::vec3 offset) const
 {
     // to create a correct model view, we need to move the world in opposite
     // direction to the camera
     //  so we will create the camera model matrix and invert
-    glm::mat4 cameraTranslation = glm::translate(glm::mat4(1.f), position);
+    glm::mat4 cameraTranslation = glm::translate(glm::mat4(1.f), position - offset);
     glm::mat4 cameraRotation = getRotationMatrix();
     return glm::inverse(cameraTranslation * cameraRotation);
 }
@@ -48,9 +48,9 @@ void Camera::update(float deltatime)
         moveDir = glm::normalize(moveDir);
     }
 
-	float mul = 2.5f;
+	float mul = 10.0f;
 	
-	if(state[SDL_SCANCODE_LSHIFT]) mul = 10.0f;
+	if(state[SDL_SCANCODE_LSHIFT]) mul = 50.0f;
     glm::mat4 cameraRotation = getRotationMatrix();
     position += glm::vec3(cameraRotation * glm::vec4(moveDir * mul * deltatime, 0.0f));
 }

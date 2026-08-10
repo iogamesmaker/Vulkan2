@@ -37,12 +37,18 @@ struct HeightmapPushConstants {
 	float test;
 };
 
-struct TesselationPushConstants {
-	
+struct TessellationPushConstants {
+	glm::mat4 projection;
+	glm::mat4 view;
+	glm::ivec2 worldoffset;
+	glm::ivec2 screen;
+	float tessellationFactor = 0.75f;
+	float factor = 1.0f;
 };
 
-struct DeletionQueue { // high IQ play by the writer of vkguide.dev
+struct DeletionQueue { // high IQ play by the author of vkguide.dev
 					   // they tell us this implementation isn't really scalable though
+					   // oh well works good enough
 	std::deque<std::function<void()>> deletors;
 	
 	void push(std::function<void()>&& func) {
@@ -142,6 +148,11 @@ public:
 		
 	VkPipeline m_MainPipeline;
 	VkPipelineLayout m_MainLayout;
+	
+	VkPipeline m_TerrainPipeline;
+	VkPipelineLayout m_TerrainLayout;
+	VkDescriptorSet m_TerrainDescriptors;
+	VkDescriptorSetLayout m_TerrainDescriptorLayout;
 		
 	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
 	
@@ -159,6 +170,9 @@ private:
 	void initPipelines();
 	void initMainPipeline();
 	void initComputePipelines();
+	void initTessellationPipeline();
+	
+	void initTerrainPatches();
 	
 	void initImGui();
 	
@@ -199,8 +213,18 @@ private:
 	VkSampler m_HeightmapSampler;
 	
 	Camera m_Camera{};
-	glm::ivec2 m_MapOffset;
+	glm::ivec2 m_MapOffset{};
 	
+	std::vector<Vertex> m_PatchVertices;
+	AllocatedBuffer m_TerrainVertexBuffer;
+	VkDeviceAddress m_TerrainVertexAddress;
+	
+	TessellationPushConstants m_TerrainPC;
+
 	int meshIndex = 0;
+	
+	const int m_WorldSize = 256;
+	const int m_HeightmapSize = 8192;
+	const int m_CoordinateMultiplier = m_HeightmapSize / m_WorldSize;
 };
 #endif

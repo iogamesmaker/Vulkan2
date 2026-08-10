@@ -17,8 +17,11 @@ public:
     VkFormat _colorAttachmentformat;
 	VkPipelineTessellationStateCreateInfo _tessellationState;
 
-	PipelineBuilder(){ clear(); }
+	std::vector<VkVertexInputBindingDescription> _vertexBindings;
+    std::vector<VkVertexInputAttributeDescription> _vertexAttributes;
+    VkPipelineVertexInputStateCreateInfo _vertexInputInfo;
 
+	PipelineBuilder(){ clear(); }
     void clear();
 
     VkPipeline build_pipeline(VkDevice device);
@@ -26,6 +29,7 @@ public:
 	void set_tessellation_shaders(VkShaderModule tcs, VkShaderModule tes);
 	void set_tessellation_patch(uint32_t controlPoints);
     void set_shaders(VkShaderModule vertexShader, VkShaderModule fragmentShader);
+	void set_vertex_input(const std::vector<VkVertexInputBindingDescription>& bindings, const std::vector<VkVertexInputAttributeDescription>& attributes);
     void set_input_topology(VkPrimitiveTopology topology);
     void set_polygon_mode(VkPolygonMode mode);
     void set_cull_mode(VkCullModeFlags cullMode, VkFrontFace frontFace);

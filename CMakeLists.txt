@@ -26,8 +26,6 @@ add_library(vkguide_shared STATIC # copied from vkguide.dev
     src/base/vk_pipelines.cpp
     src/base/camera.cpp
     src/base/camera.h
-    src/base/meshes.h
-    src/base/meshes.cpp
 )
 
 target_compile_definitions(vkguide_shared PUBLIC 
@@ -64,7 +62,7 @@ target_precompile_headers(vkguide_shared PUBLIC
 add_executable(${PROJECT_NAME} 
     src/main.cpp
 	src/loader.cpp
-    src/application.cpp
+    src/application.cpp	
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE vkguide_shared)
@@ -90,6 +88,8 @@ file(GLOB_RECURSE SHADER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.comp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.glsl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.tesc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.tese"
 )
 
 set(SPIRV_BINARIES "")

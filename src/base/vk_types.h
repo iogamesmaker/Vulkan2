@@ -77,9 +77,8 @@ struct MaterialInstance {
 struct Vertex {
 
 	glm::vec3 position;
-	float uv_x;
+	glm::vec2 uv;
 	glm::vec3 normal;
-	float uv_y;
 	glm::vec4 color;
 };
 

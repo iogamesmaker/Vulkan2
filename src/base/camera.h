@@ -10,7 +10,7 @@ public:
     // horizontal rotation
     float yaw { 0.f };
 
-    glm::mat4 getViewMatrix() const;
+    glm::mat4 getViewMatrix(glm::vec3 offset = {0.0, 0.0, 0.0} ) const;
     glm::mat4 getRotationMatrix() const;
 
     void processSDLEvent(SDL_Event& e);

@@ -74,8 +74,7 @@ std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(Applicatio
 						newVtx.position = v;
 						newVtx.normal = { 1, 0, 0 };
 						newVtx.color = glm::vec4{1.f};
-						newVtx.uv_x = 0;
-						newVtx.uv_y = 0;
+						newVtx.uv = glm::vec2{0.0f};
 						vertices[initialVtx + index] = newVtx;
 					});
 			}
@@ -92,8 +91,7 @@ std::optional<std::vector<std::shared_ptr<MeshAsset>>> loadGltfMeshes(Applicatio
 			if (uv != p.attributes.end()) {
 				fastgltf::iterateAccessorWithIndex<glm::vec2>(gltf, gltf.accessors[(*uv).accessorIndex],
 					[&](glm::vec2 v, size_t index) {
-						vertices[initialVtx + index].uv_x = v.x;
-						vertices[initialVtx + index].uv_y = v.y;
+						vertices[initialVtx + index].uv = v;
 					});
 			}
 			
