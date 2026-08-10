@@ -12,6 +12,8 @@ public:
 
     glm::mat4 getViewMatrix(glm::vec3 offset = {0.0, 0.0, 0.0} ) const;
     glm::mat4 getRotationMatrix() const;
+	
+	float speed = 1.0f;
 
     void processSDLEvent(SDL_Event& e);
 

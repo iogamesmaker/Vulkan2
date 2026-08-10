@@ -34,11 +34,11 @@ void main() {
 	vec2 uv1 = mix(inUV[2], inUV[3], u);
 	outUV = mix(uv0, uv1, v);
 	
-	outLOD = int(mix(mix(inLOD[0],inLOD[1],u),mix(inLOD[2], inLOD[3],u), v));
+	outLOD = int(round(mix(mix(inLOD[0],inLOD[1],u),mix(inLOD[2], inLOD[3],u), v)));
 	
 	vec2 readCoord = outUV + (pc.offset * (1.0 / textureSize(heightmap, 0)));
 
-	pos.y += texture(heightmap, readCoord).r * pc.factor;
+	pos.y += textureLod(heightmap, readCoord, 2).r * pc.factor;
 	pos.y -= pc.factor * 0.5;
 	
 	outPosition = pos.xyz;

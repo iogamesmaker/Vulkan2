@@ -6,10 +6,10 @@ layout (local_size_x = 16, local_size_y = 16) in;
 layout (rgba32f, set = 0, binding = 0) uniform image2D image;
 
 layout ( push_constant ) uniform constants {
-	ivec2 textureSize;
     ivec2 offset;
 	ivec2 dirtyMin;
-	float test;
+	ivec2 updateSize;
+	float settings[16];
 } pc;
 
 #define TAU 6.28318530717959
@@ -185,31 +185,31 @@ vec4 ErosionFilter(
 float GetHeight(vec2 p) {
     
     // -- EROSION SETTINGS --
-    float EROSION_SCALE = 0.15;
-    float EROSION_STRENGTH = 0.1; // Range 0.01 to 0.22 
-    float EROSION_GULLY_WEIGHT = 0.5;
-    float EROSION_DETAIL = 1.5;
+    float EROSION_SCALE = pc.settings[0]; // 0.15
+    float EROSION_STRENGTH = pc.settings[1]; // Range 0.01 to 0.22 // 0.1
+    float EROSION_GULLY_WEIGHT = pc.settings[2]; // 0.5
+    float EROSION_DETAIL = pc.settings[3]; // 1.5
     
-    float ridgeRounding = 0.1;
-    float creaseRounding = 0.0;
+    float ridgeRounding = pc.settings[4]; // 0.1
+    float creaseRounding = pc.settings[5]; // 0.0
     vec4 EROSION_ROUNDING = vec4(ridgeRounding, creaseRounding, 0.1, 2.0);
     vec4 EROSION_ONSET = vec4(1.25, 1.25, 2.8, 1.5);
     vec2 EROSION_ASSUMED_SLOPE = vec2(0.7, 1.0);
     
-    float EROSION_CELL_SCALE = 0.7;
-    float EROSION_NORMALIZATION = 0.5;
+    float EROSION_CELL_SCALE = pc.settings[6]; // 0.7
+    float EROSION_NORMALIZATION = pc.settings[7]; // 0.5
     
-    int EROSION_OCTAVES = 5;
-    float EROSION_LACUNARITY = 2.0;
-    float EROSION_GAIN = 0.5;
+    int EROSION_OCTAVES = int(pc.settings[8]); // 5
+    float EROSION_LACUNARITY = pc.settings[9]; // 2.0
+    float EROSION_GAIN = pc.settings[10]; // 0.5
     vec2 TERRAIN_HEIGHT_OFFSET = vec2(0.0, 0.0);
 
     // -- BASE NOISE SETTINGS --
-    float HEIGHT_FREQUENCY = 3.0;
-    float HEIGHT_AMP = 1.0f;
-    int HEIGHT_OCTAVES = 3;
-    float HEIGHT_LACUNARITY = 2.0;
-    float HEIGHT_GAIN = 0.1;
+    float HEIGHT_FREQUENCY = pc.settings[12]; // 3.0
+    float HEIGHT_AMP = pc.settings[13]; // 1.0
+    int HEIGHT_OCTAVES = int(pc.settings[11]); // 3
+    float HEIGHT_LACUNARITY = pc.settings[14]; // 2.0
+    float HEIGHT_GAIN = pc.settings[15]; // 0.1
     float heightFunctionScale = 1.0;
     
     // Base coordinate
@@ -245,15 +245,15 @@ float GetHeight(vec2 p) {
 void main() {
     ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy) + pc.dirtyMin;
     ivec2 size = imageSize(image);
-    
+    if (gl_GlobalInvocationID.x >= pc.updateSize.x ||  gl_GlobalInvocationID.y >= pc.updateSize.y) return;
     //if(texelCoord.x < size.x && texelCoord.y < size.y) {
 		vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset);
-		
-        vec2 p = vec2(worldPos) / pc.textureSize;
+				
+        vec2 p = vec2(worldPos) / size;
         
         float height = GetHeight(p);
 		
-		ivec2 physicalCoord = (texelCoord % pc.textureSize + pc.textureSize) % pc.textureSize;
+		ivec2 physicalCoord = (texelCoord % size + size) % size;
 		
 		if(physicalCoord.x < 0.0 || physicalCoord.y < 0.0) p = vec2(1,1);
 		vec4 color = vec4(height, height, height, 1.0);

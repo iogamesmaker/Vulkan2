@@ -32,5 +32,7 @@ void main() {
     vec3 vb = normalize(vec3(0.0, 1.0, (hT - hB) * 256.0f));
     vec3 normal = normalize(cross(va, vb));
 	
-    outColor = vec4(texture(heightmap, readCoord).xyz, 1.0);
+    //outColor = vec4(texture(heightmap, readCoord).xyz, 1.0);
+    outColor = vec4(normal * 0.5 + 0.5, 1.0);
+	//outColor = vec4(LOD / 64.f, 0.0, 0.0, 1.0);
 }

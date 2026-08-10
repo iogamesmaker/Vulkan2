@@ -349,10 +349,8 @@ void Application::initComputePipelines() {
 	vkUpdateDescriptorSets(m_Device, 1, &heightmapWrite, 0, nullptr);
 	
 	
-	m_HeightmapPC.textureSize = {heightmapExtent.width, heightmapExtent.height};
 	m_HeightmapPC.offset = {0,0};
 	m_HeightmapPC.dirtyMin = {0,0};
-	m_HeightmapPC.test = 0.0f;
 	m_HeightmapEffect = loadComputeShader("src/shaders/bin/heightmap.comp.spv", "heightmap shader");
 	
 	m_DeletionQueue.push([&]() {
@@ -467,7 +465,7 @@ void Application::initTessellationPipeline() {
 	pipelineBuilder.set_tessellation_patch(4);
 	pipelineBuilder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_PATCH_LIST);
 	pipelineBuilder.set_polygon_mode(VK_POLYGON_MODE_FILL);
-	pipelineBuilder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+	pipelineBuilder.set_cull_mode(VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE);
 	
 	pipelineBuilder.set_vertex_input({vertexBinding}, attributes);
 	
@@ -635,6 +633,10 @@ void Application::initDefaultData() {
 	testMeshes = loadGltfMeshes(this, "assets\\basicmesh.glb").value();
 	
 	generateHeightmap();
+	
+	
+	m_TerrainPC.factor = m_WorldSize * 0.5f;
+	m_Camera.position.y = m_WorldSize * 0.25f;
 }
 
 void Application::initTerrainPatches() {
@@ -779,7 +781,8 @@ void Application::generateHeightmap() {
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComputeLayout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
 		
-		HeightmapPushConstants pc = m_HeightmapPC;
+		HeightmapPushConstants pc{};
+		pc.updateSize = glm::ivec2(m_HeightmapSize);
 		
 		vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pc);
 		
@@ -791,17 +794,17 @@ void Application::generateHeightmap() {
 	});
 }
 
-void Application::updateHeightmap() {
+void Application::updateHeightmap(bool regenerate) {
 	glm::ivec2 pos;
 	pos.x = std::round(m_Camera.position.x);
 	pos.y = std::round(m_Camera.position.z);
 	
 	glm::ivec2 delta = (m_HeightmapPC.offset / glm::ivec2(m_CoordinateMultiplier)) - pos;
-	if(std::abs(delta.x) <= 4 && std::abs(delta.y) <= 4) return;
+	if((std::abs(delta.x) == 0 && std::abs(delta.y) == 0) && !regenerate) return;
 		
 	m_MapOffset = pos * glm::ivec2(m_CoordinateMultiplier);
 	m_HeightmapPC.offset = m_MapOffset;
-	
+	if(regenerate) delta = {m_HeightmapSize, m_HeightmapSize};
 	immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 		
@@ -811,46 +814,48 @@ void Application::updateHeightmap() {
 		HeightmapPushConstants pc = m_HeightmapPC;
 		
 		glm::ivec2 dirtyMin;
-		dirtyMin.x = (pos.x * m_CoordinateMultiplier) % pc.textureSize.x;
-		dirtyMin.y = (pos.y * m_CoordinateMultiplier) % pc.textureSize.y;
-		if(dirtyMin.x < 0) dirtyMin.x += pc.textureSize.x;
-		if(dirtyMin.y < 0) dirtyMin.y += pc.textureSize.y;
+		dirtyMin.x = (pos.x * m_CoordinateMultiplier) % m_HeightmapSize;
+		dirtyMin.y = (pos.y * m_CoordinateMultiplier) % m_HeightmapSize;
+		if(dirtyMin.x < 0) dirtyMin.x += m_HeightmapSize;
+		if(dirtyMin.y < 0) dirtyMin.y += m_HeightmapSize;
 		
 		pc.dirtyMin = dirtyMin;
 		if(delta.x != 0) {
-			uint32_t dispatchWidth = std::min((uint32_t)pc.textureSize.x,(uint32_t)std::abs(delta.x) * m_CoordinateMultiplier);
-			uint32_t dispatchHeight  = pc.textureSize.y;
+			uint32_t dispatchWidth = std::min((uint32_t)m_HeightmapSize,(uint32_t)std::abs(delta.x) * m_CoordinateMultiplier);
+			uint32_t dispatchHeight  = m_HeightmapSize;
 			
 			HeightmapPushConstants pcX = pc;
 			
 			if(delta.x < 0) {
-				uint32_t offsetX = pc.textureSize.x - dispatchWidth;
+				uint32_t offsetX = m_HeightmapSize - dispatchWidth;
 				pcX.offset.x += offsetX;
-				pcX.dirtyMin.x = (pcX.dirtyMin.x + offsetX) % pc.textureSize.x;
+				pcX.dirtyMin.x = (pcX.dirtyMin.x + offsetX) % m_HeightmapSize;
 			}
+			pcX.updateSize.x = dispatchWidth;
+			pcX.updateSize.y = dispatchHeight;
 			
 			vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pcX);
-			uint32_t groupNX = std::ceil(dispatchWidth / 16.f);
-			uint32_t groupNY = std::ceil(dispatchHeight / 16.f);
-			
+			uint32_t groupNX = (dispatchWidth + 15) / 16;
+			uint32_t groupNY = (dispatchHeight + 15) / 16;
 			vkCmdDispatch(cmd, groupNX, groupNY, 1);
 		}
 		if(delta.y != 0) {
 			HeightmapPushConstants pcY = pc;
 			
-			uint32_t dispatchWidth  = pc.textureSize.x;
-			uint32_t dispatchHeight = std::min((uint32_t)pc.textureSize.y,(uint32_t)std::abs(delta.y) * m_CoordinateMultiplier);
+			uint32_t dispatchWidth  = m_HeightmapSize;
+			uint32_t dispatchHeight = std::min((uint32_t)m_HeightmapSize,(uint32_t)std::abs(delta.y) * m_CoordinateMultiplier);
 			
 			if(delta.y < 0) {
-				uint32_t offsetY = pc.textureSize.y - dispatchHeight;
+				uint32_t offsetY = m_HeightmapSize - dispatchHeight;
 				pcY.offset.y += offsetY;
-				pcY.dirtyMin.y = (pcY.dirtyMin.y + offsetY) % pc.textureSize.y;
+				pcY.dirtyMin.y = (pcY.dirtyMin.y + offsetY) % m_HeightmapSize;
 			}
+			pcY.updateSize.x = dispatchWidth;
+			pcY.updateSize.y = dispatchHeight;
 			
 			vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pcY);
-			uint32_t groupNX = std::ceil(dispatchWidth / 16.f);
-			uint32_t groupNY = std::ceil(dispatchHeight / 16.f);
-			
+			uint32_t groupNX = (dispatchWidth + 15) / 16;
+			uint32_t groupNY = (dispatchHeight + 15) / 16;
 			vkCmdDispatch(cmd, groupNX, groupNY, 1);
 		}
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -888,7 +893,7 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	glm::mat4 view = m_Camera.getViewMatrix({m_MapOffset.x / static_cast<float>(m_CoordinateMultiplier), 0.0, m_MapOffset.y / static_cast<float>(m_CoordinateMultiplier)});
 	glm::mat4 projection = glm::perspective(glm::radians(70.f), (float)m_DrawExtent.width / (float)m_DrawExtent.height, 10000.f, 0.1f); // reversing the depth buffer apparently increases precision
 	projection[1][1] *= -1; // vulkan had to go out of its way to break the standard and make the Y axis reversed ):
-	// ---
+	/* // ---
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MainPipeline);
 	
 	GPUDrawPushConstants pushConstants;
@@ -900,7 +905,7 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	vkCmdBindIndexBuffer(cmd, testMeshes[meshIndex]->meshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 	
 	vkCmdDrawIndexed(cmd, testMeshes[meshIndex]->surfaces[0].count, 1, testMeshes[meshIndex]->surfaces[0].startIndex, 0, 0);
-	// ---
+	*/ // ---
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainPipeline);
 	
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainLayout, 0, 1, &m_TerrainDescriptors, 0, nullptr);
@@ -951,17 +956,48 @@ void Application::run() {
 				float var;
 						
 				ImGui::SliderInt("Model index", &meshIndex, 0, 2);
-				if(ImGui::SliderFloat("Render scale", &m_RenderScale, 0.1f, 2.f)) {m_Resized = true;}
+				if(ImGui::SliderFloat("Render scale", &m_RenderScale, 0.1f, 4.f)) {m_Resized = true;}
 				ImGui::SliderFloat("Depth factor", &m_TerrainPC.factor, 0.0f, static_cast<float>(m_WorldSize) * 0.5);
 				ImGui::SliderFloat("Tessellation Factor", &m_TerrainPC.tessellationFactor, 0.0f, 1.f);
 			}
 			ImGui::End();
 
 			if (ImGui::Begin("heightmap")) {
+				if(ImGui::Button("Regenerate terrain")) updateHeightmap(true);
+				
+				if(ImGui::SliderFloat("Erosion scale", &m_HeightmapPC.settings[0], 0.01f, 0.3f)) {updateHeightmap(true);}
+				if(ImGui::SliderFloat("Erosion strength", &m_HeightmapPC.settings[1], 0.0f, 0.22f)) {updateHeightmap(true);}
+				if(ImGui::SliderFloat("Erosion gully weight", &m_HeightmapPC.settings[2], 0.0f, 1.0f)) {updateHeightmap(true);}
+				if(ImGui::SliderFloat("Erosion detail", &m_HeightmapPC.settings[3], 0.0f, 2.5f)) {updateHeightmap(true);}
+				
+				if(ImGui::SliderFloat("Ridge rounding", &m_HeightmapPC.settings[4], 0.0f, 0.3f)) {updateHeightmap(true);}
+				if(ImGui::SliderFloat("Crease rounding", &m_HeightmapPC.settings[5], 0.0f, 0.3f)) {updateHeightmap(true);}
+				if(ImGui::SliderFloat("Erosion cell scale", &m_HeightmapPC.settings[6], 0.0f, 1.5f)) {updateHeightmap(true);}
+				if(ImGui::SliderFloat("Erosion normalization", &m_HeightmapPC.settings[7], 0.0f, 1.f)) {updateHeightmap(true);}
+				
+				int erosionoctaves = static_cast<int>(m_HeightmapPC.settings[8]);
+				if(ImGui::SliderInt("Erosion octaves", &erosionoctaves, 0, 10)) {
+					m_HeightmapPC.settings[8] = static_cast<float>(erosionoctaves);
+					updateHeightmap(true);
+				}
+				if(ImGui::SliderFloat("Erosion lacunarity", &m_HeightmapPC.settings[9], 1.0f, 4.f)) {updateHeightmap(true);}
+				if(ImGui::SliderFloat("Erosion gain", &m_HeightmapPC.settings[10], 0.0f, 1.f)) {updateHeightmap(true);}
+				int heightOctaves = static_cast<int>(m_HeightmapPC.settings[11]);
+				if(ImGui::SliderInt("Height octaves", &heightOctaves, 0, 10)) {
+					m_HeightmapPC.settings[11] = static_cast<float>(heightOctaves);
+					updateHeightmap(true);
+				}
+				
+				if(ImGui::SliderFloat("Height frequency", &m_HeightmapPC.settings[12], 0.0f, 8.0f)) {updateHeightmap(true);}
+				if(ImGui::SliderFloat("Height amplitude", &m_HeightmapPC.settings[13], 0.0f, 2.0f)) {updateHeightmap(true);}
+				if(ImGui::SliderFloat("Height lacunarity", &m_HeightmapPC.settings[14], 1.0f, 4.0f)) {updateHeightmap(true);}
+				if(ImGui::SliderFloat("Height gain", &m_HeightmapPC.settings[15], 0.0f, 1.0f)) {updateHeightmap(true);}
+				
 				ImVec2 panelSize = ImGui::GetContentRegionAvail();
 				panelSize.x = std::min(std::min(panelSize.x, static_cast<float>(m_HeightmapSize)), panelSize.y);
 				panelSize.y = panelSize.x;
 				ImGui::Image((ImTextureID)m_HeightmapImGuiDescriptors, panelSize);
+				
 			}
 			
 			ImGui::End();

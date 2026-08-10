@@ -31,10 +31,10 @@
 
 float test = 0.5f;
 struct HeightmapPushConstants {
-	glm::ivec2 textureSize;
 	glm::ivec2 offset;
 	glm::ivec2 dirtyMin;
-	float test;
+	glm::ivec2 updateSize;
+	float settings[16] = {0.15f, 0.1f, 0.5f, 1.5f, 0.01f, 0.01f, 0.7f, 0.5f, 7.f, 2.f, 0.5f, 3.f, 3.f, 1.f, 2.f, 0.1f};
 };
 
 struct TessellationPushConstants {
@@ -42,7 +42,7 @@ struct TessellationPushConstants {
 	glm::mat4 view;
 	glm::ivec2 worldoffset;
 	glm::ivec2 screen;
-	float tessellationFactor = 0.75f;
+	float tessellationFactor = 1.f;
 	float factor = 1.0f;
 };
 
@@ -188,7 +188,7 @@ private:
 	void drawGeometry(VkCommandBuffer cmd);
 	
 	void generateHeightmap();
-	void updateHeightmap();
+	void updateHeightmap(bool regenerate = false);
 
 	// variables	
 	uint32_t m_Width, m_Height;
@@ -224,7 +224,7 @@ private:
 	int meshIndex = 0;
 	
 	const int m_WorldSize = 256;
-	const int m_HeightmapSize = 8192;
+	const int m_HeightmapSize = 1024;
 	const int m_CoordinateMultiplier = m_HeightmapSize / m_WorldSize;
 };
 #endif

@@ -19,36 +19,31 @@ layout(push_constant) uniform constants {
 	float factor;
 } pc;
 
-float tessFactor(vec4 p0, vec4 p1) { // thank you sacha willems my goat
+float tessFactor(vec4 p0, vec4 p1) { 
 	vec4 middle = 0.5 * (p0 + p1);
-	float radius = distance(p0, p1) / 2.0;
+	float radius = distance(p0, p1) / 1.0;
 	
-	// Extract camera position and flatten the forward vector to the horizon
-	mat4 invView = inverse(pc.view);
-	vec3 camPos = invView[3].xyz;
-	vec3 f = normalize(vec3(pc.view[0][2], 0.0, pc.view[2][2]));
-	vec3 r = normalize(cross(vec3(0.0, 1.0, 0.0), f));
-	vec3 u = cross(f, r);
-	
-	mat4 horizonView = mat4(
-		vec4(r.x, u.x, f.x, 0.0),
-		vec4(r.y, u.y, f.y, 0.0),
-		vec4(r.z, u.z, f.z, 0.0),
-		vec4(-dot(r, camPos), -dot(u, camPos), -dot(f, camPos), 1.0)
-	);
+	vec4 viewMiddle = pc.view * middle;
 
-	vec4 v0 = horizonView * middle;
+	float dist = length(viewMiddle.xyz);
+
+	float zSign = sign(viewMiddle.z) == 0.0 ? 1.0 : sign(viewMiddle.z);
+	vec4 virtualPos = vec4(0.0, 0.0, zSign * dist, 1.0);
 	
-	vec4 clip0 = (pc.proj * (v0 - vec4(radius, vec3(0.0))));
-	vec4 clip1 = (pc.proj * (v0 + vec4(radius, vec3(0.0))));
+	vec4 clip0 = pc.proj * (virtualPos - vec4(radius, 0.0, 0.0, 0.0));
+	vec4 clip1 = pc.proj * (virtualPos + vec4(radius, 0.0, 0.0, 0.0));
 	
 	clip0 /= clip0.w;
 	clip1 /= clip1.w;
 	
-	clip0.xy *= pc.screen;
-	clip1.xy *= pc.screen;
+	//clip0.xy *= vec2(pc.screen);
+	//clip1.xy *= vec2(pc.screen);
+	clip0.xy *= vec2(1920, 1080);
+	clip1.xy *= vec2(1920, 1080);
 	
-	return clamp(distance(clip0, clip1) / 20.f * pc.tessellationFactor, 1.0, 64.0);
+	float pixelSize = distance(clip0.xy, clip1.xy);
+	
+	return clamp((pixelSize / 20.0) * pc.tessellationFactor, 1.0, 64.0);
 }
 
 void main() {
