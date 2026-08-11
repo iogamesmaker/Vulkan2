@@ -13,7 +13,7 @@ find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 find_package(fastgltf CONFIG REQUIRED)
 find_package(vk-bootstrap CONFIG REQUIRED)
 find_package(Stb REQUIRED)
-find_package(imgui REQUIRED)
+find_package(imgui CONFIG REQUIRED)
 add_library(vkguide_shared STATIC # copied from vkguide.dev
     src/base/vk_types.h
     src/base/vk_initializers.cpp
@@ -63,6 +63,7 @@ add_executable(${PROJECT_NAME}
     src/main.cpp
 	src/loader.cpp
     src/application.cpp	
+	src/textures.cpp
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE vkguide_shared)

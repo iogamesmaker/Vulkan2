@@ -5,11 +5,11 @@ layout (quads, equal_spacing, cw) in;
 
 layout(location = 0) in vec3 inPosition[];
 layout(location = 1) in vec2 inUV[];
-layout(location = 5) in int inLOD[];
+layout(location = 5) flat in int inLOD[];
 
 layout(location = 0) out vec3 outPosition;
 layout(location = 1) out vec2 outUV;
-layout(location = 5) out int outLOD;
+layout(location = 5) flat out int outLOD;
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
 
@@ -38,7 +38,7 @@ void main() {
 	
 	vec2 readCoord = outUV + (pc.offset * (1.0 / textureSize(heightmap, 0)));
 
-	pos.y += textureLod(heightmap, readCoord, 2).r * pc.factor;
+	pos.y += texture(heightmap, readCoord).r * pc.factor;
 	pos.y -= pc.factor * 0.5;
 	
 	outPosition = pos.xyz;

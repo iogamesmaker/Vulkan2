@@ -2,11 +2,11 @@
 #include "vk_initializers.h"
 
 //> descriptor_bind
-void DescriptorLayoutBuilder::add_binding(uint32_t binding, VkDescriptorType type)
+void DescriptorLayoutBuilder::add_binding(uint32_t binding, VkDescriptorType type, uint32_t count)
 {
     VkDescriptorSetLayoutBinding newbind {};
     newbind.binding = binding;
-    newbind.descriptorCount = 1;
+    newbind.descriptorCount = count;
     newbind.descriptorType = type;
 
     bindings.push_back(newbind);
@@ -21,11 +21,22 @@ void DescriptorLayoutBuilder::clear()
 //> descriptor_layout
 VkDescriptorSetLayout DescriptorLayoutBuilder::build(VkDevice device, VkShaderStageFlags shaderStages, void* pNext, VkDescriptorSetLayoutCreateFlags flags)
 {
+	/*
+	std::vector<VkDescriptorBindingFlags> bindingFlags(bindings.size(), VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT);
+	
+	VkDescriptorSetLayoutBindingFlagsCreateInfo flagsCI = {};
+	
+	flagsCI.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+	flagsCI.pNext = pNext;
+	flagsCI.bindingCount = (uint32_t)bindingFlags.size();
+	flagsCI.pBindingFlags = bindingFlags.data();*/
+	
     for (auto& b : bindings) {
         b.stageFlags |= shaderStages;
     }
 
     VkDescriptorSetLayoutCreateInfo info = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    //info.pNext = &flagsCI;
     info.pNext = pNext;
 
     info.pBindings = bindings.data();

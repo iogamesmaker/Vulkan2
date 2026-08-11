@@ -9,7 +9,7 @@ layout ( push_constant ) uniform constants {
     ivec2 offset;
 	ivec2 dirtyMin;
 	ivec2 updateSize;
-	float settings[16];
+	float settings[11];
 } pc;
 
 #define TAU 6.28318530717959
@@ -205,11 +205,11 @@ float GetHeight(vec2 p) {
     vec2 TERRAIN_HEIGHT_OFFSET = vec2(0.0, 0.0);
 
     // -- BASE NOISE SETTINGS --
-    float HEIGHT_FREQUENCY = pc.settings[12]; // 3.0
-    float HEIGHT_AMP = pc.settings[13]; // 1.0
-    int HEIGHT_OCTAVES = int(pc.settings[11]); // 3
-    float HEIGHT_LACUNARITY = pc.settings[14]; // 2.0
-    float HEIGHT_GAIN = pc.settings[15]; // 0.1
+    float HEIGHT_FREQUENCY = 3.0; // 3.0
+    float HEIGHT_AMP = 1.0; // 1.0
+    int HEIGHT_OCTAVES = 3; // 3
+    float HEIGHT_LACUNARITY = 2.0; // 2.0
+    float HEIGHT_GAIN = 0.1; // 0.1
     float heightFunctionScale = 1.0;
     
     // Base coordinate
@@ -249,7 +249,7 @@ void main() {
     //if(texelCoord.x < size.x && texelCoord.y < size.y) {
 		vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset);
 				
-        vec2 p = vec2(worldPos) / size;
+        vec2 p = vec2(worldPos * 4.0) / size;
         
         float height = GetHeight(p);
 		

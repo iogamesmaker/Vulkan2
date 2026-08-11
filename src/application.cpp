@@ -95,9 +95,16 @@ void Application::initVulkan() {
 	features12.bufferDeviceAddress = true;
 	features12.descriptorIndexing = true;
 	
+	features12.shaderSampledImageArrayNonUniformIndexing = true;
+	features12.descriptorBindingPartiallyBound = true;
+	features12.runtimeDescriptorArray = true;
+	features12.descriptorBindingStorageImageUpdateAfterBind = true;
+	features12.descriptorBindingSampledImageUpdateAfterBind = true;
+	
 	// Base features
 	VkPhysicalDeviceFeatures features10 {};
 	features10.tessellationShader = VK_TRUE;
+	features10.samplerAnisotropy = VK_TRUE;
 	
 	
 	// GPU selection
@@ -135,8 +142,8 @@ void Application::initVulkan() {
 	});
 }
 
-void Application::initSwapchain() {
-	createSwapchain(m_Width, m_Height);
+void Application::initSwapchain(bool vsync) {
+	createSwapchain(m_Width, m_Height, vsync);
 	
 	VkExtent3D drawImageExtent = { m_Width, m_Height, 1 };
 	
@@ -235,12 +242,17 @@ void Application::initDescriptors() {
 	samplerCI.magFilter = VK_FILTER_LINEAR;
 	samplerCI.minFilter = VK_FILTER_LINEAR;
 	
-	vkCreateSampler(m_Device, &samplerCI, nullptr, &m_Sampler);
-	
-	samplerCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-	samplerCI.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 	
 	vkCreateSampler(m_Device, &samplerCI, nullptr, &m_HeightmapSampler);
+	
+	samplerCI.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	samplerCI.minLod = 0.0f;
+	samplerCI.maxLod = 10.0f;
+	samplerCI.mipLodBias = -0.5f;
+	//samplerCI.maxAnisotropy = 16.f;
+	//samplerCI.anisotropyEnable = VK_TRUE; // very heavy on my iris xe for some reason
+	
+	vkCreateSampler(m_Device, &samplerCI, nullptr, &m_Sampler);
 		
 	m_DeletionQueue.push([&]() {
 		vkDestroySampler(m_Device, m_Sampler, nullptr);
@@ -416,16 +428,22 @@ void Application::initMainPipeline() {
 	});
 }
 void Application::initTessellationPipeline() {
+	const uint32_t MAX_TEXTURES = 2;
+	
 	CompiledShader   vertexShader = loadShader("src/shaders/bin/terrain.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
 	CompiledShader fragmentShader = loadShader("src/shaders/bin/terrain.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
 	CompiledShader     tescShader = loadShader("src/shaders/bin/terrain.tesc.spv", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
 	CompiledShader     teseShader = loadShader("src/shaders/bin/terrain.tese.spv", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
 	
 	DescriptorLayoutBuilder builder;
-	builder.add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+	builder.add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1); // regular heightmap
+	
+	builder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_TEXTURES); // albedo
+	builder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_TEXTURES); // normal
+	builder.add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_TEXTURES); // pom
+	
 	m_TerrainDescriptorLayout = builder.build(m_Device, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 	m_TerrainDescriptors = g_DescriptorAllocator.allocate(m_Device, m_TerrainDescriptorLayout);
-
 
 	VkPushConstantRange bufferRange{};
 	bufferRange.offset = 0;
@@ -512,7 +530,9 @@ void Application::initTessellationPipeline() {
 void Application::initPipelines() {
 	initComputePipelines();
 	initTessellationPipeline();
-	initMainPipeline();
+	//initMainPipeline();
+	
+	//initTextures();
 }
 
 void Application::initImGui() {
@@ -630,13 +650,62 @@ GPUMeshBuffers Application::uploadMesh(std::span<uint32_t> indices, std::span<Ve
 }
 
 void Application::initDefaultData() {
-	testMeshes = loadGltfMeshes(this, "assets\\basicmesh.glb").value();
+	m_TextureLoader.pass(m_Device, m_Allocator);
+	
+	//testMeshes = loadGltfMeshes(this, "assets\\meshes\\basicmesh.glb").value();
+	
+	
+	//m_AlbedoMaps.push_back(m_TextureLoader.load("assets\\ground1.jpg"       , this));
+	//m_NormalMaps.push_back(m_TextureLoader.load("assets\\ground1_normal.jpg", this));
+	//m_HeightMaps.push_back(m_TextureLoader.load("assets\\ground1_pom.jpg"   , this));
+	
+	m_AlbedoMaps.push_back(m_TextureLoader.load("assets\\ground1.jpg"       , this));
+	m_NormalMaps.push_back(m_TextureLoader.load("assets\\ground1_normal.jpg", this));
+	m_HeightMaps.push_back(m_TextureLoader.load("assets\\ground1_pom.jpg"   , this));
+	
+	int textureNumber = m_AlbedoMaps.size();
+	std::vector<VkDescriptorImageInfo> albedoInfo(textureNumber);
+	std::vector<VkDescriptorImageInfo> normalInfo(textureNumber);
+	std::vector<VkDescriptorImageInfo>    pomInfo(textureNumber);
+	
+	for(int i = 0; i < textureNumber; i++) {
+		albedoInfo[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		albedoInfo[i].imageView = m_AlbedoMaps[i].imageView;
+		albedoInfo[i].sampler = m_Sampler;
+		
+		normalInfo[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		normalInfo[i].imageView = m_NormalMaps[i].imageView;
+		normalInfo[i].sampler = m_Sampler;
+		
+		   pomInfo[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		   pomInfo[i].imageView = m_HeightMaps[i].imageView;
+		   pomInfo[i].sampler = m_Sampler;
+	}
+	
+	VkWriteDescriptorSet writes[3] = {};
+	
+	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[0].dstBinding = 1;
+	writes[0].dstSet = m_TerrainDescriptors;
+	writes[0].descriptorCount = textureNumber;
+	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	
+	writes[0].pImageInfo = albedoInfo.data();
+	
+	writes[1] = writes[0];
+	writes[1].dstBinding = 2;
+	writes[1].pImageInfo = normalInfo.data();
+	
+	writes[2] = writes[0];
+	writes[2].dstBinding = 3;
+	writes[2].pImageInfo = pomInfo.data();
+	
+	vkUpdateDescriptorSets(m_Device, 3, writes, 0, nullptr);
 	
 	generateHeightmap();
 	
-	
-	m_TerrainPC.factor = m_WorldSize * 0.5f;
-	m_Camera.position.y = m_WorldSize * 0.25f;
+	m_TerrainPC.factor = m_WorldSize * 0.175f;
+	m_Camera.position.y = m_WorldSize * 0.175f * 0.5f;
 }
 
 void Application::initTerrainPatches() {
@@ -717,7 +786,7 @@ void Application::drawImGui(VkCommandBuffer cmd, VkImageView targetImageView) {
 	vkCmdEndRendering(cmd);
 }
 
-void Application::createSwapchain(uint32_t width, uint32_t height) {
+void Application::createSwapchain(uint32_t width, uint32_t height, bool vsync) {
 	vkb::SwapchainBuilder swapchainBuilder{ m_GPU, m_Device, m_Surface };
 	
 	m_SwapchainFormat = VK_FORMAT_B8G8R8A8_UNORM;
@@ -725,7 +794,7 @@ void Application::createSwapchain(uint32_t width, uint32_t height) {
 	vkb::Swapchain vkbSwapchain = swapchainBuilder
 								  //.use_default_format_selection()
 								  .set_desired_format( VkSurfaceFormatKHR { .format = m_SwapchainFormat, .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
-								  .set_desired_present_mode(VK_PRESENT_MODE_FIFO_KHR) //vsync
+								  .set_desired_present_mode(vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR ) // fifo is vsync
 								  .set_desired_extent(width, height)
 								  .add_image_usage_flags(VK_IMAGE_USAGE_TRANSFER_DST_BIT)
 								  .build()
@@ -737,7 +806,7 @@ void Application::createSwapchain(uint32_t width, uint32_t height) {
 	m_SwapchainImageViews = vkbSwapchain.get_image_views().value();
 }
 
-void Application::resizeSwapchain() {
+void Application::resizeSwapchain(bool vsync) {
 	vkDeviceWaitIdle(m_Device);
 	destroySwapchain();
 	
@@ -747,7 +816,7 @@ void Application::resizeSwapchain() {
 	m_Height = h * m_RenderScale;
 	m_TerrainPC.screen = {m_Width, m_Height};
 	
-	initSwapchain();
+	initSwapchain(vsync);
 	
 	m_Resized = false;
 }
@@ -794,13 +863,15 @@ void Application::generateHeightmap() {
 	});
 }
 
-void Application::updateHeightmap(bool regenerate) {
+void Application::updateHeightmap(bool regenerate) { // todo remove the minimum logic and instead snap the camera
 	glm::ivec2 pos;
 	pos.x = std::round(m_Camera.position.x);
 	pos.y = std::round(m_Camera.position.z);
 	
 	glm::ivec2 delta = (m_HeightmapPC.offset / glm::ivec2(m_CoordinateMultiplier)) - pos;
-	if((std::abs(delta.x) == 0 && std::abs(delta.y) == 0) && !regenerate) return;
+	//int minimum = std::floor(32.f / m_CoordinateMultiplier);
+	int minimum = m_WorldSize / 64; // 64 is the "rez" used to generate the patchs
+	if((std::abs(delta.x) < minimum && std::abs(delta.y) < minimum) && !regenerate) return;
 		
 	m_MapOffset = pos * glm::ivec2(m_CoordinateMultiplier);
 	m_HeightmapPC.offset = m_MapOffset;
@@ -891,7 +962,7 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 	// calculate matrices
 	glm::mat4 view = m_Camera.getViewMatrix({m_MapOffset.x / static_cast<float>(m_CoordinateMultiplier), 0.0, m_MapOffset.y / static_cast<float>(m_CoordinateMultiplier)});
-	glm::mat4 projection = glm::perspective(glm::radians(70.f), (float)m_DrawExtent.width / (float)m_DrawExtent.height, 10000.f, 0.1f); // reversing the depth buffer apparently increases precision
+	glm::mat4 projection = glm::perspective(glm::radians(70.f), (float)m_DrawExtent.width / (float)m_DrawExtent.height, static_cast<float>(m_WorldSize * 256), 0.1f); // reversing the depth buffer apparently increases precision
 	projection[1][1] *= -1; // vulkan had to go out of its way to break the standard and make the Y axis reversed ):
 	/* // ---
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MainPipeline);
@@ -927,13 +998,17 @@ void Application::run() {
 	bool quit = false;
 	
 	SDL_Event event;
-	
-	Uint64 lastTime = SDL_GetTicks();
+	Uint64 frequency = SDL_GetPerformanceFrequency();
+	Uint64 lastTime = SDL_GetPerformanceCounter();
 	
 	while(!quit) {
-		Uint64 now = SDL_GetTicks();
-		float deltatime = (now - lastTime) / 1000.0f;
+		Uint64 now = SDL_GetPerformanceCounter();
+		float deltatime = static_cast<float>(now - lastTime) / static_cast<float>(frequency);
 		lastTime = now;
+		float deltatimeMs = deltatime * 1000.0f;
+		
+		m_Frametimes[m_FrameOffset] = deltatimeMs/* > 0 ? 1000.0f / deltatimeMs : 0.0f*/;
+		m_FrameOffset = (m_FrameOffset + 1) % m_FrameHistorySize;
 		
 		while(SDL_PollEvent(&event)) {
 			if(event.type == SDL_EVENT_QUIT) quit = true;
@@ -952,18 +1027,37 @@ void Application::run() {
 			//some imgui UI
 			ImGui::NewFrame();
 			
+			if (ImGui::Begin("performance")) {
+				char text[32]; // imgui hates strings
+				snprintf(text, sizeof(text), "%.2fms (%.1f FPS)", deltatimeMs, deltatimeMs > 0 ? 1000.0f / deltatimeMs : 0.0f);
+				
+				ImGui::PlotLines(
+					"##",
+					m_Frametimes,
+					m_FrameHistorySize,
+					m_FrameOffset,
+					text,
+					0.0f,
+					33.0f,
+					ImVec2(0, 120)
+				);
+			}
+			ImGui::End();
+			
 			if (ImGui::Begin("settings")) {
 				float var;
+				
+				if(ImGui::Checkbox("vsync", &m_Vsync)) m_Resized = true;
 						
 				ImGui::SliderInt("Model index", &meshIndex, 0, 2);
 				if(ImGui::SliderFloat("Render scale", &m_RenderScale, 0.1f, 4.f)) {m_Resized = true;}
-				ImGui::SliderFloat("Depth factor", &m_TerrainPC.factor, 0.0f, static_cast<float>(m_WorldSize) * 0.5);
-				ImGui::SliderFloat("Tessellation Factor", &m_TerrainPC.tessellationFactor, 0.0f, 1.f);
+				ImGui::SliderFloat("Depth factor", &m_TerrainPC.factor, 0.0f, static_cast<float>(m_WorldSize) * 0.175);
+				ImGui::SliderFloat("Tessellation Factor", &m_TerrainPC.tessellationFactor, 0.0f, 10.f);
 			}
 			ImGui::End();
 
-			if (ImGui::Begin("heightmap")) {
-				if(ImGui::Button("Regenerate terrain")) updateHeightmap(true);
+			if (ImGui::Begin("terrain")) {
+				//if(ImGui::Button("Regenerate terrain")) updateHeightmap(true);
 				
 				if(ImGui::SliderFloat("Erosion scale", &m_HeightmapPC.settings[0], 0.01f, 0.3f)) {updateHeightmap(true);}
 				if(ImGui::SliderFloat("Erosion strength", &m_HeightmapPC.settings[1], 0.0f, 0.22f)) {updateHeightmap(true);}
@@ -982,17 +1076,7 @@ void Application::run() {
 				}
 				if(ImGui::SliderFloat("Erosion lacunarity", &m_HeightmapPC.settings[9], 1.0f, 4.f)) {updateHeightmap(true);}
 				if(ImGui::SliderFloat("Erosion gain", &m_HeightmapPC.settings[10], 0.0f, 1.f)) {updateHeightmap(true);}
-				int heightOctaves = static_cast<int>(m_HeightmapPC.settings[11]);
-				if(ImGui::SliderInt("Height octaves", &heightOctaves, 0, 10)) {
-					m_HeightmapPC.settings[11] = static_cast<float>(heightOctaves);
-					updateHeightmap(true);
-				}
-				
-				if(ImGui::SliderFloat("Height frequency", &m_HeightmapPC.settings[12], 0.0f, 8.0f)) {updateHeightmap(true);}
-				if(ImGui::SliderFloat("Height amplitude", &m_HeightmapPC.settings[13], 0.0f, 2.0f)) {updateHeightmap(true);}
-				if(ImGui::SliderFloat("Height lacunarity", &m_HeightmapPC.settings[14], 1.0f, 4.0f)) {updateHeightmap(true);}
-				if(ImGui::SliderFloat("Height gain", &m_HeightmapPC.settings[15], 0.0f, 1.0f)) {updateHeightmap(true);}
-				
+
 				ImVec2 panelSize = ImGui::GetContentRegionAvail();
 				panelSize.x = std::min(std::min(panelSize.x, static_cast<float>(m_HeightmapSize)), panelSize.y);
 				panelSize.y = panelSize.x;
@@ -1010,7 +1094,7 @@ void Application::run() {
 }
 
 void Application::draw() {
-	if(m_Resized) resizeSwapchain();
+	if(m_Resized) resizeSwapchain(m_Vsync);
 	
 	// Wait for the GPU to finish, reset the fence
 	VK_CHECK(vkWaitForFences(m_Device, 1, &getCurrentFrame().renderFence, true, 1000000000));

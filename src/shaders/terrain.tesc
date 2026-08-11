@@ -8,7 +8,7 @@ layout(location = 1) in vec2 inUV[];
 
 layout(location = 0) out vec3 outPosition[];
 layout(location = 1) out vec2 outUV[];
-layout(location = 5) out int outLOD[];
+layout(location = 5) flat out int outLOD[];
 
 layout(push_constant) uniform constants {
 	mat4 proj;
@@ -19,31 +19,15 @@ layout(push_constant) uniform constants {
 	float factor;
 } pc;
 
-float tessFactor(vec4 p0, vec4 p1) { 
-	vec4 middle = 0.5 * (p0 + p1);
-	float radius = distance(p0, p1) / 1.0;
-	
-	vec4 viewMiddle = pc.view * middle;
-
-	float dist = length(viewMiddle.xyz);
-
-	float zSign = sign(viewMiddle.z) == 0.0 ? 1.0 : sign(viewMiddle.z);
-	vec4 virtualPos = vec4(0.0, 0.0, zSign * dist, 1.0);
-	
-	vec4 clip0 = pc.proj * (virtualPos - vec4(radius, 0.0, 0.0, 0.0));
-	vec4 clip1 = pc.proj * (virtualPos + vec4(radius, 0.0, 0.0, 0.0));
-	
-	clip0 /= clip0.w;
-	clip1 /= clip1.w;
-	
-	//clip0.xy *= vec2(pc.screen);
-	//clip1.xy *= vec2(pc.screen);
-	clip0.xy *= vec2(1920, 1080);
-	clip1.xy *= vec2(1920, 1080);
-	
-	float pixelSize = distance(clip0.xy, clip1.xy);
-	
-	return clamp((pixelSize / 20.0) * pc.tessellationFactor, 1.0, 64.0);
+float tessFactor(vec4 p0, vec4 p1) {
+    vec3 camPos = -pc.view[3].xyz * mat3(pc.view);
+    float dist = distance(0.5 * (p0.xz + p1.xz), camPos.xz);
+    
+    float smoothDist = (dist / 20.f);
+    
+    float factor = (distance(p0.xyz, p1.xyz) / smoothDist) * pc.tessellationFactor;
+    
+    return clamp(factor, 1.0, 64.0);
 }
 
 void main() {

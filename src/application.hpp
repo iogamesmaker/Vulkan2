@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 #include <stdexcept>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <span>
 
 #include "utils.hpp"
 
@@ -26,15 +30,15 @@
 #include <imgui_impl_vulkan.h>
 
 #include "loader.hpp"
+#include "textures.hpp"
 
 // Pretty much all of the initialisation code is based on / taken from vkguide.dev.
 
-float test = 0.5f;
 struct HeightmapPushConstants {
 	glm::ivec2 offset;
 	glm::ivec2 dirtyMin;
 	glm::ivec2 updateSize;
-	float settings[16] = {0.15f, 0.1f, 0.5f, 1.5f, 0.01f, 0.01f, 0.7f, 0.5f, 7.f, 2.f, 0.5f, 3.f, 3.f, 1.f, 2.f, 0.1f};
+	float settings[11] = {0.15f, 0.1f, 0.5f, 1.5f, 0.01f, 0.01f, 0.7f, 0.5f, 10.f, 2.f, 0.5f};
 };
 
 struct TessellationPushConstants {
@@ -42,7 +46,7 @@ struct TessellationPushConstants {
 	glm::mat4 view;
 	glm::ivec2 worldoffset;
 	glm::ivec2 screen;
-	float tessellationFactor = 1.f;
+	float tessellationFactor = 10.f;
 	float factor = 1.0f;
 };
 
@@ -161,7 +165,7 @@ private:
 	void initWindow();
 
 	void initVulkan();
-	void initSwapchain();
+	void initSwapchain(bool vsync = false);
 	void initCommands();
 	void initSyncStructures();
 	
@@ -180,8 +184,8 @@ private:
 	
 	void drawImGui(VkCommandBuffer cmd, VkImageView targetImageView);
 	
-	void createSwapchain(uint32_t width, uint32_t height);
-	void resizeSwapchain();
+	void createSwapchain(uint32_t width, uint32_t height, bool vsync = true);
+	void resizeSwapchain(bool vsync = true);
 	void destroySwapchain();
 	
 	void clearImage(VkCommandBuffer cmd);
@@ -190,7 +194,7 @@ private:
 	void generateHeightmap();
 	void updateHeightmap(bool regenerate = false);
 
-	// variables	
+	// window management things	
 	uint32_t m_Width, m_Height;
 	
 	float m_RenderScale = 1.f;
@@ -199,11 +203,22 @@ private:
 	bool m_Mouselock = false;
 	SDL_Window* m_pWindow;
 	
+	bool m_Vsync = true;
+	// imgui frametime things
+	static constexpr int m_FrameHistorySize = 180;
+	inline static float m_Frametimes[m_FrameHistorySize] = { 0.0f };
+	inline static int m_FrameOffset = 0;
+	// rest 
+	
 	DeletionQueue m_DeletionQueue;
 	VmaAllocator m_Allocator;
 	
 	AllocatedImage m_DrawImage;
 	AllocatedImage m_DepthBuffer;
+	
+	std::vector<AllocatedImage> m_AlbedoMaps;
+	std::vector<AllocatedImage> m_NormalMaps;
+	std::vector<AllocatedImage> m_HeightMaps;
 	
 	AllocatedImage m_Heightmap;
 	
@@ -220,11 +235,13 @@ private:
 	VkDeviceAddress m_TerrainVertexAddress;
 	
 	TessellationPushConstants m_TerrainPC;
+	
+	TextureLoader m_TextureLoader{};
 
 	int meshIndex = 0;
 	
-	const int m_WorldSize = 256;
-	const int m_HeightmapSize = 1024;
+	const int m_WorldSize = 2048;
+	const int m_HeightmapSize = 4096;
 	const int m_CoordinateMultiplier = m_HeightmapSize / m_WorldSize;
 };
 #endif
