@@ -45,7 +45,7 @@ void Camera::update(float deltatime)
     if (state[SDL_SCANCODE_E]) { moveDir.y += 1.0f; }
     if (state[SDL_SCANCODE_MINUS])  { speed *= 0.9f; }
     if (state[SDL_SCANCODE_EQUALS]) { speed *= 1.1f; }
-	speed = glm::clamp(speed, 0.001f, 20.f);
+	speed = glm::clamp(speed, 0.01f, 20.f);
 
     if (glm::length(moveDir) > 0.0f) {
         moveDir = glm::normalize(moveDir);

@@ -1,9 +1,14 @@
 #version 460
  // !!!!! AI PORTED https://www.shadertoy.com/view/wXcfWn !!!!!
- // the base version was hand written by some genius on shadertoy
+ // the base version was hand written by a genius named runevision on shadertoy
+ // which in turn is based on some other shadertoys simulating erosion
+ // real pipeline of geniuses
+ 
+#include "biometools.glsl"
+
 layout (local_size_x = 16, local_size_y = 16) in;
 
-layout (rgba32f, set = 0, binding = 0) uniform image2D image;
+layout (rgba32f, set = 0, binding = 0) uniform image2D heightmap;
 
 layout ( push_constant ) uniform constants {
     ivec2 offset;
@@ -15,17 +20,13 @@ layout ( push_constant ) uniform constants {
 #define TAU 6.28318530717959
 #define clamp01(x) clamp(x, 0.0, 1.0)
 
-// -----------------------------------------------------------------------------
-// NOISE FUNCTIONS
-// -----------------------------------------------------------------------------
-
 vec2 hash(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.xx + p3.yz) * p3.zy) * 2.0 - 1.0;
 }
 
-vec3 noised(vec2 p) {
+vec3 noised(vec2 p) { // fast noise with derivatives
     vec2 i = floor(p);
     vec2 f = fract(p);
     
@@ -45,6 +46,38 @@ vec3 noised(vec2 p) {
     return vec3(va + u.x * (vb - va) + u.y * (vc - va) + u.x * u.y * (va - vb - vc + vd),
         ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd) +
         du * (u.yx * (va - vb - vc + vd) + vec2(vb, vc) - va));
+}
+
+float simplex(vec2 p) {
+    const float K1 = 0.366025404; // (sqrt(3)-1)/2;
+    const float K2 = 0.211324865; // (3-sqrt(3))/6;
+
+	vec2  i = floor( p + (p.x+p.y)*K1 );
+    vec2  a = p - i + (i.x+i.y)*K2;
+    float m = step(a.y,a.x); 
+    vec2  o = vec2(m,1.0-m);
+    vec2  b = a - o + K2;
+	vec2  c = a - 1.0 + 2.0*K2;
+    vec3  h = max( 0.5-vec3(dot(a,a), dot(b,b), dot(c,c) ), 0.0 );
+	vec3  n = h*h*h*h*vec3( dot(a,hash(i+0.0)), dot(b,hash(i+o)), dot(c,hash(i+1.0)));
+    return dot( n, vec3(70.0) );
+}
+
+float fbm(vec2 p, int octaves) {
+	float result = 0.0;
+	float freq = 1.0;
+	float ampl = 1.0;
+	float normalization = 1.0;
+	for (int i = 0; i < octaves; i++) {
+		result += simplex(p * freq) * ampl;
+	
+		freq *= 2.0;
+		ampl *= 0.5;
+		
+		normalization += ampl;
+	}
+	
+	return result / normalization;
 }
 
 vec3 FractalNoise(vec2 p, float freq, int octaves, float lacunarity, float gain) {
@@ -92,10 +125,6 @@ vec4 PhacelleNoise(in vec2 p, vec2 normDir, float freq, float offset, float norm
     return vec4(interpolated / magnitude, sideDir);
 }
 
-// -----------------------------------------------------------------------------
-// EROSION UTILITIES
-// -----------------------------------------------------------------------------
-
 float pow_inv(float t, float power) {
     return 1.0 - pow(1.0 - clamp01(t), power);
 }
@@ -116,10 +145,6 @@ vec2 safe_normalize(vec2 n) {
     return (abs(l) > 1e-10) ? (n / l) : n;  
 }
 
-// -----------------------------------------------------------------------------
-// EROSION KERNEL
-// -----------------------------------------------------------------------------
-
 vec4 ErosionFilter(
     in vec2 p, vec3 heightAndSlope, float fadeTarget,
     float strength, float gullyWeight, float detail, vec4 rounding, vec4 onset, vec2 assumedSlope,
@@ -127,6 +152,9 @@ vec4 ErosionFilter(
     float gain, float cellScale, float normalization,
     out float ridgeMap, out float debug
 ) {
+	if(strength == 0.0) {
+		return vec4(0.0);
+	}
     strength *= scale;
     fadeTarget = clamp(fadeTarget, -1.0, 1.0);
     
@@ -172,19 +200,14 @@ vec4 ErosionFilter(
     }
     
     ridgeMap = ridgeMapFadeTarget * (1.0 - ridgeMapCombiMask);
-    debug = fadeTarget;
     
     vec3 heightAndSlopeDelta = heightAndSlope - inputHeightAndSlope;
     return vec4(heightAndSlopeDelta, magnitude);
 }
 
-// -----------------------------------------------------------------------------
-// HEIGHTMAP GENERATOR
-// -----------------------------------------------------------------------------
 
-float GetHeight(vec2 p) {
-    
-    // -- EROSION SETTINGS --
+float GetErodedHeight(vec2 p) {
+    // erosion settings
     float EROSION_SCALE = pc.settings[0]; // 0.15
     float EROSION_STRENGTH = pc.settings[1]; // Range 0.01 to 0.22 // 0.1
     float EROSION_GULLY_WEIGHT = pc.settings[2]; // 0.5
@@ -204,7 +227,7 @@ float GetHeight(vec2 p) {
     float EROSION_GAIN = pc.settings[10]; // 0.5
     vec2 TERRAIN_HEIGHT_OFFSET = vec2(0.0, 0.0);
 
-    // -- BASE NOISE SETTINGS --
+    // base noise settings
     float HEIGHT_FREQUENCY = 3.0; // 3.0
     float HEIGHT_AMP = 1.0; // 1.0
     int HEIGHT_OCTAVES = 3; // 3
@@ -212,14 +235,11 @@ float GetHeight(vec2 p) {
     float HEIGHT_GAIN = 0.1; // 0.1
     float heightFunctionScale = 1.0;
     
-    // Base coordinate
     vec2 pHeight = p / heightFunctionScale;
     
-    // Base FBM heights (returned in -1 to 1 range alongside derivates)
     vec3 n = FractalNoise(pHeight, HEIGHT_FREQUENCY, HEIGHT_OCTAVES, HEIGHT_LACUNARITY, HEIGHT_GAIN)
         * HEIGHT_AMP * vec3(heightFunctionScale, 1.0, 1.0);
 
-    // Erosion Target
     float fadeTarget = clamp(n.x / (HEIGHT_AMP * 0.6), -1.0, 1.0);
     
     // Shift heights to 0..1 range
@@ -235,30 +255,42 @@ float GetHeight(vec2 p) {
         ridgeMap, debug
     );
     
-    // Combine base geometry and eroded geometry
     float offset = mix(TERRAIN_HEIGHT_OFFSET.x, -fadeTarget, TERRAIN_HEIGHT_OFFSET.y) * h.w;
     float eroded = n.x + h.x + offset;
     
     return eroded;
 }
 
+vec3 biomeMap(vec2 p) {
+	float humidity = fbm(p, 3);
+	float temperature = fbm(p + vec2(-5453.0, -3694.0), 3);
+	float altitude = fbm(p + vec2(5923.0, 2394.0), 3);
+	return vec3(humidity, temperature, altitude);
+}
+
 void main() {
+	initBiomes();
     ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy) + pc.dirtyMin;
-    ivec2 size = imageSize(image);
+    ivec2 size = imageSize(heightmap);
     if (gl_GlobalInvocationID.x >= pc.updateSize.x ||  gl_GlobalInvocationID.y >= pc.updateSize.y) return;
-    //if(texelCoord.x < size.x && texelCoord.y < size.y) {
-		vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset);
-				
-        vec2 p = vec2(worldPos * 4.0) / size;
-        
-        float height = GetHeight(p);
-		
-		ivec2 physicalCoord = (texelCoord % size + size) % size;
-		
-		if(physicalCoord.x < 0.0 || physicalCoord.y < 0.0) p = vec2(1,1);
-		vec4 color = vec4(height, height, height, 1.0);
-		if(height > 1.0) color = vec4(1.0, 0.0, 0.0, 1.0);
-		if(height < 0.0) color = vec4(0.0, 0.0, 1.0, 1.0);
-        imageStore(image, physicalCoord, color);
-    //}
+	
+	vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset);
+			
+	vec2 p = vec2(worldPos * 4.0) / size;
+	
+	float height = GetErodedHeight(p);
+	
+	ivec2 physicalCoord = (texelCoord % size + size) % size;
+	
+	if(physicalCoord.x < 0.0 || physicalCoord.y < 0.0) p = vec2(1,1);
+	vec4 color = vec4(0.0, 0.0, 0.0, height);
+	
+	if(height > 1.0) color = vec4(1.0, 0.0, 0.0, 1.0);
+	if(height < 0.0) color = vec4(0.0, 0.0, 1.0, 1.0);
+	
+	color.rgb = biomeMap(p);
+	//color.a = 1.0;
+	
+	imageStore(heightmap, physicalCoord, color);
+
 }

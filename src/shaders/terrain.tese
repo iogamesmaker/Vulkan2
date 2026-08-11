@@ -38,7 +38,7 @@ void main() {
 	
 	vec2 readCoord = outUV + (pc.offset * (1.0 / textureSize(heightmap, 0)));
 
-	pos.y += texture(heightmap, readCoord).r * pc.factor;
+	pos.y += texture(heightmap, readCoord).a * pc.factor;
 	pos.y -= pc.factor * 0.5;
 	
 	outPosition = pos.xyz;

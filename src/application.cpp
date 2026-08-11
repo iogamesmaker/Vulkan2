@@ -248,9 +248,9 @@ void Application::initDescriptors() {
 	samplerCI.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
 	samplerCI.minLod = 0.0f;
 	samplerCI.maxLod = 10.0f;
-	samplerCI.mipLodBias = -0.5f;
-	//samplerCI.maxAnisotropy = 16.f;
-	//samplerCI.anisotropyEnable = VK_TRUE; // very heavy on my iris xe for some reason
+	samplerCI.mipLodBias = -0.33f;
+	//samplerCI.maxAnisotropy = 16.f;  // very heavy on my iris xe for some reason
+	//samplerCI.anisotropyEnable = VK_TRUE;
 	
 	vkCreateSampler(m_Device, &samplerCI, nullptr, &m_Sampler);
 		
@@ -428,7 +428,7 @@ void Application::initMainPipeline() {
 	});
 }
 void Application::initTessellationPipeline() {
-	const uint32_t MAX_TEXTURES = 2;
+	const uint32_t MAX_TEXTURES = 3;
 	
 	CompiledShader   vertexShader = loadShader("src/shaders/bin/terrain.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
 	CompiledShader fragmentShader = loadShader("src/shaders/bin/terrain.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -652,16 +652,28 @@ GPUMeshBuffers Application::uploadMesh(std::span<uint32_t> indices, std::span<Ve
 void Application::initDefaultData() {
 	m_TextureLoader.pass(m_Device, m_Allocator);
 	
+	loadTextures();
+	
 	//testMeshes = loadGltfMeshes(this, "assets\\meshes\\basicmesh.glb").value();
 	
+	generateHeightmap();
 	
-	//m_AlbedoMaps.push_back(m_TextureLoader.load("assets\\ground1.jpg"       , this));
-	//m_NormalMaps.push_back(m_TextureLoader.load("assets\\ground1_normal.jpg", this));
-	//m_HeightMaps.push_back(m_TextureLoader.load("assets\\ground1_pom.jpg"   , this));
+	m_TerrainPC.factor = m_WorldSize * 0.175f;
+	m_Camera.position.y = m_WorldSize * 0.175f * 0.5f;
+}
+
+void Application::loadTextures() {
+	m_AlbedoMaps.push_back(m_TextureLoader.load("assets\\ground.jpg"       , this));
+	m_NormalMaps.push_back(m_TextureLoader.load("assets\\ground_normal.jpg", this));
+	m_HeightMaps.push_back(m_TextureLoader.load("assets\\ground_pom.jpg"   , this));
 	
-	m_AlbedoMaps.push_back(m_TextureLoader.load("assets\\ground1.jpg"       , this));
-	m_NormalMaps.push_back(m_TextureLoader.load("assets\\ground1_normal.jpg", this));
-	m_HeightMaps.push_back(m_TextureLoader.load("assets\\ground1_pom.jpg"   , this));
+	m_AlbedoMaps.push_back(m_TextureLoader.load("assets\\grass.jpg"       , this));
+	m_NormalMaps.push_back(m_TextureLoader.load("assets\\grass_normal.jpg", this));
+	m_HeightMaps.push_back(m_TextureLoader.load("assets\\grass_pom.jpg"   , this));
+	
+	m_AlbedoMaps.push_back(m_TextureLoader.load("assets\\snow.jpg"       , this));
+	m_NormalMaps.push_back(m_TextureLoader.load("assets\\snow_normal.jpg", this));
+	m_HeightMaps.push_back(m_TextureLoader.load("assets\\snow_pom.jpg"   , this));
 	
 	int textureNumber = m_AlbedoMaps.size();
 	std::vector<VkDescriptorImageInfo> albedoInfo(textureNumber);
@@ -700,12 +712,7 @@ void Application::initDefaultData() {
 	writes[2].dstBinding = 3;
 	writes[2].pImageInfo = pomInfo.data();
 	
-	vkUpdateDescriptorSets(m_Device, 3, writes, 0, nullptr);
-	
-	generateHeightmap();
-	
-	m_TerrainPC.factor = m_WorldSize * 0.175f;
-	m_Camera.position.y = m_WorldSize * 0.175f * 0.5f;
+	vkUpdateDescriptorSets(m_Device, 3, writes, 0, nullptr);	
 }
 
 void Application::initTerrainPatches() {
@@ -869,12 +876,17 @@ void Application::updateHeightmap(bool regenerate) { // todo remove the minimum 
 	pos.y = std::round(m_Camera.position.z);
 	
 	glm::ivec2 delta = (m_HeightmapPC.offset / glm::ivec2(m_CoordinateMultiplier)) - pos;
+	glm::ivec2 moveDelta = (m_MapOffset / glm::ivec2(m_CoordinateMultiplier)) - pos;
 	//int minimum = std::floor(32.f / m_CoordinateMultiplier);
-	int minimum = m_WorldSize / 64; // 64 is the "rez" used to generate the patchs
+	int minimumMovement = m_WorldSize / 64; // 64 is the "rez" used to generate the patchs
+	if(std::abs(moveDelta.x) >= minimumMovement) m_MapOffset.x = pos.x * m_CoordinateMultiplier;
+	if(std::abs(moveDelta.y) >= minimumMovement) m_MapOffset.y = pos.y * m_CoordinateMultiplier;
+	std::cout << std::to_string(m_MapOffset.x) << "," << std::to_string(m_MapOffset.y) << std::endl;
+	int minimum = 1.0f;
 	if((std::abs(delta.x) < minimum && std::abs(delta.y) < minimum) && !regenerate) return;
 		
-	m_MapOffset = pos * glm::ivec2(m_CoordinateMultiplier);
-	m_HeightmapPC.offset = m_MapOffset;
+	
+	m_HeightmapPC.offset = pos * glm::ivec2(m_CoordinateMultiplier);
 	if(regenerate) delta = {m_HeightmapSize, m_HeightmapSize};
 	immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);

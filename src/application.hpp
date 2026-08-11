@@ -182,6 +182,8 @@ private:
 	
 	void initDefaultData();
 	
+	void loadTextures();
+	
 	void drawImGui(VkCommandBuffer cmd, VkImageView targetImageView);
 	
 	void createSwapchain(uint32_t width, uint32_t height, bool vsync = true);

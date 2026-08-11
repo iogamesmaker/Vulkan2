@@ -88,7 +88,7 @@ file(GLOB_RECURSE SHADER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.vert"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.comp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.glsl"
+    # "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.glsl" # these are only for includes for now
     "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.tesc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/*.tese"
 )
