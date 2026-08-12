@@ -31,6 +31,7 @@
 
 #include "loader.hpp"
 #include "textures.hpp"
+#include "atmosphere.hpp"
 
 // Pretty much all of the initialisation code is based on / taken from vkguide.dev.
 
@@ -38,16 +39,21 @@ struct HeightmapPushConstants {
 	glm::ivec2 offset;
 	glm::ivec2 dirtyMin;
 	glm::ivec2 updateSize;
-	float settings[11] = {0.15f, 0.1f, 0.5f, 1.5f, 0.01f, 0.01f, 0.7f, 0.5f, 10.f, 2.f, 0.5f};
 };
 
 struct TessellationPushConstants {
-	glm::mat4 projection;
-	glm::mat4 view;
+	glm::mat4 viewproj;
+	glm::vec3 campos;
+	float tessellationFactor = 10.f;
+	glm::vec3 sundir;
+	float factor = 1.0f;
 	glm::ivec2 worldoffset;
 	glm::ivec2 screen;
-	float tessellationFactor = 10.f;
-	float factor = 1.0f;
+};
+
+struct SkyPushConstants {
+	glm::mat4 viewproj;
+	glm::vec3 sundir;
 };
 
 struct DeletionQueue { // high IQ play by the author of vkguide.dev
@@ -75,13 +81,6 @@ struct FrameData {
 	VkFence renderFence;
 	
 	DeletionQueue deletionQueue;
-};
-
-struct ComputeEffect {
-	std::string name;
-	
-	VkPipeline pipeline;
-	VkPipelineLayout layout;
 };
 
 struct CompiledShader {
@@ -139,24 +138,26 @@ public:
 	VkQueue m_GraphicsQueue;
 	uint32_t m_GraphicsQueueFamily{0};
 	
-	VkPipeline m_ComputePipeline;
-	VkPipelineLayout m_ComputeLayout;
+	glm::vec2 m_Sunpos;
 	
 	DescriptorAllocator g_DescriptorAllocator;
 	
+	VkPipeline m_HeightmapPipeline;
+	VkPipelineLayout m_HeightmapLayout;
 	VkDescriptorSet m_HeightmapDescriptors;
 	VkDescriptorSetLayout m_HeightmapDescriptorLayout;
 	ComputeEffect m_HeightmapEffect;
 	HeightmapPushConstants m_HeightmapPC;
 	VkDescriptorSet m_HeightmapImGuiDescriptors;
-		
-	VkPipeline m_MainPipeline;
-	VkPipelineLayout m_MainLayout;
 	
 	VkPipeline m_TerrainPipeline;
 	VkPipelineLayout m_TerrainLayout;
 	VkDescriptorSet m_TerrainDescriptors;
 	VkDescriptorSetLayout m_TerrainDescriptorLayout;
+	
+	VkPipeline m_SkyPipeline;
+	VkPipelineLayout m_SkyLayout;
+	SkyPushConstants m_SkyPC;
 		
 	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
 	
@@ -172,7 +173,7 @@ private:
 	void initDescriptors();
 	
 	void initPipelines();
-	void initMainPipeline();
+	void initSkyPipeline();
 	void initComputePipelines();
 	void initTessellationPipeline();
 	
@@ -239,6 +240,7 @@ private:
 	TessellationPushConstants m_TerrainPC;
 	
 	TextureLoader m_TextureLoader{};
+	Atmosphere m_AtmosphereManager{};
 
 	int meshIndex = 0;
 	

@@ -11,17 +11,17 @@ layout(location = 1) out vec2 outUV[];
 layout(location = 5) flat out int outLOD[];
 
 layout(push_constant) uniform constants {
-	mat4 proj;
-	mat4 view;
+	mat4 viewproj;
+	vec3 campos;
+	float tessellationFactor;
+	vec3 sundir;
+	float factor;
 	ivec2 offset;
 	ivec2 screen;
-	float tessellationFactor;
-	float factor;
 } pc;
 
 float tessFactor(vec4 p0, vec4 p1) {
-    vec3 camPos = -pc.view[3].xyz * mat3(pc.view);
-    float dist = distance(0.5 * (p0.xz + p1.xz), camPos.xz);
+    float dist = distance(0.5 * (p0.xz + p1.xz), pc.campos.xz);
     
     float smoothDist = (dist / 20.f);
     

@@ -13,12 +13,13 @@ layout(set = 0, binding = 2) uniform sampler2D normalmap[];
 layout(set = 0, binding = 3) uniform sampler2D pom[];
 
 layout(push_constant) uniform constants {
-	mat4 proj;
-	mat4 view;
+	mat4 viewproj;
+	vec3 campos;
+	float tessellationFactor;
+	vec3 sundir;
+	float factor;
 	ivec2 offset;
 	ivec2 screen;
-	float tessellationFactor;
-	float factor;
 } pc;
 
 void main() {
@@ -38,9 +39,9 @@ void main() {
 	float height2 = texture(pom[1], readCoord * 200.0).r;
 	float blend = smoothstep(0.9 * 0.9, 0.7 * 0.7, (dzdx * dzdx) + (dzdy * dzdy) + (height1 - height2) * (pc.tessellationFactor == 10.0f ? 0.6f : 0.0f));
 	
-    vec3 va = normalize(vec3(2.0, 0.0, (hR - hL) * 256.0f));
-    vec3 vb = normalize(vec3(0.0, 2.0, (hT - hB) * 256.0f));
-    vec3 normal = normalize(cross(va, vb));
+	vec3 va = normalize(vec3(2.0, (hR - hL) * 256.0f, 0.0));
+    vec3 vb = normalize(vec3(0.0, (hT - hB) * 256.0f, 2.0));
+    vec3 normal = normalize(cross(vb, va));
 	
 	
 	vec3 normalTexture1 = normalize((texture(normalmap[0], readCoord * 200.0).rgb) * 2.0 - 1.0);
@@ -50,7 +51,7 @@ void main() {
 	mat3 TBN = mat3(va, vb, normal);
 	normal = normalize(TBN * normalTexture);
 	
-	vec3 lightDir = normalize(vec3(-2.0, 10.0, 2.0));
+	vec3 lightDir = pc.sundir;
 	
 	vec3 albedo1 = texture(albedo[0], readCoord * 200.0).rgb;
 	vec3 albedo2 = texture(albedo[1], readCoord * 200.0).rgb;

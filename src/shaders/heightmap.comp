@@ -14,7 +14,6 @@ layout ( push_constant ) uniform constants {
     ivec2 offset;
 	ivec2 dirtyMin;
 	ivec2 updateSize;
-	float settings[11];
 } pc;
 
 #define TAU 6.28318530717959
@@ -67,17 +66,47 @@ float fbm(vec2 p, int octaves) {
 	float result = 0.0;
 	float freq = 1.0;
 	float ampl = 1.0;
-	float normalization = 1.0;
+	float normalization = 0.0;
 	for (int i = 0; i < octaves; i++) {
 		result += simplex(p * freq) * ampl;
+		normalization += ampl;
 	
 		freq *= 2.0;
 		ampl *= 0.5;
-		
-		normalization += ampl;
 	}
 	
 	return result / normalization;
+}
+
+vec3 voronoi( in vec2 x, float w )
+{
+    vec2 n = floor( x );
+    vec2 f = fract( x );
+
+	vec4 m = vec4( 8.0, 0.0, 0.0, 0.0 );
+    for( int j=-2; j<=2; j++ )
+    for( int i=-2; i<=2; i++ )
+    {
+        vec2 g = vec2( float(i),float(j) );
+        vec2 o = hash( n + g );
+
+		float d = length(g - f + o);
+		
+		vec2 p = (n + g) * 0.02;
+		vec3 col = vec3(
+		fbm(p, 3),
+		fbm(p + vec2(-5453.0, -3694.0), 3),
+		fbm(p + vec2(5923.0, 2394.0), 2) * 1.5);
+		
+		int biomeidx = whatBiome(col);
+		col = biomes[biomeidx].value;
+        
+		float h = smoothstep( -1.0, 1.0, (m.x-d)/w );
+	    m.x   = mix( m.x,     d, h ) - h*(1.0-h)*w/(1.0+3.0*w); // distance
+		m.yzw = mix( m.yzw, col, h ); // color
+    }
+	
+	return m.yzw;
 }
 
 vec3 FractalNoise(vec2 p, float freq, int octaves, float lacunarity, float gain) {
@@ -149,8 +178,7 @@ vec4 ErosionFilter(
     in vec2 p, vec3 heightAndSlope, float fadeTarget,
     float strength, float gullyWeight, float detail, vec4 rounding, vec4 onset, vec2 assumedSlope,
     float scale, int octaves, float lacunarity,
-    float gain, float cellScale, float normalization,
-    out float ridgeMap, out float debug
+    float gain, float cellScale, float normalization
 ) {
 	if(strength == 0.0) {
 		return vec4(0.0);
@@ -198,33 +226,31 @@ vec4 ErosionFilter(
         freq *= lacunarity;
         roundingMult *= rounding.w;
     }
-    
-    ridgeMap = ridgeMapFadeTarget * (1.0 - ridgeMapCombiMask);
-    
+        
     vec3 heightAndSlopeDelta = heightAndSlope - inputHeightAndSlope;
     return vec4(heightAndSlopeDelta, magnitude);
 }
 
 
-float GetErodedHeight(vec2 p) {
+float getErodedHeight(vec2 p, float erosion) {
     // erosion settings
-    float EROSION_SCALE = pc.settings[0]; // 0.15
-    float EROSION_STRENGTH = pc.settings[1]; // Range 0.01 to 0.22 // 0.1
-    float EROSION_GULLY_WEIGHT = pc.settings[2]; // 0.5
-    float EROSION_DETAIL = pc.settings[3]; // 1.5
+    float EROSION_SCALE = 0.15; // 0.15
+    float EROSION_STRENGTH = 0.1 * erosion; // Range 0.01 to 0.22 // 0.1
+    float EROSION_GULLY_WEIGHT = 0.5; // 0.5
+    float EROSION_DETAIL = 1.5; // 1.5
     
-    float ridgeRounding = pc.settings[4]; // 0.1
-    float creaseRounding = pc.settings[5]; // 0.0
+    float ridgeRounding = 0.01; // 0.1
+    float creaseRounding = 0.01; // 0.0
     vec4 EROSION_ROUNDING = vec4(ridgeRounding, creaseRounding, 0.1, 2.0);
     vec4 EROSION_ONSET = vec4(1.25, 1.25, 2.8, 1.5);
     vec2 EROSION_ASSUMED_SLOPE = vec2(0.7, 1.0);
     
-    float EROSION_CELL_SCALE = pc.settings[6]; // 0.7
-    float EROSION_NORMALIZATION = pc.settings[7]; // 0.5
+    float EROSION_CELL_SCALE = 0.7; // 0.7
+    float EROSION_NORMALIZATION = 0.5; // 0.5
     
-    int EROSION_OCTAVES = int(pc.settings[8]); // 5
-    float EROSION_LACUNARITY = pc.settings[9]; // 2.0
-    float EROSION_GAIN = pc.settings[10]; // 0.5
+    int EROSION_OCTAVES = 5; // 5
+    float EROSION_LACUNARITY = 2.0; // 2.0
+    float EROSION_GAIN = 0.5; // 0.5
     vec2 TERRAIN_HEIGHT_OFFSET = vec2(0.0, 0.0);
 
     // base noise settings
@@ -245,14 +271,12 @@ float GetErodedHeight(vec2 p) {
     // Shift heights to 0..1 range
     n = n * 0.5 + vec3(0.5, 0.0, 0.0);
 
-    float ridgeMap, debug;
     vec4 h = ErosionFilter(
         p, n, fadeTarget,
         EROSION_STRENGTH, EROSION_GULLY_WEIGHT, EROSION_DETAIL,
         EROSION_ROUNDING, EROSION_ONSET, EROSION_ASSUMED_SLOPE,
         EROSION_SCALE, EROSION_OCTAVES, EROSION_LACUNARITY,
-        EROSION_GAIN, EROSION_CELL_SCALE, EROSION_NORMALIZATION,
-        ridgeMap, debug
+        EROSION_GAIN, EROSION_CELL_SCALE, EROSION_NORMALIZATION
     );
     
     float offset = mix(TERRAIN_HEIGHT_OFFSET.x, -fadeTarget, TERRAIN_HEIGHT_OFFSET.y) * h.w;
@@ -262,10 +286,23 @@ float GetErodedHeight(vec2 p) {
 }
 
 vec3 biomeMap(vec2 p) {
-	float humidity = fbm(p, 3);
-	float temperature = fbm(p + vec2(-5453.0, -3694.0), 3);
-	float altitude = fbm(p + vec2(5923.0, 2394.0), 3);
-	return vec3(humidity, temperature, altitude);
+	return voronoi(p, 0.15);
+}
+
+float getHeight(vec2 p, vec3 weights, ivec3 ids) {
+	float erosion = 0.0;
+	float height = 1.0;
+	if(ids.x == MOUNTAIN) erosion += 1.0 * weights.x;
+	if(ids.y == MOUNTAIN) erosion += 1.0 * weights.y;
+	if(ids.z == MOUNTAIN) erosion += 1.0 * weights.z;
+	if(ids.x == COLDPEAKS) {erosion += 1.0 * weights.x;height += 0.10 * weights.x;}
+	if(ids.y == COLDPEAKS) {erosion += 1.0 * weights.y;height += 0.10 * weights.y;}
+	if(ids.z == COLDPEAKS) {erosion += 1.0 * weights.z;height += 0.10 * weights.z;}
+	if(ids.x == PLAINS) height -= 0.5 * weights.x;
+	if(ids.y == PLAINS) height -= 0.5 * weights.y;
+	if(ids.z == PLAINS) height -= 0.5 * weights.z;
+	
+	return height * getErodedHeight(p, erosion);
 }
 
 void main() {
@@ -277,8 +314,13 @@ void main() {
 	vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset);
 			
 	vec2 p = vec2(worldPos * 4.0) / size;
+	//vec3 biome = biomeMap(p);
+	//vec3 weights;
+	//ivec3 ids;
 	
-	float height = GetErodedHeight(p);
+	//whatBiomes(biome, weights, ids);
+	
+	float height = getErodedHeight(p, 1.0);
 	
 	ivec2 physicalCoord = (texelCoord % size + size) % size;
 	
@@ -288,7 +330,7 @@ void main() {
 	if(height > 1.0) color = vec4(1.0, 0.0, 0.0, 1.0);
 	if(height < 0.0) color = vec4(0.0, 0.0, 1.0, 1.0);
 	
-	color.rgb = biomeMap(p);
+	//color.rgb = biome;
 	//color.a = 1.0;
 	
 	imageStore(heightmap, physicalCoord, color);

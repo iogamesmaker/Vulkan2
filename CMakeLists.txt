@@ -64,6 +64,7 @@ add_executable(${PROJECT_NAME}
 	src/loader.cpp
     src/application.cpp	
 	src/textures.cpp
+    src/atmosphere.cpp    
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE vkguide_shared)

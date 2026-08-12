@@ -39,6 +39,13 @@ struct AllocatedBuffer {
     VmaAllocationInfo info;
 };
 
+struct ComputeEffect {
+	std::string name;
+	
+	VkPipeline pipeline;
+	VkPipelineLayout layout;
+};
+
 struct GPUGLTFMaterial {
     glm::vec4 colorFactors;
     glm::vec4 metal_rough_factors;

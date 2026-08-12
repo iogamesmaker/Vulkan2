@@ -14,12 +14,13 @@ layout(location = 5) flat out int outLOD;
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
 
 layout(push_constant) uniform constants {
-	mat4 proj;
-	mat4 view;
+	mat4 viewproj;
+	vec3 campos;
+	float tessellationFactor;
+	vec3 sundir;
+	float factor;
 	ivec2 offset;
 	ivec2 screen;
-	float tessellationFactor;
-	float factor;
 } pc;
 
 void main() {
@@ -44,5 +45,5 @@ void main() {
 	outPosition = pos.xyz;
 	//outPatchCoord = vec2(u,v);
 	
-	gl_Position = pc.proj * pc.view * pos;
+	gl_Position = pc.viewproj * pos;
 }

@@ -267,7 +267,9 @@ VkImageCreateInfo vkinit::image_create_info(VkFormat format, VkImageUsageFlags u
     info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     info.pNext = nullptr;
 
-    info.imageType = VK_IMAGE_TYPE_2D;
+    if(extent.width  > 1) { info.imageType = VK_IMAGE_TYPE_1D; }
+    else if(extent.height > 1) { info.imageType = VK_IMAGE_TYPE_2D; }
+    else if(extent.depth  > 1) { info.imageType = VK_IMAGE_TYPE_3D; }
 
     info.format = format;
     info.extent = extent;

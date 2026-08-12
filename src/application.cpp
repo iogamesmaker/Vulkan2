@@ -268,11 +268,11 @@ ComputeEffect Application::loadComputeShader(std::string path, std::string name)
 	VkComputePipelineCreateInfo computePipelineCreateInfo{};
 	computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
 	computePipelineCreateInfo.pNext = nullptr;
-	computePipelineCreateInfo.layout = m_ComputeLayout;
+	computePipelineCreateInfo.layout = m_HeightmapLayout;
 	computePipelineCreateInfo.stage = computeShader.stageInfo;
 	
 	ComputeEffect computeEffect;
-	computeEffect.layout = m_ComputeLayout;
+	computeEffect.layout = m_HeightmapLayout;
 	computeEffect.name = name;
 	
 	VK_CHECK(vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &computeEffect.pipeline));
@@ -311,10 +311,10 @@ void Application::initComputePipelines() {
 	computeLayoutCI.pPushConstantRanges = &pushConstantRange;
 	computeLayoutCI.pushConstantRangeCount = 1;
 	
-	VK_CHECK(vkCreatePipelineLayout(m_Device, &computeLayoutCI, nullptr, &m_ComputeLayout));
+	VK_CHECK(vkCreatePipelineLayout(m_Device, &computeLayoutCI, nullptr, &m_HeightmapLayout));
 	
 	m_DeletionQueue.push([&]() {
-		vkDestroyPipelineLayout(m_Device, m_ComputeLayout, nullptr);
+		vkDestroyPipelineLayout(m_Device, m_HeightmapLayout, nullptr);
 		vkDestroyDescriptorSetLayout(m_Device, m_HeightmapDescriptorLayout, nullptr);
 	});
 	
@@ -387,46 +387,6 @@ CompiledShader Application::loadShader(std::string path, VkShaderStageFlagBits s
 	return { shader, stageInfo };
 }
 
-void Application::initMainPipeline() {
-	CompiledShader   vertexShader = loadShader("src/shaders/bin/vertex.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
-	CompiledShader fragmentShader = loadShader("src/shaders/bin/fragment.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
-	
-	VkPushConstantRange bufferRange{};
-	bufferRange.offset = 0;
-	bufferRange.size = sizeof(GPUDrawPushConstants);
-	bufferRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-	
-	VkPipelineLayoutCreateInfo pipelineLayoutInfo = vkinit::pipeline_layout_create_info();
-	pipelineLayoutInfo.pPushConstantRanges = &bufferRange;
-	pipelineLayoutInfo.pushConstantRangeCount = 1;
-	
-	VK_CHECK(vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_MainLayout));
-	
-	PipelineBuilder pipelineBuilder;
-	
-	pipelineBuilder._pipelineLayout = m_MainLayout;
-	pipelineBuilder.set_shaders(vertexShader.shader, fragmentShader.shader);
-	pipelineBuilder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-	pipelineBuilder.set_polygon_mode(VK_POLYGON_MODE_FILL);
-	pipelineBuilder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
-	
-	pipelineBuilder.set_multisampling_none();
-	pipelineBuilder.disable_blending();
-	pipelineBuilder.enable_depthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
-	
-	pipelineBuilder.set_color_attachment_format(m_DrawImage.imageFormat);
-	pipelineBuilder.set_depth_format(m_DepthBuffer.imageFormat);
-	
-	m_MainPipeline = pipelineBuilder.build_pipeline(m_Device);
-	
-	vkDestroyShaderModule(m_Device, fragmentShader.shader, nullptr);
-	vkDestroyShaderModule(m_Device, vertexShader.shader, nullptr);
-	
-	m_DeletionQueue.push([&]() {
-		vkDestroyPipelineLayout(m_Device, m_MainLayout, nullptr);
-		vkDestroyPipeline(m_Device, m_MainPipeline, nullptr);
-	});
-}
 void Application::initTessellationPipeline() {
 	const uint32_t MAX_TEXTURES = 3;
 	
@@ -489,7 +449,7 @@ void Application::initTessellationPipeline() {
 	
 	pipelineBuilder.set_multisampling_none();
 	pipelineBuilder.disable_blending();
-	pipelineBuilder.enable_depthtest(true, VK_COMPARE_OP_GREATER_OR_EQUAL);
+	pipelineBuilder.enable_depthtest(true, VK_COMPARE_OP_LESS);
 	
 	pipelineBuilder.set_color_attachment_format(m_DrawImage.imageFormat);
 	pipelineBuilder.set_depth_format(m_DepthBuffer.imageFormat);
@@ -526,11 +486,51 @@ void Application::initTessellationPipeline() {
 	});
 }
 
+void Application::initSkyPipeline() {
+	CompiledShader   vertexShader = loadShader("src/shaders/bin/fullscreen.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+	CompiledShader fragmentShader = loadShader("src/shaders/bin/sky.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+	
+	VkPushConstantRange bufferRange{};
+	bufferRange.offset = 0;
+	bufferRange.size = sizeof(SkyPushConstants);
+	bufferRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	
+	VkPipelineLayoutCreateInfo pipelineLayoutInfo = vkinit::pipeline_layout_create_info();
+	pipelineLayoutInfo.pPushConstantRanges = &bufferRange;
+	pipelineLayoutInfo.pushConstantRangeCount = 1;
+	pipelineLayoutInfo.pSetLayouts = nullptr;
+	pipelineLayoutInfo.setLayoutCount = 0;
+	
+	VK_CHECK(vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_SkyLayout));
+	
+	
+	PipelineBuilder pipelineBuilder;
+		
+	pipelineBuilder._pipelineLayout = m_SkyLayout;
+	pipelineBuilder.set_shaders(vertexShader.shader, fragmentShader.shader);
+	pipelineBuilder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	pipelineBuilder.set_polygon_mode(VK_POLYGON_MODE_FILL);
+	pipelineBuilder.set_cull_mode(VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE);
+	
+	pipelineBuilder.set_multisampling_none();
+	pipelineBuilder.disable_blending();
+	pipelineBuilder.enable_depthtest(false, VK_COMPARE_OP_EQUAL   );
+	
+	pipelineBuilder.set_color_attachment_format(m_DrawImage.imageFormat);
+	pipelineBuilder.set_depth_format(m_DepthBuffer.imageFormat);
+	
+	m_SkyPipeline = pipelineBuilder.build_pipeline(m_Device);
+	
+	m_DeletionQueue.push([&]() {
+		vkDestroyPipelineLayout(m_Device, m_SkyLayout, nullptr);
+		vkDestroyPipeline(m_Device, m_SkyPipeline, nullptr);
+	});
+}
 
 void Application::initPipelines() {
 	initComputePipelines();
 	initTessellationPipeline();
-	//initMainPipeline();
+	initSkyPipeline();
 	
 	//initTextures();
 }
@@ -651,6 +651,7 @@ GPUMeshBuffers Application::uploadMesh(std::span<uint32_t> indices, std::span<Ve
 
 void Application::initDefaultData() {
 	m_TextureLoader.pass(m_Device, m_Allocator);
+	m_AtmosphereManager.init(m_Device, m_Allocator, this);
 	
 	loadTextures();
 	
@@ -855,12 +856,12 @@ void Application::generateHeightmap() {
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 		
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComputeLayout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapLayout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
 		
 		HeightmapPushConstants pc{};
 		pc.updateSize = glm::ivec2(m_HeightmapSize);
 		
-		vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pc);
+		vkCmdPushConstants(cmd, m_HeightmapLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pc);
 		
 		uint32_t groupNX = std::ceil(static_cast<float>(m_HeightmapSize) / 16.f);
 		uint32_t groupNY = std::ceil(static_cast<float>(m_HeightmapSize) / 16.f);
@@ -870,7 +871,7 @@ void Application::generateHeightmap() {
 	});
 }
 
-void Application::updateHeightmap(bool regenerate) { // todo remove the minimum logic and instead snap the camera
+void Application::updateHeightmap(bool regenerate) {
 	glm::ivec2 pos;
 	pos.x = std::round(m_Camera.position.x);
 	pos.y = std::round(m_Camera.position.z);
@@ -881,18 +882,16 @@ void Application::updateHeightmap(bool regenerate) { // todo remove the minimum 
 	int minimumMovement = m_WorldSize / 64; // 64 is the "rez" used to generate the patchs
 	if(std::abs(moveDelta.x) >= minimumMovement) m_MapOffset.x = pos.x * m_CoordinateMultiplier;
 	if(std::abs(moveDelta.y) >= minimumMovement) m_MapOffset.y = pos.y * m_CoordinateMultiplier;
-	std::cout << std::to_string(m_MapOffset.x) << "," << std::to_string(m_MapOffset.y) << std::endl;
-	int minimum = 1.0f;
-	if((std::abs(delta.x) < minimum && std::abs(delta.y) < minimum) && !regenerate) return;
-		
 	
+	if((std::abs(delta.x) == 0 && std::abs(delta.y) == 0) && !regenerate) return;
+		
 	m_HeightmapPC.offset = pos * glm::ivec2(m_CoordinateMultiplier);
 	if(regenerate) delta = {m_HeightmapSize, m_HeightmapSize};
 	immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 		
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComputeLayout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapLayout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
 		
 		HeightmapPushConstants pc = m_HeightmapPC;
 		
@@ -917,7 +916,7 @@ void Application::updateHeightmap(bool regenerate) { // todo remove the minimum 
 			pcX.updateSize.x = dispatchWidth;
 			pcX.updateSize.y = dispatchHeight;
 			
-			vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pcX);
+			vkCmdPushConstants(cmd, m_HeightmapLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pcX);
 			uint32_t groupNX = (dispatchWidth + 15) / 16;
 			uint32_t groupNY = (dispatchHeight + 15) / 16;
 			vkCmdDispatch(cmd, groupNX, groupNY, 1);
@@ -936,7 +935,7 @@ void Application::updateHeightmap(bool regenerate) { // todo remove the minimum 
 			pcY.updateSize.x = dispatchWidth;
 			pcY.updateSize.y = dispatchHeight;
 			
-			vkCmdPushConstants(cmd, m_ComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pcY);
+			vkCmdPushConstants(cmd, m_HeightmapLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pcY);
 			uint32_t groupNX = (dispatchWidth + 15) / 16;
 			uint32_t groupNY = (dispatchHeight + 15) / 16;
 			vkCmdDispatch(cmd, groupNX, groupNY, 1);
@@ -947,7 +946,7 @@ void Application::updateHeightmap(bool regenerate) { // todo remove the minimum 
 
 void Application::drawGeometry(VkCommandBuffer cmd) {
 	VkClearValue depthClear{};
-    depthClear.depthStencil.depth = 0.0f;
+    depthClear.depthStencil.depth = 1.0f;
 	
 	VkRenderingAttachmentInfo colorAttachment = vkinit::attachment_info(m_DrawImage.imageView, nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	VkRenderingAttachmentInfo depthAttachment = vkinit::attachment_info(m_DepthBuffer.imageView, &depthClear, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
@@ -972,29 +971,34 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	scissor.extent.height = m_DrawExtent.height;
 	
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
-	// calculate matrices
+	// calculate shit
 	glm::mat4 view = m_Camera.getViewMatrix({m_MapOffset.x / static_cast<float>(m_CoordinateMultiplier), 0.0, m_MapOffset.y / static_cast<float>(m_CoordinateMultiplier)});
-	glm::mat4 projection = glm::perspective(glm::radians(70.f), (float)m_DrawExtent.width / (float)m_DrawExtent.height, static_cast<float>(m_WorldSize * 256), 0.1f); // reversing the depth buffer apparently increases precision
+	
+	glm::mat4 globalview = view;
+	globalview[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f); // no more position stuff
+	
+	glm::vec3 campos = {view[3].x, view[3].y, view[3].z};
+	
+	glm::mat4 projection = glm::perspective(glm::radians(70.f), (float)m_DrawExtent.width / (float)m_DrawExtent.height, 0.1f, static_cast<float>(m_WorldSize * 256));
 	projection[1][1] *= -1; // vulkan had to go out of its way to break the standard and make the Y axis reversed ):
-	/* // ---
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MainPipeline);
 	
-	GPUDrawPushConstants pushConstants;
-	pushConstants.worldMatrix = projection * view;
+	m_Sunpos += glm::vec2(0.0,0.01);
+	m_SkyPC.sundir = glm::normalize(glm::vec3{
+		std::cos(m_Sunpos.y) * std::sin(m_Sunpos.x),
+		std::sin(m_Sunpos.y),
+		std::cos(m_Sunpos.y) * std::cos(m_Sunpos.x)
+	});
 	
-	pushConstants.vertexBuffer = testMeshes[meshIndex]->meshBuffers.vertexBufferAddress;
-	
-	vkCmdPushConstants(cmd, m_MainLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(GPUDrawPushConstants), &pushConstants);
-	vkCmdBindIndexBuffer(cmd, testMeshes[meshIndex]->meshBuffers.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-	
-	vkCmdDrawIndexed(cmd, testMeshes[meshIndex]->surfaces[0].count, 1, testMeshes[meshIndex]->surfaces[0].startIndex, 0, 0);
-	*/ // ---
+	m_TerrainPC.sundir = m_SkyPC.sundir;
+	m_TerrainPC.campos = campos;
+
+	// ---
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainPipeline);
 	
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainLayout, 0, 1, &m_TerrainDescriptors, 0, nullptr);
 	
-	m_TerrainPC.view = view;
-	m_TerrainPC.projection = projection;
+	//m_TerrainPC.view = view;
+	m_TerrainPC.viewproj = projection * view;
 	m_TerrainPC.worldoffset = m_MapOffset;
 	
 	vkCmdPushConstants(cmd, m_TerrainLayout, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(TessellationPushConstants), &m_TerrainPC);
@@ -1003,6 +1007,17 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_TerrainVertexBuffer.buffer, &offset);
 	
 	vkCmdDraw(cmd, static_cast<uint32_t>(m_PatchVertices.size()), 1, 0, 0);
+	// ---
+	
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SkyPipeline);
+	
+	
+	m_SkyPC.viewproj = glm::inverse(projection * globalview);
+	
+	vkCmdPushConstants(cmd, m_SkyLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SkyPushConstants), &m_SkyPC);
+	
+	vkCmdDraw(cmd, 3, 1, 0, 0);
+	// ---
 	vkCmdEndRendering(cmd);
 }
 
@@ -1069,31 +1084,10 @@ void Application::run() {
 			ImGui::End();
 
 			if (ImGui::Begin("terrain")) {
-				//if(ImGui::Button("Regenerate terrain")) updateHeightmap(true);
-				
-				if(ImGui::SliderFloat("Erosion scale", &m_HeightmapPC.settings[0], 0.01f, 0.3f)) {updateHeightmap(true);}
-				if(ImGui::SliderFloat("Erosion strength", &m_HeightmapPC.settings[1], 0.0f, 0.22f)) {updateHeightmap(true);}
-				if(ImGui::SliderFloat("Erosion gully weight", &m_HeightmapPC.settings[2], 0.0f, 1.0f)) {updateHeightmap(true);}
-				if(ImGui::SliderFloat("Erosion detail", &m_HeightmapPC.settings[3], 0.0f, 2.5f)) {updateHeightmap(true);}
-				
-				if(ImGui::SliderFloat("Ridge rounding", &m_HeightmapPC.settings[4], 0.0f, 0.3f)) {updateHeightmap(true);}
-				if(ImGui::SliderFloat("Crease rounding", &m_HeightmapPC.settings[5], 0.0f, 0.3f)) {updateHeightmap(true);}
-				if(ImGui::SliderFloat("Erosion cell scale", &m_HeightmapPC.settings[6], 0.0f, 1.5f)) {updateHeightmap(true);}
-				if(ImGui::SliderFloat("Erosion normalization", &m_HeightmapPC.settings[7], 0.0f, 1.f)) {updateHeightmap(true);}
-				
-				int erosionoctaves = static_cast<int>(m_HeightmapPC.settings[8]);
-				if(ImGui::SliderInt("Erosion octaves", &erosionoctaves, 0, 10)) {
-					m_HeightmapPC.settings[8] = static_cast<float>(erosionoctaves);
-					updateHeightmap(true);
-				}
-				if(ImGui::SliderFloat("Erosion lacunarity", &m_HeightmapPC.settings[9], 1.0f, 4.f)) {updateHeightmap(true);}
-				if(ImGui::SliderFloat("Erosion gain", &m_HeightmapPC.settings[10], 0.0f, 1.f)) {updateHeightmap(true);}
-
 				ImVec2 panelSize = ImGui::GetContentRegionAvail();
 				panelSize.x = std::min(std::min(panelSize.x, static_cast<float>(m_HeightmapSize)), panelSize.y);
 				panelSize.y = panelSize.x;
 				ImGui::Image((ImTextureID)m_HeightmapImGuiDescriptors, panelSize);
-				
 			}
 			
 			ImGui::End();
