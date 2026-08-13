@@ -16,6 +16,8 @@ Application::Application(uint32_t width, uint32_t height) : m_Width(width), m_He
 	initSyncStructures();
 	
 	initDescriptors();
+	m_AtmosphereManager.init(m_Device, m_Allocator, this);
+
 	initPipelines();
 	
 	initTerrainPatches();
@@ -231,8 +233,9 @@ void Application::initSyncStructures() {
 
 void Application::initDescriptors() {
 	std::vector<DescriptorAllocator::PoolSizeRatio> sizes = {
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 }
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 }
 	};
 	
 	g_DescriptorAllocator.init_pool(m_Device, 10, sizes);
@@ -262,17 +265,17 @@ void Application::initDescriptors() {
 	});
 }
 
-ComputeEffect Application::loadComputeShader(std::string path, std::string name) {
+ComputeEffect Application::loadComputeShader(std::string path, std::string name, VkPipelineLayout layout) {
 	CompiledShader computeShader = loadShader(path, VK_SHADER_STAGE_COMPUTE_BIT);
 	
 	VkComputePipelineCreateInfo computePipelineCreateInfo{};
 	computePipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
 	computePipelineCreateInfo.pNext = nullptr;
-	computePipelineCreateInfo.layout = m_HeightmapLayout;
+	computePipelineCreateInfo.layout = layout;
 	computePipelineCreateInfo.stage = computeShader.stageInfo;
 	
 	ComputeEffect computeEffect;
-	computeEffect.layout = m_HeightmapLayout;
+	computeEffect.layout = layout;
 	computeEffect.name = name;
 	
 	VK_CHECK(vkCreateComputePipelines(m_Device, VK_NULL_HANDLE, 1, &computePipelineCreateInfo, nullptr, &computeEffect.pipeline));
@@ -363,7 +366,7 @@ void Application::initComputePipelines() {
 	
 	m_HeightmapPC.offset = {0,0};
 	m_HeightmapPC.dirtyMin = {0,0};
-	m_HeightmapEffect = loadComputeShader("src/shaders/bin/heightmap.comp.spv", "heightmap shader");
+	m_HeightmapEffect = loadComputeShader("src/shaders/bin/heightmap.comp.spv", "heightmap shader", m_HeightmapLayout);
 	
 	m_DeletionQueue.push([&]() {
 		vkDestroyImageView(m_Device, m_Heightmap.imageView, nullptr);
@@ -486,72 +489,24 @@ void Application::initTessellationPipeline() {
 	});
 }
 
-void Application::initSkyPipeline() {
-	CompiledShader   vertexShader = loadShader("src/shaders/bin/fullscreen.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
-	CompiledShader fragmentShader = loadShader("src/shaders/bin/sky.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
-	
-	VkPushConstantRange bufferRange{};
-	bufferRange.offset = 0;
-	bufferRange.size = sizeof(SkyPushConstants);
-	bufferRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-	
-	VkPipelineLayoutCreateInfo pipelineLayoutInfo = vkinit::pipeline_layout_create_info();
-	pipelineLayoutInfo.pPushConstantRanges = &bufferRange;
-	pipelineLayoutInfo.pushConstantRangeCount = 1;
-	pipelineLayoutInfo.pSetLayouts = nullptr;
-	pipelineLayoutInfo.setLayoutCount = 0;
-	
-	VK_CHECK(vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_SkyLayout));
-	
-	
-	PipelineBuilder pipelineBuilder;
-		
-	pipelineBuilder._pipelineLayout = m_SkyLayout;
-	pipelineBuilder.set_shaders(vertexShader.shader, fragmentShader.shader);
-	pipelineBuilder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-	pipelineBuilder.set_polygon_mode(VK_POLYGON_MODE_FILL);
-	pipelineBuilder.set_cull_mode(VK_CULL_MODE_BACK_BIT, VK_FRONT_FACE_CLOCKWISE);
-	
-	pipelineBuilder.set_multisampling_none();
-	pipelineBuilder.disable_blending();
-	pipelineBuilder.enable_depthtest(false, VK_COMPARE_OP_EQUAL   );
-	
-	pipelineBuilder.set_color_attachment_format(m_DrawImage.imageFormat);
-	pipelineBuilder.set_depth_format(m_DepthBuffer.imageFormat);
-	
-	m_SkyPipeline = pipelineBuilder.build_pipeline(m_Device);
-	
-	m_DeletionQueue.push([&]() {
-		vkDestroyPipelineLayout(m_Device, m_SkyLayout, nullptr);
-		vkDestroyPipeline(m_Device, m_SkyPipeline, nullptr);
-	});
-}
-
 void Application::initPipelines() {
 	initComputePipelines();
 	initTessellationPipeline();
-	initSkyPipeline();
+	m_AtmosphereManager.initSkyPipeline(this);
 	
 	//initTextures();
 }
 
 void Application::initImGui() {
-	VkDescriptorPoolSize pool_sizes[] = { { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000 },
-		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
-		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
-		{ VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 } };
+	VkDescriptorPoolSize pool_sizes[] = {
+		{ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 10 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 10 }
+	};
 		
 	VkDescriptorPoolCreateInfo pool_info = {};
 	pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-	pool_info.maxSets = 1000;
+	pool_info.maxSets = 10;
 	pool_info.poolSizeCount = (uint32_t)std::size(pool_sizes);
 	pool_info.pPoolSizes = pool_sizes;
 	
@@ -651,7 +606,6 @@ GPUMeshBuffers Application::uploadMesh(std::span<uint32_t> indices, std::span<Ve
 
 void Application::initDefaultData() {
 	m_TextureLoader.pass(m_Device, m_Allocator);
-	m_AtmosphereManager.init(m_Device, m_Allocator, this);
 	
 	loadTextures();
 	
@@ -983,13 +937,15 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	projection[1][1] *= -1; // vulkan had to go out of its way to break the standard and make the Y axis reversed ):
 	
 	m_Sunpos += glm::vec2(0.0,0.01);
-	m_SkyPC.sundir = glm::normalize(glm::vec3{
+	glm::vec3 sunDir = glm::normalize(glm::vec3{
 		std::cos(m_Sunpos.y) * std::sin(m_Sunpos.x),
 		std::sin(m_Sunpos.y),
 		std::cos(m_Sunpos.y) * std::cos(m_Sunpos.x)
 	});
 	
-	m_TerrainPC.sundir = m_SkyPC.sundir;
+	if(std::abs(m_Sunpos.x - m_AtmosphereManager.sunpos.x) + std::abs(m_Sunpos.y - m_AtmosphereManager.sunpos.y) > 0.1) m_AtmosphereManager.update(m_Sunpos);
+	
+	m_TerrainPC.sundir = sunDir;
 	m_TerrainPC.campos = campos;
 
 	// ---
@@ -1008,15 +964,7 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	
 	vkCmdDraw(cmd, static_cast<uint32_t>(m_PatchVertices.size()), 1, 0, 0);
 	// ---
-	
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SkyPipeline);
-	
-	
-	m_SkyPC.viewproj = glm::inverse(projection * globalview);
-	
-	vkCmdPushConstants(cmd, m_SkyLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SkyPushConstants), &m_SkyPC);
-	
-	vkCmdDraw(cmd, 3, 1, 0, 0);
+	m_AtmosphereManager.draw(cmd);
 	// ---
 	vkCmdEndRendering(cmd);
 }

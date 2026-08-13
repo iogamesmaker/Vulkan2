@@ -23,7 +23,7 @@
 #include <vk_pipelines.h>		// vkguide.dev
 #include <camera.h> 			// vkguide.dev
 
-#include "VkBootstrap.h" // saves like 100 lines of extra setup
+#include "VkBootstrap.h" 		// saves like 100 lines of extra setup
 
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
@@ -49,11 +49,6 @@ struct TessellationPushConstants {
 	float factor = 1.0f;
 	glm::ivec2 worldoffset;
 	glm::ivec2 screen;
-};
-
-struct SkyPushConstants {
-	glm::mat4 viewproj;
-	glm::vec3 sundir;
 };
 
 struct DeletionQueue { // high IQ play by the author of vkguide.dev
@@ -101,7 +96,7 @@ public:
 	
 	void immediateSubmit(std::function<void(VkCommandBuffer cmd)>&& function);
 	
-	ComputeEffect loadComputeShader(std::string path, std::string name);
+	ComputeEffect loadComputeShader(std::string path, std::string name, VkPipelineLayout layout);
 	CompiledShader loadShader(std::string path, VkShaderStageFlagBits stage);
 
 	AllocatedBuffer createBuffer(size_t size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage);
@@ -138,7 +133,7 @@ public:
 	VkQueue m_GraphicsQueue;
 	uint32_t m_GraphicsQueueFamily{0};
 	
-	glm::vec2 m_Sunpos;
+	glm::vec2 m_Sunpos{};
 	
 	DescriptorAllocator g_DescriptorAllocator;
 	
@@ -155,9 +150,10 @@ public:
 	VkDescriptorSet m_TerrainDescriptors;
 	VkDescriptorSetLayout m_TerrainDescriptorLayout;
 	
-	VkPipeline m_SkyPipeline;
-	VkPipelineLayout m_SkyLayout;
-	SkyPushConstants m_SkyPC;
+	AllocatedImage m_DrawImage;
+	AllocatedImage m_DepthBuffer;
+	
+	VkSampler m_Sampler;
 		
 	std::vector<std::shared_ptr<MeshAsset>> testMeshes;
 	
@@ -216,9 +212,6 @@ private:
 	DeletionQueue m_DeletionQueue;
 	VmaAllocator m_Allocator;
 	
-	AllocatedImage m_DrawImage;
-	AllocatedImage m_DepthBuffer;
-	
 	std::vector<AllocatedImage> m_AlbedoMaps;
 	std::vector<AllocatedImage> m_NormalMaps;
 	std::vector<AllocatedImage> m_HeightMaps;
@@ -227,7 +220,6 @@ private:
 	
 	VkExtent2D m_DrawExtent;
 	
-	VkSampler m_Sampler;
 	VkSampler m_HeightmapSampler;
 	
 	Camera m_Camera{};
