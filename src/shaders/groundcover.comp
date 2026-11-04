@@ -1,0 +1,167 @@
+#version 450
+// scatters the ground cover (ferns, bushes, nettles, weeds, dead branches, clover) on two world anchored grids around
+// the camera every frame, like the grass and the props: the bigger plants on a coarse grid out to ~110m, the small
+// ones on a fine grid close by. one plant per cell at most, picked by what the ground is (forest floor, meadow, damp),
+// in patches. binned per mesh for indexed indirect draws, plus shadow casters near the camera
+
+layout(local_size_x = 64) in;
+
+#include "groundcovercommon.glsl"
+#include "biometools.glsl"
+#include "terrainheight.glsl"
+
+layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 1) uniform sampler2D climateMap; // half resolution
+layout(std430, set = 0, binding = 2) writeonly buffer Instances { GroundCoverInstance instances[]; };
+struct DrawCommand { uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset; uint firstInstance; };
+// [0, GC_MAX_MESHES) what the camera sees, per mesh, then the same for the shadow casters
+layout(std430, set = 0, binding = 3) buffer Commands { DrawCommand commands[GC_MAX_MESHES * 2]; };
+layout(std430, set = 0, binding = 4) readonly buffer Species { GroundCoverSpecies species[GC_SPECIES]; };
+
+const uint SIDE_BIG = uint(2.0 * GC_RADIUS_BIG / GC_CELL_BIG);		// GroundCover::SIDE_BIG
+const uint SIDE_SMALL = uint(2.0 * GC_RADIUS_SMALL / GC_CELL_SMALL); // GroundCover::SIDE_SMALL
+
+void append(uint bin, GroundCoverInstance instance) {
+	uint slot = atomicAdd(commands[bin].instanceCount, 1u);
+	if (slot >= GC_CAPACITY) { atomicAdd(commands[bin].instanceCount, uint(-1)); return; }
+	instances[bin * GC_CAPACITY + slot] = instance;
+}
+
+// terrain.frag's rock / snow line noise (foliage.comp), so nothing grows where the ground shows stone
+float lineHash(vec2 p) {
+	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.x + p3.y) * p3.z);
+}
+
+float lineValueNoise(vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	vec2 u = f * f * (3.0 - 2.0 * f);
+	return mix(mix(lineHash(i), lineHash(i + vec2(1.0, 0.0)), u.x),
+			   mix(lineHash(i + vec2(0.0, 1.0)), lineHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+
+// slow patches (world units), so the plants grow in clusters and clearings instead of an even sprinkle
+float patches(vec2 world, float scale, float seed) {
+	return lineValueNoise(world / scale + seed * 37.0) * 0.7 + lineValueNoise(world / (scale * 0.37) - seed * 11.0) * 0.3;
+}
+
+void main() {
+	uint id = gl_GlobalInvocationID.x;
+	bool small = id >= SIDE_BIG * SIDE_BIG;
+	uint local = small ? id - SIDE_BIG * SIDE_BIG : id;
+	uint side = small ? SIDE_SMALL : SIDE_BIG;
+	if (local >= side * side) return;
+	float cell = small ? GC_CELL_SMALL : GC_CELL_BIG;
+	float radius = small ? GC_RADIUS_SMALL : GC_RADIUS_BIG;
+
+	vec2 camWorld = pc.campos.xz + pc.offsetWorld;
+	vec2 cellIndex = floor(camWorld / cell) - float(side / 2u) + vec2(local % side, local / side);
+	vec4 rnd = hash42(cellIndex * 1.37 + (small ? 71.0 : 13.0));
+	vec4 rnd2 = hash42(cellIndex * 0.61 - (small ? 29.0 : 47.0));
+	vec2 world = (cellIndex + 0.1 + rnd.xy * 0.8) * cell;
+	vec2 xz = world - pc.offsetWorld;
+	float distXZ = distance(xz, pc.campos.xz);
+	if (distXZ > radius) return;
+
+	vec2 size = vec2(textureSize(heightmap, 0));
+	vec2 uv = heightmapUV(xz, size);
+	vec4 data = vec4(textureLod(climateMap, uv, 0.0).rgb, textureLod(heightmap, uv, 0.0).a); // climate, height
+	float roughY = data.a * pc.factor - pc.factor * 0.5;
+	float dist = length(vec2(distXZ, roughY - pc.campos.y));
+	if (dist > radius) return;
+
+	// the same rock / snow masks as the grass (foliage.comp): nothing on stone, thinning towards it
+	float hR = textureLodOffset(heightmap, uv, 0.0, ivec2(1, 0)).a, hL = textureLodOffset(heightmap, uv, 0.0, ivec2(-1, 0)).a;
+	float hT = textureLodOffset(heightmap, uv, 0.0, ivec2(0, 1)).a, hB = textureLodOffset(heightmap, uv, 0.0, ivec2(0, -1)).a;
+	float slope = pow((hR - hL) * heightmapSlopeScale(size.x), 2.0) + pow((hT - hB) * heightmapSlopeScale(size.x), 2.0);
+	float mountains = mountainWeight(data.rgb);
+	float lineNoise = lineValueNoise(uv * 180.0) * 0.65 + lineValueNoise(uv * 900.0) * 0.35;
+	float steepRock = smoothstep(mix(0.6, 0.35, mountains), mix(1.0, 0.75, mountains), slope + (lineNoise - 0.5) * 0.3);
+	float rockline = 0.58 + (lineNoise - 0.5) * 0.12;
+	float highRock = smoothstep(rockline, rockline + 0.06, data.a) * mountains;
+	float snowline = mix(0.44, 0.68, data.r);
+	float snowCover = smoothstep(snowline - 0.03, snowline + 0.06, data.a) * (1.0 - steepRock * 0.8);
+	float snowCap = smoothstep(0.1, 0.3, snowCover) * mountains;
+	float stone = max(steepRock, highRock);
+	if (stone > 0.2) return;
+	float bare = max(stone * 4.0, snowCap);
+	if (bare > 0.85) return;
+
+	float weights[BIOME_COUNT];
+	groundCover(data.rgb, true, weights);
+	float barren = smoothstep(0.1, 0.3, weights[BIOME_DESERT] + weights[BIOME_SNOW]);
+	float field = smoothstep(0.35, 0.5, weights[BIOME_WHEAT] * (1.0 - mountains));
+	float alive = (1.0 - barren) * (1.0 - field) * (1.0 - smoothstep(0.3, 0.85, bare)) * pc.interaction; // * the density setting
+	if (alive <= 0.0) return;
+	// forest floor (as the props see it), open meadow, how damp it is
+	float forest = clamp(weights[BIOME_TAIGA] + weights[BIOME_PLAINS] * smoothstep(0.55, 0.75, data.g), 0.0, 1.0); // (treeChances' broadleaf woods)
+	float meadow = clamp(smoothstep(0.2, 0.5, weights[BIOME_PLAINS] + weights[BIOME_WHEAT] * mountains) - forest * 0.6, 0.0, 1.0);
+	float damp = smoothstep(0.45, 0.75, data.g);
+	// forest edges: where the forest thins into the meadow the bushes and nettles crowd
+	float edge = forest * meadow * 4.0;
+
+	// chances per cell (the big cells are ~0.8 m^2, the small ones ~0.1 m^2)
+	float chance[GC_SPECIES];
+	for (int i = 0; i < GC_SPECIES; i++) chance[i] = 0.0;
+	if (!small) {
+		chance[GC_FERN] = (forest * 0.55 + meadow * damp * 0.08 + edge * 0.15) * mix(0.15, 1.8, smoothstep(0.3, 0.7, patches(world, 2.0, 1.0)));
+		chance[GC_BRANCHES] = forest * 0.04;
+		chance[GC_SHRUB] = (forest * 0.04 + meadow * 0.012 + edge * 0.1) * mix(0.3, 1.7, patches(world, 3.0, 2.0));
+		chance[GC_BUSH] = (forest * 0.1 + meadow * 0.08 + edge * 0.1) * mix(0.2, 1.8, patches(world, 1.5, 3.0));
+		chance[GC_NETTLE] = (meadow * damp * 0.1 + forest * damp * 0.05 + edge * 0.1) * smoothstep(0.35, 0.65, patches(world, 1.2, 4.0)) * 2.0;
+		chance[GC_PERIWINKLE] = forest * 0.16 * smoothstep(0.35, 0.65, patches(world, 1.0, 5.0)) * 2.0;
+	} else {
+		chance[GC_SORREL] = (forest * 0.3 + meadow * 0.15) * mix(0.2, 1.8, patches(world, 0.6, 6.0));
+		chance[GC_WEED] = (meadow * 0.15 + forest * 0.05) * mix(0.3, 1.7, patches(world, 0.8, 7.0));
+		chance[GC_DANDELION] = meadow * 0.07 * smoothstep(0.4, 0.75, patches(world, 1.0, 8.0)) * 2.5;
+	}
+	// how far out each kind shows: the small / low ones only near (they'd be a pixel), and towards the end of its
+	// range a kind thins out at random so there's no clean edge
+	const float reach[GC_SPECIES] = float[](8.0, 6.0, GC_RADIUS_BIG, 6.0, 5.0, 4.0, GC_RADIUS_SMALL, GC_RADIUS_SMALL, GC_RADIUS_SMALL);
+	float keep = hash42(cellIndex * 0.83 + 5.0).x;
+
+	float total = 0.0;
+	for (int i = 0; i < GC_SPECIES; i++) total += chance[i] * alive;
+	float roll = rnd.z * max(total, 1.0);
+	int kind = -1;
+	float sum = 0.0;
+	for (int i = 0; i < GC_SPECIES; i++) {
+		sum += chance[i] * alive;
+		if (roll < sum) { kind = i; break; }
+	}
+	if (kind < 0) return;
+	if (keep < smoothstep(reach[kind] * 0.55, reach[kind], dist)) return;
+	// the heavy ones thin out with distance before that too (they're small on screen, the triangles add up)
+	if (kind == GC_FERN && keep < smoothstep(3.0, 6.0, dist) * 0.5) return;
+
+	GroundCoverSpecies sp = species[kind];
+	if (sp.meshes.y == 0u) return;
+	// the variants are sorted lightest first: past a third of its reach only the lighter half (the dense ones
+	// up close, where their detail shows)
+	uint variants = dist > reach[kind] * 0.35 ? (sp.meshes.y + 1u) / 2u : sp.meshes.y;
+	uint mesh = sp.meshes.x + min(uint(rnd.w * float(variants)), variants - 1u);
+	// the models are real world size (metres, GroundCover::init converts to world units), a bit of variation
+	// on top. some are scaled up: the nettles and clover in the downloads are seedlings
+	const float minScale[GC_SPECIES] = float[](1.8, 0.8, 0.8, 1.4, 2.6, 0.9, 1.6, 1.2, 1.0);
+	const float maxScale[GC_SPECIES] = float[](3.2, 1.2, 1.3, 2.4, 4.0, 1.4, 2.4, 1.8, 1.3);
+	float scale = mix(minScale[kind], maxScale[kind], rnd2.x);
+
+	float groundY = terrainHeight(heightmap, uv, distXZ, terrainSpacing(distXZ, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
+	groundY -= meshSag(heightmap, uv, terrainSpacing(dist, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
+	GroundCoverInstance instance;
+	instance.posScale = vec4(xz.x, groundY - 0.002, xz.y, scale);
+	const float sway[GC_SPECIES] = float[](1.0, 0.0, 0.35, 0.5, 0.8, 0.4, 0.6, 1.0, 1.0);
+	instance.params = vec4(rnd2.z * 6.2831853, clamp(data.g * 0.6 + rnd2.y * 0.4, 0.0, 1.0), rnd2.w, sway[kind]);
+
+	// shadows from the plants big enough to cast one that shows
+	bool caster = kind == GC_FERN || kind == GC_SHRUB || kind == GC_BUSH || kind == GC_NETTLE || kind == GC_BRANCHES;
+	if (caster && dist < (kind == GC_SHRUB ? GC_SHADOW_DISTANCE * 2.0 : GC_SHADOW_DISTANCE)) append(uint(GC_MAX_MESHES) + mesh, instance);
+
+	float sphere = sp.size.x * scale;
+	vec4 clip = pc.viewproj * vec4(instance.posScale.xyz + vec3(0.0, sphere * 0.5, 0.0), 1.0);
+	float margin = sphere * 1.5;
+	if (clip.w < -margin || abs(clip.x) > clip.w + margin || abs(clip.y) > clip.w + margin) return;
+	append(mesh, instance);
+}

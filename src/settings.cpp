@@ -179,6 +179,8 @@ void Application::drawSettings() {
 	check("Trees", &s.trees);
 	slider("Tree density", &s.treeDensity, 0.0f, 3.0f);
 	check("Rocks + logs", &s.props);
+	check("Ground cover", &s.groundCover);
+	slider("Ground cover density", &s.groundCoverDensity, 0.0f, 2.0f);
 
 	ImGui::SeparatorText("Lighting + post");
 	check("SSAO", &s.ssao);
@@ -261,7 +263,8 @@ void Application::applySettings() {
 
 	// the shadow casters change with these, the cached cascades have to be re-rendered
 	bool recast = m_Foliage.m_CastShadows != s.grassShadows || m_Trees.m_Enabled != s.trees || m_Trees.m_Density != s.treeDensity
-				|| m_Props.m_Enabled != s.props || m_Foliage.m_Enabled != s.foliage;
+				|| m_Props.m_Enabled != s.props || m_Foliage.m_Enabled != s.foliage
+				|| m_GroundCover.m_Enabled != s.groundCover || m_GroundCover.m_Density != s.groundCoverDensity;
 	m_Shadows.setQuality(s.shadows, s.softShadows);
 	{
 		uint32_t resolution = 1024u << std::clamp(s.shadowResolution, 0, 2);
@@ -289,6 +292,8 @@ void Application::applySettings() {
 	m_Trees.m_Enabled = s.trees;
 	m_Trees.m_Density = s.treeDensity;
 	m_Props.m_Enabled = s.props;
+	m_GroundCover.m_Enabled = s.groundCover;
+	m_GroundCover.m_Density = s.groundCoverDensity;
 	if(canopyChanged && m_Device && m_SkyVisibilityReady) {
 		{
 			std::lock_guard<std::mutex> lock(m_QueueMutex);

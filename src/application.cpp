@@ -83,6 +83,7 @@ Application::~Application() {
 		m_TerrainCache.destroy();
 		m_DebugView.destroy(); // before imgui shuts down (the deletion queue), it removes its imgui texture
 		m_Props.destroy();
+		m_GroundCover.destroy();
 		m_Precipitation.destroy();
 		m_Foliage.destroy();
 		m_Trees.destroy();
@@ -150,6 +151,7 @@ void Application::initVulkan() {
 	// Base features
 	VkPhysicalDeviceFeatures features10 {};
 	features10.tessellationShader = VK_TRUE;
+	features10.multiDrawIndirect = VK_TRUE; // the ground cover draws all its meshes with one indirect call
 	features10.textureCompressionBC = VK_TRUE; // block compressed textures, see TextureLoader::loadCompressed
 	features10.shaderStorageImageExtendedFormats = VK_TRUE; // rg16f storage image for the path map
 	features10.samplerAnisotropy = VK_TRUE; // the material sampler (see initSamplers): grazing ground otherwise smears into streaks
@@ -820,6 +822,7 @@ void Application::initDefaultData() {
 												m_HasEndGrain ? m_EndGrain[0].imageView : m_TreeTextures[1].imageView,
 												m_HasEndGrain ? m_EndGrain[1].imageView : m_TreeTextures[5].imageView };
 	m_Props.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, propTextures, m_HasEndGrain, m_Sampler, m_Shadows.getFormat());
+	m_GroundCover.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Sampler, m_Shadows.getFormat());
 	m_Trees.setOcclusionSource(m_HiZ.getView(), m_HiZ.getSampler());
 	m_Precipitation.init(this, m_OutputImage.imageFormat, m_AtmosphereManager.getRenderDescriptorLayout());
 	m_Precipitation.setDepth(m_DepthBuffer.imageView, m_NearestSampler);
@@ -835,6 +838,11 @@ void Application::initDefaultData() {
 		else if(name == "ultra") m_Quality = Quality::Ultra;
 		m_Settings = qualityPreset(m_Quality);
 		if(name == "off") { m_Settings = everythingOff(m_Settings); m_Quality = Quality::Custom; }
+	}
+	// VULKAN2_GROUNDCOVER=<density>, 0 = off (comparison captures)
+	if(const char* density = std::getenv("VULKAN2_GROUNDCOVER")) {
+		m_Settings.groundCoverDensity = static_cast<float>(std::atof(density));
+		m_Settings.groundCover = m_Settings.groundCoverDensity > 0.0f;
 	}
 	if(!m_Shots.empty()) m_Settings.vsync = false; // see parseShots
 	applySettings();
@@ -1430,6 +1438,7 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	split();
 	m_Foliage.draw(cmd, m_AtmosphereManager.getRenderDescriptor(), m_Shadows.getDescriptor(m_FrameNumber));
 	m_Props.draw(cmd);
+	m_GroundCover.draw(cmd);
 	vkCmdEndRendering(cmd);
 	for(; pendingTimestamps > 0; pendingTimestamps--) timestamp(cmd, nextTimestamp++);
 	timestamp(cmd, nextTimestamp++); // after the grass
@@ -2192,6 +2201,7 @@ void Application::draw() {
 	}
 	m_Foliage.update(cmd, foliagePC);
 	m_Props.update(cmd, foliagePC);
+	m_GroundCover.update(cmd, foliagePC);
 // last frame's depth pyramid: only while it's valid and the map hasn't re-centred since (the camera spaces differ)
 	{
 		VkExtent2D pyramid = m_HiZ.getSize();
@@ -2226,6 +2236,7 @@ void Application::draw() {
 		if(draw.cascade < SHADOW_TERRAIN_ONLY) m_Trees.drawShadow(cmd, draw.viewProj); // the far ones are terrain only
 		if(draw.cascade == 0) m_Foliage.drawShadow(cmd, draw.viewProj); // grass shadows only matter up close
 		if(draw.cascade < SHADOW_TERRAIN_ONLY) m_Props.drawShadow(cmd, draw.viewProj);
+		if(draw.cascade == 0) m_GroundCover.drawShadow(cmd, draw.viewProj); // near the camera only, like the grass
 	});
 
 
