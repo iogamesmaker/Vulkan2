@@ -1,0 +1,81 @@
+#version 450
+// screen space shadow filter: the opaque pass writes its sun / moon light without shadows (rgb) and the shadow term
+// (a) to a second target. this blurs the shadow term with a depth aware gaussian (two separable passes) and adds
+// the shadowed light to the draw image, which turns the noisy PCSS penumbras into smooth gradients.
+// each group loads its strip of the shadow term + depth (with the blur's apron) into shared memory once, every tap
+// used to read both from memory again (2 * (2r + 1) image reads per pixel and pass)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform image2D drawImage;
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D directLight;
+layout(set = 0, binding = 2, r16f) uniform image2D shadowTemp; // after the horizontal pass
+layout(set = 0, binding = 3) uniform sampler2D depthBuffer;
+
+layout(push_constant) uniform constants {
+	ivec2 size;
+	int pass;	// 0 = horizontal, 1 = vertical + add the light
+	int radius; // pixels
+} pc;
+
+#define MAX_RADIUS 8 // the settings' "shadow smoothing" range
+#define STRIP (8 + 2 * MAX_RADIUS)
+
+// [across][along], along = the blur's direction
+shared float sShadow[8][STRIP];
+shared float sDepth[8][STRIP];
+
+// reversed z, so 1 / depth is proportional to the view distance (only relative differences matter here)
+float viewDepth(float depth) {
+	return 1.0 / max(depth, 1e-7);
+}
+
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 local = ivec2(gl_LocalInvocationID.xy);
+	int radius = min(pc.radius, MAX_RADIUS);
+	ivec2 dir = pc.pass == 0 ? ivec2(1, 0) : ivec2(0, 1);
+	int along = pc.pass == 0 ? local.x : local.y;
+	int across = pc.pass == 0 ? local.y : local.x;
+
+	// the strip: the group's 8 pixels along the blur plus radius on either side, for each of its 8 rows / columns
+	ivec2 groupStart = ivec2(gl_WorkGroupID.xy) * 8;
+	ivec2 lineStart = groupStart + (pc.pass == 0 ? ivec2(0, across) : ivec2(across, 0)) - dir * radius;
+	for (int i = along; i < 8 + 2 * radius; i += 8) {
+		ivec2 q = clamp(lineStart + dir * i, ivec2(0), pc.size - 1);
+		sShadow[across][i] = pc.pass == 0 ? imageLoad(directLight, q).a : imageLoad(shadowTemp, q).r;
+		sDepth[across][i] = texelFetch(depthBuffer, q, 0).r;
+	}
+	barrier();
+
+	if (any(greaterThanEqual(p, pc.size))) return;
+	float rawDepth = sDepth[across][along + radius];
+	if (rawDepth <= 0.0) {
+		// the sky: no direct light to add (sky.frag writes 0), but the temp still needs a number in it, the
+		// vertical pass reads it with zero weight and 0 * NaN would poison its neighbours
+		if (pc.pass == 0) imageStore(shadowTemp, p, vec4(1.0));
+		return;
+	}
+
+	float centerDepth = viewDepth(rawDepth);
+	float tolerance = centerDepth * 0.04; // neighbours further than this in depth are a different surface
+	float sigma = max(float(radius) * 0.6, 0.5);
+	float falloff = -1.0 / (2.0 * sigma * sigma);
+
+	float sum = 0.0, weights = 0.0;
+	for (int i = -radius; i <= radius; i++) {
+		int t = along + radius + i;
+		float w = exp(float(i * i) * falloff) * max(1.0 - abs(viewDepth(sDepth[across][t]) - centerDepth) / tolerance, 0.0);
+		sum += sShadow[across][t] * w;
+		weights += w;
+	}
+	float shadow = sum / max(weights, 1e-5); // the centre always has weight 1
+
+	if (pc.pass == 0) {
+		imageStore(shadowTemp, p, vec4(shadow));
+	} else {
+		vec3 direct = imageLoad(directLight, p).rgb;
+		vec4 color = imageLoad(drawImage, p);
+		imageStore(drawImage, p, vec4(color.rgb + direct * shadow, color.a));
+	}
+}

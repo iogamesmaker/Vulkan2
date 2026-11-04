@@ -39,6 +39,10 @@ public:
     void enable_blending_alphablend();
 
     void set_color_attachment_format(VkFormat format);
+	// another colour attachment after the first one, same blend state, writeMask 0 = left alone
+	void add_color_attachment(VkFormat format, VkColorComponentFlags writeMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
+	std::vector<VkFormat> _colorFormats;
+	std::vector<VkColorComponentFlags> _extraWriteMasks;
 	void set_depth_format(VkFormat format);
 	void disable_depthtest();
     void enable_depthtest(bool depthWriteEnable,VkCompareOp op);

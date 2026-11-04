@@ -1,0 +1,86 @@
+#version 450
+// auto exposure: one workgroup meters the HDR image (log average luminance, weighted towards the middle of the
+// screen) and eases the exposure towards it over time, like an eye adapting. post.comp reads the result.
+// runs on the post pass' descriptor set and push constants (pad.x = seconds since the last frame)
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(rgba16f, set = 0, binding = 0) uniform readonly image2D image;
+layout(std430, set = 0, binding = 4) buffer Exposure {
+	float exposure;	   // what post.comp multiplies the image by (before the compensation)
+	float luminance;   // metered log average luminance, for debugging
+	float target;	   // the exposure it's adapting towards
+	float pad;
+} state;
+
+layout(push_constant) uniform constants {
+	mat4 invViewProj;
+	vec3 camPos;
+	float compensation; // exposure compensation (2^EV), applied in post.comp, unused here
+	vec3 lightDir;
+	float lightIlluminance;
+	vec2 lightUV;
+	float godrayStrength;
+	float lightOnScreen;
+	float godrayDecay;
+	float godrayLength;
+	vec2 pad; // x = delta time
+} pc;
+
+// the luminance range the metering may adapt over. below MIN the image just gets darker (nights stay night),
+// above MAX brighter (snow fields in full sun aren't pulled down to grey)
+const float KEY = 0.2;		 // where an average daylight scene ends up after exposure (about middle grey)
+const float MIN_LUMINANCE = 0.0006; // darker than this isn't brightened any further (moonlit meadows meter ~0.002, under trees far less)
+// like an eye, the exposure only follows part of the way: a dark scene ends up darker than a bright one instead of
+// everything being normalised to the same brightness (that boosted dark scenes and their bloom way too much)
+const float ADAPTATION = 0.85; // 0.7 left moonlit nights black
+const float REFERENCE = 1.0;	   // the metered luminance of a typical sunny scene, where the partial adaptation pivots
+const float MAX_LUMINANCE = 8.0;
+const float SPEED_BRIGHTEN = 1.2; // per second, eyes adapt to the dark slower than to the light
+const float SPEED_DARKEN = 2.5;
+
+shared float sumLog[256];
+shared float sumWeight[256];
+
+void main() {
+	ivec2 size = imageSize(image);
+	uint index = gl_LocalInvocationIndex;
+
+	// 2x2 samples in each of the 16x16 cells
+	float logSum = 0.0, weightSum = 0.0;
+	for (int i = 0; i < 4; i++) {
+		vec2 uv = (vec2(gl_LocalInvocationID.xy) + vec2(i & 1, i >> 1) * 0.5 + 0.25) / 16.0;
+		vec3 color = imageLoad(image, ivec2(uv * vec2(size))).rgb;
+		float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+		float weight = clamp(1.2 - length((uv - 0.5) * vec2(1.6, 1.0)) * 1.4, 0.15, 1.0); // centre weighted
+		logSum += log2(max(luminance, 1e-5)) * weight;
+		weightSum += weight;
+	}
+	sumLog[index] = logSum;
+	sumWeight[index] = weightSum;
+	barrier();
+	for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+		if (index < stride) {
+			sumLog[index] += sumLog[index + stride];
+			sumWeight[index] += sumWeight[index + stride];
+		}
+		barrier();
+	}
+
+	if (index == 0u) {
+		float luminance = exp2(sumLog[0] / sumWeight[0]);
+		float adapted = exp2(mix(log2(REFERENCE), log2(clamp(luminance, MIN_LUMINANCE, MAX_LUMINANCE)), ADAPTATION));
+		float target = KEY / adapted;
+		float previous = state.exposure;
+		float exposure;
+		if (!(previous > 0.0) || isinf(previous)) exposure = target; // first frame (or garbage)
+		else {
+			float speed = target > previous ? SPEED_BRIGHTEN : SPEED_DARKEN;
+			float t = 1.0 - exp(-max(pc.pad.x, 0.0) * speed);
+			exposure = exp2(mix(log2(previous), log2(target), t)); // eases in EV, not linearly
+		}
+		state.exposure = exposure;
+		state.luminance = luminance;
+		state.target = target;
+	}
+}

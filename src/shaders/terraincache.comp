@@ -1,0 +1,87 @@
+#version 450
+#extension GL_EXT_nonuniform_qualifier : require // texture index changes per texel
+// bakes the terrain's finished surface (terrainmaterial.glsl, exactly what terrain.frag would shade) into one level
+// of the far field cache (terraincache.hpp). the levels are toroidal: a world texel always lives at the same place
+// (its coordinates modulo the size), so when the camera moves only the texels that newly came into the square are
+// baked, the rest stays. far field only: no parallax, the far texture scale, the bumps are added by terrain.frag
+// albedo: sRGB encoded by hand (the image is written through a UNORM view, read through an sRGB one), a = the
+// wheat canopy's share. normal: world space xz * 0.5 + 0.5 (y is up, from the unit length)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#include "biometools.glsl"
+#include "terrainheight.glsl"
+#include "paths.glsl"
+
+// the terrain's own descriptor set and the atmosphere's (the UBO)
+layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 1) uniform sampler2D albedo[];
+layout(set = 0, binding = 2) uniform sampler2D normalmap[];
+layout(set = 0, binding = 3) uniform sampler2D pom[];
+layout(set = 0, binding = 4) uniform sampler2D pathMap;
+
+#define ATMOSPHERE_SET 1
+#define ATMOSPHERE_BINDING 4
+#include "atmosphere.glsl"
+
+layout(rgba8, set = 2, binding = 0) uniform writeonly image2DArray cacheAlbedo;
+layout(rg8, set = 2, binding = 1) uniform writeonly image2DArray cacheNormal;
+
+layout(push_constant) uniform constants {
+	ivec2 bakeMin;	// the square to fill: its first texel, world texel coordinates
+	ivec2 keepMin;	// the square baked before, still valid: skipped (keep = 0: none)
+	int level;
+	int keep;
+	float texel;	// world units per texel
+	float factor;	// world units of height per unit of heightmap
+	float macroWeight;
+	float pad0, pad1, pad2;
+} pc;
+
+#include "terrainmaterial.glsl"
+
+float srgbEncode(float c) {
+	return c <= 0.0031308 ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+void main() {
+	ivec2 size = imageSize(cacheAlbedo).xy;
+	ivec2 slot = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(slot, size))) return;
+	// the world texel in the square that lands in this slot
+	ivec2 world = pc.bakeMin + ((slot - pc.bakeMin) % size + size) % size;
+	if (pc.keep != 0 && all(greaterThanEqual(world, pc.keepMin)) && all(lessThan(world, pc.keepMin + size))) return; // still there
+
+	vec2 worldXZ = (vec2(world) + 0.5) * pc.texel;
+	// the heightmap wraps, its uv is the world position over its size (+ half: terrain space is centred)
+	vec2 readCoord = worldXZ / ubo.terrainSize + 0.5;
+	vec2 heightmapSize = vec2(textureSize(heightmap, 0));
+	float height = terrainHeight(heightmap, readCoord, 1e9, 0.0, pc.factor, ubo.terrainSize);
+	// the slope over one cache texel, for the texture gradients (the side projections' v follows the height)
+	float texelWorld = ubo.terrainSize / heightmapSize.x;
+	float hR = textureLodOffset(heightmap, readCoord, 0.0, ivec2(1, 0)).a, hL = textureLodOffset(heightmap, readCoord, 0.0, ivec2(-1, 0)).a;
+	float hT = textureLodOffset(heightmap, readCoord, 0.0, ivec2(0, 1)).a, hB = textureLodOffset(heightmap, readCoord, 0.0, ivec2(0, -1)).a;
+	vec2 gradient = vec2(hR - hL, hT - hB) * pc.factor / (2.0 * texelWorld);
+
+	TerrainShading s;
+	s.position = vec3(worldXZ.x, height, worldXZ.y);
+	s.dPdx = vec3(pc.texel, gradient.x * pc.texel, 0.0);
+	s.dPdy = vec3(0.0, gradient.y * pc.texel, pc.texel);
+	s.readCoord = readCoord;
+	s.detailPos = worldXZ - TERRAIN_DETAIL_PERIOD * floor(worldXZ / TERRAIN_DETAIL_PERIOD);
+	s.worldXZ = worldXZ;
+	s.factor = pc.factor;
+	s.viewDistance = 1e9; // no parallax
+	s.campos = vec3(0.0);
+	s.sundir = vec3(0.0, 1.0, 0.0);
+	s.farWeight = 1.0;
+	s.macroWeight = pc.macroWeight;
+	s.bumpFade = 0.0;
+	s.canopyNear = 0.9; // terrain.frag's, past ~11 units
+	TerrainSurface surface = shadeTerrain(s);
+
+	vec3 encoded = vec3(srgbEncode(surface.albedo.r), srgbEncode(surface.albedo.g), srgbEncode(surface.albedo.b));
+	// (the storage views hold only this level, as their layer 0)
+	imageStore(cacheAlbedo, ivec3(slot, 0), vec4(clamp(encoded, 0.0, 1.0), surface.canopy));
+	imageStore(cacheNormal, ivec3(slot, 0), vec4(surface.normal.xz * 0.5 + 0.5, 0.0, 0.0));
+}

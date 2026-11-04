@@ -1,0 +1,29 @@
+#version 450
+// depth pyramid for occlusion culling (hiz.cpp): every texel holds the FARTHEST depth of the area it covers
+// (reversed z: the smallest value), so "behind all of this" is one comparison. mip 0 is half resolution, built from
+// the depth buffer, every other mip from the one before. odd sizes take the extra row / column too (conservative)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D source; // the depth buffer (mip 0) or the pyramid (its previous mip)
+layout(r32f, set = 0, binding = 1) uniform writeonly image2D target;
+
+layout(push_constant) uniform constants {
+	ivec2 sourceSize;
+	int sourceMip;
+} pc;
+
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(p, imageSize(target)))) return;
+
+	ivec2 base = p * 2;
+	// an odd source has one texel more than twice the target, the last target texel takes it as well
+	ivec2 extra = ivec2((pc.sourceSize.x & 1) == 1 && base.x + 2 == pc.sourceSize.x - 1 ? 1 : 0,
+						(pc.sourceSize.y & 1) == 1 && base.y + 2 == pc.sourceSize.y - 1 ? 1 : 0);
+	float farthest = 1.0;
+	for (int y = 0; y <= 1 + extra.y; y++)
+		for (int x = 0; x <= 1 + extra.x; x++)
+			farthest = min(farthest, texelFetch(source, min(base + ivec2(x, y), pc.sourceSize - 1), pc.sourceMip).r);
+	imageStore(target, p, vec4(farthest));
+}

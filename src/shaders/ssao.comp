@@ -1,0 +1,69 @@
+#version 450
+// screen space ambient occlusion (alchemy / scalable ambient obscurance style) at half resolution, noisy (rotated
+// every frame), denoised by the lighting and the TAA: around each pixel a handful of depth samples in a spiral,
+// every one that sits above the surface (in the normal's hemisphere) and close by darkens it. catches what the
+// heightmap's horizon AO is too coarse for: the foot of trees and rocks, grass roots, creases
+// (the g channel used to hold the light shafts, the volumetric fog's beams replaced them)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depthBuffer;	 // full resolution
+layout(set = 0, binding = 1) uniform sampler2D gbufferNormal; // full resolution
+layout(rg8, set = 0, binding = 2) uniform writeonly image2D occlusion; // half resolution, r = AO (1 = open)
+
+layout(push_constant) uniform constants {
+	mat4 invViewProj;
+	vec3 campos;
+	float radius;	   // world units
+	float projScale;   // pixels per world unit at distance 1 (full resolution)
+	float frame;	   // spiral rotation
+	float intensity;
+	float pad;
+} pc;
+
+float interleavedGradientNoise(vec2 p) {
+	return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+const int SAMPLES = 8;
+
+vec3 worldPosition(vec2 uv, float depth) {
+	vec4 world = pc.invViewProj * vec4(uv * 2.0 - 1.0, depth, 1.0);
+	return world.xyz / world.w;
+}
+
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 size = imageSize(occlusion);
+	if (any(greaterThanEqual(p, size))) return;
+
+	vec2 fullSize = vec2(textureSize(depthBuffer, 0));
+	ivec2 full = p * max(ivec2(round(fullSize / vec2(size))), ivec2(1)); // half resolution, or full (Ultra)
+	float depth = texelFetch(depthBuffer, full, 0).r;
+	vec2 uv = (vec2(full) + 0.5) / fullSize;
+	if (depth <= 0.0) { imageStore(occlusion, p, vec4(1.0)); return; } // sky: nothing
+
+	vec3 position = worldPosition(uv, depth);
+	vec3 normal = normalize(texelFetch(gbufferNormal, full, 0).xyz);
+	float dist = distance(position, pc.campos);
+
+	// the radius on screen, capped so far away it doesn't go hunting across half the image
+	float screenRadius = clamp(pc.radius * pc.projScale / dist, 3.0, 64.0);
+	float angle = interleavedGradientNoise(vec2(p) + pc.frame * 5.588238) * 6.2831853;
+	float sum = 0.0;
+	for (int i = 0; i < SAMPLES; i++) {
+		float t = (float(i) + 0.5) / float(SAMPLES);
+		float a = angle + t * 6.2831853 * 2.5; // a spiral, 2.5 turns
+		vec2 offset = vec2(cos(a), sin(a)) * screenRadius * t;
+		ivec2 q = clamp(full + ivec2(offset), ivec2(0), ivec2(fullSize) - 1);
+		float sampleDepth = texelFetch(depthBuffer, q, 0).r;
+		if (sampleDepth <= 0.0) continue;
+		vec3 v = worldPosition((vec2(q) + 0.5) / fullSize, sampleDepth) - position;
+		float vv = dot(v, v);
+		float vn = dot(v, normal);
+		// above the surface and close by occludes, falling off to nothing at the radius
+		sum += max(vn - 0.01 * dist * 0.02, 0.0) / (vv + 1e-3) * max(1.0 - vv / (pc.radius * pc.radius), 0.0);
+	}
+	float ao = max(1.0 - sum * pc.radius * 2.0 * pc.intensity / float(SAMPLES), 0.0);
+	imageStore(occlusion, p, vec4(ao, 1.0, 0.0, 0.0));
+}

@@ -1,0 +1,46 @@
+#version 450
+// places every tree within PLACE_RADIUS of the camera into a persistent list (continuous world coordinates, so
+// it survives map re-centering). only re-run when the camera moved far enough, trees.comp culls it every frame
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "biometools.glsl"
+#include "treecommon.glsl"
+#include "terrainheight.glsl"
+#include "paths.glsl"
+
+layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(std430, set = 0, binding = 1) writeonly buffer Placed { TreeInstance placed[]; };
+layout(std430, set = 0, binding = 2) buffer Counter { uint placedCount; };
+layout(set = 0, binding = 3) uniform sampler2D pathMap;
+
+void main() {
+	uint id = gl_GlobalInvocationID.x;
+	if (id >= PLACE_GRID_SIDE * PLACE_GRID_SIDE) return;
+
+	vec2 camWorld = pc.campos.xz + pc.offsetWorld;
+	vec2 cellIndex = floor(camWorld / TREE_CELL_SIZE) - float(PLACE_GRID_SIDE / 2u) + vec2(id % PLACE_GRID_SIDE, id / PLACE_GRID_SIDE);
+
+	TreePlacement t;
+	if (!placeTree(heightmap, cellIndex, pc.offsetWorld, pc.offset, pc.terrainSize, pc.density, t)) return;
+	float dist = distance(t.xz, pc.campos.xz);
+	if (dist > PLACE_RADIUS) return;
+	if (t.species == SPECIES_BUSH && dist > BUSH_RADIUS) return; // too small to see that far
+
+	// the terrain mesh's surface, then sunk by how much the ground drops across the trunk so the downhill side
+	// never floats (the slope here is in heightmap texels, 1.5 world units each)
+	vec2 size = vec2(textureSize(heightmap, 0));
+	float groundY = terrainHeight(heightmap, t.uv, dist, terrainSpacing(dist, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
+	// down to the mesh's flat triangles on rounded ground (foliage.comp), sized by the 3D distance like terrain.tesc
+	float dist3D = length(vec2(dist, groundY - pc.campos.y));
+	groundY -= meshSag(heightmap, t.uv, terrainSpacing(dist3D, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
+	float slopeWorld = sqrt(t.slope) * pc.factor / 256.0 / (pc.terrainSize / size.x) * 0.5;
+	float footprint = t.height * (t.species == SPECIES_BUSH ? 0.35 : 0.04);
+	float y = groundY - slopeWorld * footprint - 0.01 * t.height;
+
+	uint variant = uint(t.rnd2.x * float(VARIANTS)) % VARIANTS;
+	uint slot = atomicAdd(placedCount, 1u);
+	if (slot >= MAX_PLACED_TREES) return;
+	placed[slot].posScale = vec4(t.xz + pc.offsetWorld, y, t.height).xzyw; // world xz
+	placed[slot].params = vec4(t.rnd2.z * 6.2831853, t.dryness, t.rnd2.w * 1000.0, float(t.species * VARIANTS + variant));
+}

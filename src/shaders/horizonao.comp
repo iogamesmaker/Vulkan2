@@ -1,0 +1,74 @@
+#version 450
+#include "heightmapscale.glsl"
+#include "biometools.glsl"
+#define TREE_NO_PUSH_CONSTANTS
+#include "treecommon.glsl"
+// sky visibility from the heightmap (horizon based ambient occlusion): for every texel, march 8 directions out
+// to ~900m and find how high the horizon rises in each. valleys, gullies and the foot of cliffs see less of the
+// sky than open ridges, which the terrain's flat sky ambient can't know about otherwise.
+// g = the forest canopy: how much of the sky the tree crowns cover here, on average (the trees' own placement
+// chances, treecommon.glsl, times their crowns' share of a cell). lighting.comp dims the sky under it and, past the
+// trees' real shadows, marches it towards the sun for the far forests' shade.
+// half the heightmap's resolution (or full, Settings: sky visibility full resolution), same wrapped (ring buffer)
+// layout, so it samples with the heightmap's uv.
+// only re-run over the strips the heightmap regenerated (plus the march radius), see Application::dispatchHorizonAO.
+// all of it when the tree settings change (the canopy follows the density)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D heightmap; // .a = height, repeat addressing (ring buffer)
+layout(rg16f, set = 0, binding = 1) uniform writeonly image2D skyVisibility;
+
+layout(push_constant) uniform constants {
+	ivec2 start;	  // first texel to update (in this map's texels, may be negative, wraps)
+	ivec2 size;		  // texels to update
+	float factor;	  // world units per unit of height
+	float texelWorld; // world units per heightmap texel
+	float density;	  // the trees' density setting, 0 with the trees off
+	float pad;
+} pc;
+
+const int DIRECTIONS = 8;
+const int STEPS = 10;
+
+// the crowns' share of the sky over a cell: a conifer's cone covers ~70% of its ~10m cell seen from below, a
+// broadleaf's wider crown ~90%. bushes are under the canopy, not part of it
+float canopyCover(vec2 uv) {
+	vec4 data = textureLod(heightmap, uv, 0.0);
+	vec2 size = vec2(textureSize(heightmap, 0));
+	float hR = textureLodOffset(heightmap, uv, 0.0, ivec2(1, 0)).a, hL = textureLodOffset(heightmap, uv, 0.0, ivec2(-1, 0)).a;
+	float hT = textureLodOffset(heightmap, uv, 0.0, ivec2(0, 1)).a, hB = textureLodOffset(heightmap, uv, 0.0, ivec2(0, -1)).a;
+	float slope = pow((hR - hL) * heightmapSlopeScale(size.x), 2.0) + pow((hT - hB) * heightmapSlopeScale(size.x), 2.0);
+	vec3 chances = treeChances(data, 0.0, pc.density) * (1.0 - smoothstep(0.3, 0.4, slope)); // placeTree: none on cliffs (> 0.35)
+	return clamp(chances.x * 0.7 + chances.y * 0.9, 0.0, 0.95);
+}
+
+void main() {
+	ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(id, pc.size))) return;
+	ivec2 mapSize = imageSize(skyVisibility);
+	ivec2 p = ((pc.start + id) % mapSize + mapSize) % mapSize;
+
+	vec2 heightmapSize = vec2(textureSize(heightmap, 0));
+	vec2 uv = (vec2(p) + 0.5) / vec2(mapSize); // the middle of this texel's heightmap texels (2x2 at half resolution)
+	float h0 = textureLod(heightmap, uv, 0.0).a * pc.factor;
+
+	// a per texel rotation of the directions, so the 8 rays don't print a star pattern into the result
+	float rotation = fract(sin(dot(vec2(p), vec2(12.9898, 78.233))) * 43758.5453) * (3.14159265 / float(DIRECTIONS));
+	float visibility = 0.0;
+	for (int d = 0; d < DIRECTIONS; d++) {
+		float angle = float(d) * (6.2831853 / float(DIRECTIONS)) + rotation;
+		vec2 dir = vec2(cos(angle), sin(angle));
+		float horizon = 0.0; // sine of the highest elevation angle seen so far
+		float dist = 1.5;	 // texels of the 4096 map (the same reach at any size), grows geometrically (near detail and far mountains)
+		for (int s = 0; s < STEPS; s++) {
+			float texels = dist * heightmapSize.x / HEIGHTMAP_REFERENCE_SIZE; // of this map
+			float dh = textureLod(heightmap, uv + dir * texels / heightmapSize, 0.0).a * pc.factor - h0;
+			float run = texels * pc.texelWorld;
+			horizon = max(horizon, dh * inversesqrt(dh * dh + run * run));
+			dist *= 1.6;
+		}
+		visibility += 1.0 - horizon;
+	}
+	imageStore(skyVisibility, p, vec4(visibility / float(DIRECTIONS), canopyCover(uv), 0.0, 0.0));
+}

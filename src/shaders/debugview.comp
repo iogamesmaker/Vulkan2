@@ -1,0 +1,52 @@
+#version 450
+// debug texture viewer (debugview.cpp): one source texture remapped into the RGBA8 copy imgui shows
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D source2D;
+layout(set = 0, binding = 1) uniform sampler2DArray sourceArray;
+layout(set = 0, binding = 2) uniform sampler3D source3D;
+layout(set = 0, binding = 3, rgba8) uniform writeonly image2D outImage;
+
+layout(push_constant) uniform PushConstants {
+	ivec4 mode;	 // x = kind (0 2D, 1 array, 2 3D), y = channels (rgb, r, g, b, a, rg), z = flags
+	vec4 range;	 // x = min, y = max, z = mip, w = array layer / 3D slice (0-1)
+	vec4 extra;	 // x = near plane, y = far plane, zw = region written
+} pc;
+
+#define FLAG_SIGNED 1
+#define FLAG_GAMMA 2
+#define FLAG_INVERT 4
+#define FLAG_DEPTH_DISTANCE 8
+
+void main() {
+	ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(pixel, ivec2(pc.extra.zw)))) return;
+	vec2 uv = (vec2(pixel) + 0.5) / pc.extra.zw;
+
+	vec4 v;
+	if (pc.mode.x == 0) v = textureLod(source2D, uv, pc.range.z);
+	else if (pc.mode.x == 1) v = textureLod(sourceArray, vec3(uv, pc.range.w), pc.range.z);
+	else v = textureLod(source3D, vec3(uv, pc.range.w), pc.range.z);
+
+	if (any(isnan(v)) || any(isinf(v))) { imageStore(outImage, pixel, vec4(1.0, 0.0, 1.0, 1.0)); return; }
+
+	// reversed z (GLM zero to one, near / far swapped): depth = near / distance - near / far
+	if ((pc.mode.z & FLAG_DEPTH_DISTANCE) != 0) {
+		float distance = pc.extra.x / max(v.r + pc.extra.x / pc.extra.y, 1e-12);
+		v.r = log2(max(distance, pc.extra.x) / pc.extra.x) / log2(pc.extra.y / pc.extra.x);
+	}
+	if ((pc.mode.z & FLAG_SIGNED) != 0) v = v * 0.5 + 0.5;
+	v = (v - pc.range.x) / max(pc.range.y - pc.range.x, 1e-9);
+	if ((pc.mode.z & FLAG_INVERT) != 0) v = 1.0 - v;
+
+	vec3 color;
+	int channels = pc.mode.y;
+	if (channels == 0) color = v.rgb;
+	else if (channels == 5) color = vec3(v.rg, 0.0);
+	else color = vec3(v[channels - 1]);
+
+	color = clamp(color, 0.0, 1.0);
+	if ((pc.mode.z & FLAG_GAMMA) != 0) color = pow(color, vec3(1.0 / 2.2));
+	imageStore(outImage, pixel, vec4(color, 1.0));
+}

@@ -67,3 +67,9 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# compressed texture cache (rebuilt from the source images)
+assets/cache/
+
+# Claude Code worktrees (separate checkouts)
+.claude/worktrees/

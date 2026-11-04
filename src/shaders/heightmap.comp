@@ -5,10 +5,13 @@
  // real pipeline of geniuses
  
 #include "biometools.glsl"
+#include "paths.glsl"
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
-layout (rgba32f, set = 0, binding = 0) uniform image2D heightmap;
+layout (rgba16, set = 0, binding = 0) uniform writeonly image2D heightmap; // RGBA16 unorm: rgb = climate, a = height, all 0..1
+// rg = signed distance to roads / trails (paths.glsl), ba unused
+layout (rgba16f, set = 0, binding = 1) uniform writeonly image2D pathMap;
 
 layout ( push_constant ) uniform constants {
     ivec2 offset;
@@ -17,7 +20,6 @@ layout ( push_constant ) uniform constants {
 } pc;
 
 #define TAU 6.28318530717959
-#define clamp01(x) clamp(x, 0.0, 1.0)
 
 vec2 hash(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * vec3(.1031, .1030, .0973));
@@ -78,37 +80,6 @@ float fbm(vec2 p, int octaves) {
 	return result / normalization;
 }
 
-vec3 voronoi( in vec2 x, float w )
-{
-    vec2 n = floor( x );
-    vec2 f = fract( x );
-
-	vec4 m = vec4( 8.0, 0.0, 0.0, 0.0 );
-    for( int j=-2; j<=2; j++ )
-    for( int i=-2; i<=2; i++ )
-    {
-        vec2 g = vec2( float(i),float(j) );
-        vec2 o = hash( n + g );
-
-		float d = length(g - f + o);
-		
-		vec2 p = (n + g) * 0.02;
-		vec3 col = vec3(
-		fbm(p, 3),
-		fbm(p + vec2(-5453.0, -3694.0), 3),
-		fbm(p + vec2(5923.0, 2394.0), 2) * 1.5);
-		
-		int biomeidx = whatBiome(col);
-		col = biomes[biomeidx].value;
-        
-		float h = smoothstep( -1.0, 1.0, (m.x-d)/w );
-	    m.x   = mix( m.x,     d, h ) - h*(1.0-h)*w/(1.0+3.0*w); // distance
-		m.yzw = mix( m.yzw, col, h ); // color
-    }
-	
-	return m.yzw;
-}
-
 vec3 FractalNoise(vec2 p, float freq, int octaves, float lacunarity, float gain) {
     vec3 n = vec3(0.0);
     float nf = freq;
@@ -121,218 +92,257 @@ vec3 FractalNoise(vec2 p, float freq, int octaves, float lacunarity, float gain)
     return n;
 }
 
-vec4 PhacelleNoise(in vec2 p, vec2 normDir, float freq, float offset, float normalization) {
-    vec2 sideDir = normDir.yx * vec2(-1.0, 1.0) * freq * TAU;
-    offset *= TAU;
+// ------------------------------------------------------------------ erosion
+// the erosion filter from Rune Skovbo Johansen's fork of Fewes' "Terrain Erosion Noise" (shadertoy 7ljcRW), itself
+// a fork of Clay John's "Eroded Terrain Noise" (shadertoy MtGcWh). gullies are sine stripes running down the
+// slope in Voronoi-like cells, each octave bending the slope the next one follows, so they branch.
+//
+// Copyright 2025 Rune Skovbo Johansen
+// Copyright 2023 Fewes
+// Copyright 2020 Clay John
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+// the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and
+// to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+// THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+// CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
 
-    vec2 pInt = floor(p);
-    vec2 pFrac = fract(p);
-    vec2 phaseDir = vec2(0.0);
-    float weightSum = 0.0;
-    
-    for (int i = -1; i <= 2; i++) {
-        for (int j = -1; j <= 2; j++) {
-            vec2 gridOffset = vec2(i, j);
-            vec2 gridPoint = pInt + gridOffset;
-            vec2 randomOffset = hash(gridPoint) * 0.5;
-            vec2 vectorFromCellPoint = pFrac - gridOffset - randomOffset;
+// erosion parameters (p units: the loaded world is 4 across, heights 0..1, so both axes use the same units)
+#define EROSION_SCALE 0.08333		 // the overall scale, roughly a mountain's width / 5-10
+#define EROSION_STRENGTH 0.16		 // gully depth relative to the scale, 0-0.5 works (the mountains get this)
+#define EROSION_SLOPE_POWER 0.6		 // 1 = smooth peaks and ridges, 0.5 = sharper
+#define EROSION_CELL_SCALE 1.0		 // gully cell size relative to the scale: smaller = grainier, bigger = longer
+#define EROSION_HEIGHT_OFFSET -0.5	 // -1 only lowers the terrain, 1 only raises it
+#define EROSION_OCTAVES 6			 // the 6th: ~25m gullies, still more than twice the heightmap's 9m texels
+#define EROSION_GAIN 0.5
+#define EROSION_LACUNARITY 2.0
 
-            float sqrDist = dot(vectorFromCellPoint, vectorFromCellPoint);
-            float weight = exp(-sqrDist * 2.0);
-            weight = max(0.0, weight - 0.01111);
-
-            weightSum += weight;
-
-            float waveInput = dot(vectorFromCellPoint, sideDir) + offset;
-            phaseDir += vec2(cos(waveInput), sin(waveInput)) * weight;
-        }
-    }
-
-    vec2 interpolated = phaseDir / weightSum;
-    float magnitude = sqrt(dot(interpolated, interpolated));
-    magnitude = max(1.0 - normalization, magnitude);
-    return vec4(interpolated / magnitude, sideDir);
-}
-
-float pow_inv(float t, float power) {
-    return 1.0 - pow(1.0 - clamp01(t), power);
-}
-
-float ease_out(float t) {
-    float v = 1.0 - clamp01(t);
-    return 1.0 - v * v;
-}
-
-float smooth_start(float t, float smoothing) {
-    if (t >= smoothing)
-        return t - 0.5 * smoothing;
-    return 0.5 * t * t / smoothing;
-}
-
-vec2 safe_normalize(vec2 n) {
-    float l = length(n);
-    return (abs(l) > 1e-10) ? (n / l) : n;  
-}
-
-vec4 ErosionFilter(
-    in vec2 p, vec3 heightAndSlope, float fadeTarget,
-    float strength, float gullyWeight, float detail, vec4 rounding, vec4 onset, vec2 assumedSlope,
-    float scale, int octaves, float lacunarity,
-    float gain, float cellScale, float normalization
-) {
-	if(strength == 0.0) {
-		return vec4(0.0);
+// gullies (height and slope) running along the input slope, amplitude 1. steeper slopes get higher frequency
+// gullies, flat ground (peaks) none: cos() puts the wave's maximum there
+vec3 Gullies(in vec2 p, vec2 slope) {
+	vec2 sideDir = slope.yx * vec2(-1.0, 1.0) * TAU; // orthogonal to the slope, 2 pi front loaded
+	vec2 pInt = floor(p);
+	vec2 pFrac = fract(p);
+	vec3 heightAndSlope = vec3(0.0);
+	float weightSum = 0.0;
+	for (int i = -1; i <= 2; i++) {
+		for (int j = -1; j <= 2; j++) {
+			vec2 gridOffset = vec2(i, j);
+			vec2 randomOffset = hash(pInt + gridOffset) * 0.5;
+			vec2 vectorFromCellPoint = pFrac - gridOffset - randomOffset;
+			// bell shaped, 1 at the cell point and 0 at 1.5 (the closest a cell outside the 4x4 can be)
+			float sqrDist = dot(vectorFromCellPoint, vectorFromCellPoint);
+			float weight = max(0.0, exp(-sqrDist * 2.0) - 0.01111);
+			weightSum += weight;
+			float waveInput = dot(vectorFromCellPoint, sideDir);
+			heightAndSlope += vec3(cos(waveInput), -sin(waveInput) * sideDir) * weight;
+		}
 	}
-    strength *= scale;
-    fadeTarget = clamp(fadeTarget, -1.0, 1.0);
-    
-    vec3 inputHeightAndSlope = heightAndSlope;
-    float freq = 1.0 / (scale * cellScale);
-    float slopeLength = max(length(heightAndSlope.yz), 1e-10);
-    float magnitude = 0.0;
-    float roundingMult = 1.0;
-    
-    float roundingForInput = mix(rounding.y, rounding.x, clamp01(fadeTarget + 0.5)) * rounding.z;
-    float combiMask = ease_out(smooth_start(slopeLength * onset.x, roundingForInput * onset.x));
+	return heightAndSlope / weightSum;
+}
 
-    float ridgeMapCombiMask = ease_out(slopeLength * onset.z);
-    float ridgeMapFadeTarget = fadeTarget;
-    
-    vec2 gullySlope = mix(heightAndSlope.yz, heightAndSlope.yz / slopeLength * assumedSlope.x, assumedSlope.y);
-    
-    for (int i = 0; i < octaves; i++) {
-        vec4 phacelle = PhacelleNoise(p * freq, safe_normalize(gullySlope), cellScale, 0.25, normalization);
-        phacelle.zw *= -freq;
-        float sloping = abs(phacelle.y);
-        
-        gullySlope += sign(phacelle.y) * phacelle.zw * strength * gullyWeight;
-        
-        vec3 gullies = vec3(phacelle.x, phacelle.y * phacelle.zw);
-        vec3 fadedGullies = mix(vec3(fadeTarget, 0.0, 0.0), gullies * gullyWeight, combiMask);
-        heightAndSlope += fadedGullies * strength;
-        magnitude += strength;
-        
-        fadeTarget = fadedGullies.x;
-        
-        float roundingForOctave = mix(rounding.y, rounding.x, clamp01(phacelle.x + 0.5)) * roundingMult;
-        float newMask = ease_out(smooth_start(sloping * onset.y, roundingForOctave * onset.y));
-        combiMask = pow_inv(combiMask, detail) * newMask;
-        
-        ridgeMapFadeTarget = mix(ridgeMapFadeTarget, gullies.x, ridgeMapCombiMask);
-        float newRidgeMapMask = ease_out(sloping * onset.w);
-        ridgeMapCombiMask = ridgeMapCombiMask * newRidgeMapMask;
+// fbm-like erosion: every octave adds gullies along the current slope, which bends the slope for the next one.
+// returns the change in height and slope
+vec3 Erosion(in vec2 p, vec3 heightAndSlope, float scale, float strength, float slopePower,
+			 float cellScale, int octaves, float gain, float lacunarity) {
+	vec3 inputHeightAndSlope = heightAndSlope;
+	float freq = 1.0 / (scale * cellScale);
+	strength *= scale;
+	for (int i = 0; i < octaves; i++) {
+		// the slope's length raised to slopePower for the gullies only, the real slope is untouched
+		float sqrLen = dot(heightAndSlope.yz, heightAndSlope.yz);
+		vec2 inputSlope = heightAndSlope.yz * pow(max(sqrLen, 1e-20), 0.5 * (slopePower - 1.0));
+		heightAndSlope += Gullies(p * freq, inputSlope * cellScale) * strength * vec3(1.0, freq, freq);
+		strength *= gain;
+		freq *= lacunarity;
+	}
+	return heightAndSlope - inputHeightAndSlope;
+}
 
-        strength *= gain;
-        freq *= lacunarity;
-        roundingMult *= rounding.w;
-    }
-        
-    vec3 heightAndSlopeDelta = heightAndSlope - inputHeightAndSlope;
-    return vec4(heightAndSlopeDelta, magnitude);
+// the extent of layered noise whose first layer is 1 and every next one gain times that (geometric series)
+float MagnitudeSum(int octaves, float gain) {
+	return (1.0 - pow(gain, float(octaves))) / (1.0 - gain);
+}
+
+// height after erosion at strength times EROSION_STRENGTH, with the EROSION_HEIGHT_OFFSET shift
+float erodedHeight(vec2 p, vec3 heightAndSlope, float strength) {
+	if (strength <= 0.0) return heightAndSlope.x;
+	vec3 h = Erosion(p, heightAndSlope, EROSION_SCALE, strength, EROSION_SLOPE_POWER, EROSION_CELL_SCALE,
+					 EROSION_OCTAVES, EROSION_GAIN, EROSION_LACUNARITY);
+	float offset = EROSION_SCALE * strength * MagnitudeSum(EROSION_OCTAVES, EROSION_GAIN) * EROSION_HEIGHT_OFFSET;
+	return heightAndSlope.x + h.x + offset;
 }
 
 
-float getErodedHeight(vec2 p, float erosion) {
-    // erosion settings
-    float EROSION_SCALE = 0.15; // 0.15
-    float EROSION_STRENGTH = 0.1 * erosion; // Range 0.01 to 0.22 // 0.1
-    float EROSION_GULLY_WEIGHT = 0.5; // 0.5
-    float EROSION_DETAIL = 1.5; // 1.5
-    
-    float ridgeRounding = 0.01; // 0.1
-    float creaseRounding = 0.01; // 0.0
-    vec4 EROSION_ROUNDING = vec4(ridgeRounding, creaseRounding, 0.1, 2.0);
-    vec4 EROSION_ONSET = vec4(1.25, 1.25, 2.8, 1.5);
-    vec2 EROSION_ASSUMED_SLOPE = vec2(0.7, 1.0);
-    
-    float EROSION_CELL_SCALE = 0.7; // 0.7
-    float EROSION_NORMALIZATION = 0.5; // 0.5
-    
-    int EROSION_OCTAVES = 5; // 5
-    float EROSION_LACUNARITY = 2.0; // 2.0
-    float EROSION_GAIN = 0.5; // 0.5
-    vec2 TERRAIN_HEIGHT_OFFSET = vec2(0.0, 0.0);
-
-    // base noise settings
-    float HEIGHT_FREQUENCY = 3.0; // 3.0
-    float HEIGHT_AMP = 1.0; // 1.0
-    int HEIGHT_OCTAVES = 3; // 3
-    float HEIGHT_LACUNARITY = 2.0; // 2.0
-    float HEIGHT_GAIN = 0.1; // 0.1
-    float heightFunctionScale = 1.0;
-    
-    vec2 pHeight = p / heightFunctionScale;
-    
-    vec3 n = FractalNoise(pHeight, HEIGHT_FREQUENCY, HEIGHT_OCTAVES, HEIGHT_LACUNARITY, HEIGHT_GAIN)
-        * HEIGHT_AMP * vec3(heightFunctionScale, 1.0, 1.0);
-
-    float fadeTarget = clamp(n.x / (HEIGHT_AMP * 0.6), -1.0, 1.0);
-    
-    // Shift heights to 0..1 range
-    n = n * 0.5 + vec3(0.5, 0.0, 0.0);
-
-    vec4 h = ErosionFilter(
-        p, n, fadeTarget,
-        EROSION_STRENGTH, EROSION_GULLY_WEIGHT, EROSION_DETAIL,
-        EROSION_ROUNDING, EROSION_ONSET, EROSION_ASSUMED_SLOPE,
-        EROSION_SCALE, EROSION_OCTAVES, EROSION_LACUNARITY,
-        EROSION_GAIN, EROSION_CELL_SCALE, EROSION_NORMALIZATION
-    );
-    
-    float offset = mix(TERRAIN_HEIGHT_OFFSET.x, -fadeTarget, TERRAIN_HEIGHT_OFFSET.y) * h.w;
-    float eroded = n.x + h.x + offset;
-    
-    return eroded;
+// the lowlands' small rolling relief on top of the base hills (~900m across)
+float undulation(vec2 p) {
+	return fbm(p * 10.0 + vec2(4.2, 7.7), 3) * 0.04;
 }
 
-vec3 biomeMap(vec2 p) {
-	return voronoi(p, 0.15);
+// extra: height + slope (d/dp) added to the base noise before it's eroded, so it gets gullies too
+// the base hills: height (0..1) + slope (d/dp), before any erosion
+vec3 baseNoise(vec2 p) {
+	const float HEIGHT_FREQUENCY = 3.0;
+	const float HEIGHT_AMP = 1.0;
+	const int HEIGHT_OCTAVES = 3;
+	const float HEIGHT_LACUNARITY = 2.0;
+	const float HEIGHT_GAIN = 0.1;
+
+	vec3 n = FractalNoise(p, HEIGHT_FREQUENCY, HEIGHT_OCTAVES, HEIGHT_LACUNARITY, HEIGHT_GAIN) * HEIGHT_AMP;
+	return n * 0.5 + vec3(0.5, 0.0, 0.0); // [-1, 1] -> [0, 1], the slope halved with it
 }
 
-float getHeight(vec2 p, vec3 weights, ivec3 ids) {
-	float erosion = 0.0;
-	float height = 1.0;
-	if(ids.x == MOUNTAIN) erosion += 1.0 * weights.x;
-	if(ids.y == MOUNTAIN) erosion += 1.0 * weights.y;
-	if(ids.z == MOUNTAIN) erosion += 1.0 * weights.z;
-	if(ids.x == COLDPEAKS) {erosion += 1.0 * weights.x;height += 0.10 * weights.x;}
-	if(ids.y == COLDPEAKS) {erosion += 1.0 * weights.y;height += 0.10 * weights.y;}
-	if(ids.z == COLDPEAKS) {erosion += 1.0 * weights.z;height += 0.10 * weights.z;}
-	if(ids.x == PLAINS) height -= 0.5 * weights.x;
-	if(ids.y == PLAINS) height -= 0.5 * weights.y;
-	if(ids.z == PLAINS) height -= 0.5 * weights.z;
-	
-	return height * getErodedHeight(p, erosion);
+// the base hills with the undulation on them, both eroded together: the undulation used to be added afterwards and
+// its smooth blobs sat on top of the gullies, which read as lumpy instead of weathered. u = undulation(p)
+float getLowlandHeight(vec2 p, vec3 base, float u, float erosion) {
+	const float E = 0.0015; // ~1.5 heightmap texels
+	vec3 extra = vec3(u, (undulation(p + vec2(E, 0.0)) - u) / E, (undulation(p + vec2(0.0, E)) - u) / E);
+	return erodedHeight(p, base + extra, EROSION_STRENGTH * erosion);
+}
+
+// smooth maximum (polynomial), k = how far apart a and b blend
+float smax(float a, float b, float k) {
+	float h = max(k - abs(a - b), 0.0) / k;
+	return max(a, b) + h * h * k * 0.25;
+}
+
+// ------------------------------------------------------------------ mountains
+
+// the smooth base noise through the erosion filter at full strength, nothing else: the shadertoy's terrain (and the
+// first heightmap here). a ridged multifractal added on top and eroded from finite difference slopes looked worse,
+// lumpy crests with the gullies fighting the ridges
+float getMountainHeight(vec2 p, vec3 base) {
+	return erodedHeight(p, base, EROSION_STRENGTH);
+}
+
+// ------------------------------------------------------------------ biomes
+
+// slowly varying climate, low frequency so biomes are big and temperature can't jump (taiga next to desert)
+vec3 climateAt(vec2 p) {
+	// p spans 4 units across the loaded world, so these are biomes roughly the size of what you can see.
+	// two octaves only (more just chops regions into patches) plus a domain warp so borders aren't blobs
+	vec2 warp = vec2(fbm(p * 0.15 + vec2(3.7, 9.1), 2), fbm(p * 0.15 + vec2(-8.3, 2.4), 2)) * 2.5;
+	vec2 q = p + warp;
+
+	float temperature = fbm(q * 0.07 + vec2(17.3, -41.7), 2) * 1.3 + 0.5;
+	float moisture	  = fbm(q * 0.09 + vec2(-93.1, 12.9), 2) * 1.3 + 0.5;
+	float ruggedness  = fbm(q * 0.11 + vec2(55.5, 77.2), 2) * 1.4 + 0.5;
+	return clamp(vec3(temperature, moisture, ruggedness), 0.0, 1.0);
+}
+
+// dunes from warped ridged noise, stretched a bit across the wind so they read as dune fields
+// (a sine along the wind made perfectly straight parallel lines)
+float dunes(vec2 p) {
+	vec2 wind = normalize(vec2(0.8, 0.35));
+	vec2 side = vec2(-wind.y, wind.x);
+	vec2 q = vec2(dot(p, wind) * 1.0, dot(p, side) * 0.45) * 22.0; // crests run across the wind, longer than they're wide
+	q += vec2(simplex(q * 0.18 + 4.1), simplex(q * 0.18 - 7.3)) * 2.5;  // bend them
+
+	float ridges = 0.0;
+	float amplitude = 0.65;
+	for (int i = 0; i < 2; i++) {
+		float r = 1.0 - abs(simplex(q));
+		ridges += r * r * amplitude;
+		q = q * 2.1 + 13.7;
+		amplitude *= 0.45;
+	}
+	return ridges;
+}
+
+// the erosion filter carves gullies down every slope. the lowlands get it as strongly as the mountains (relative to
+// their relief, which is scaled down per biome in lowlandMix), except the farmland (soil), which stays smooth. at 0.4
+// the rolling hills were smooth blobs
+#define LOWLAND_EROSION 2.0 // times EROSION_STRENGTH (0.32, inside the filter's useful 0-0.5)
+
+// the lowland biomes' shapes mixed by their cover. h = the eroded hills, hSmooth = without erosion (the farmland),
+// dune = the desert's dunes on top
+float lowlandMix(float cover[BIOME_COUNT], float h, float hSmooth, float dune) {
+	const float baseLevel = 0.3;
+	return cover[BIOME_PLAINS] * (baseLevel + (h - 0.5) * 0.25)				 // gentle rolling grassland
+		 + cover[BIOME_WHEAT]  * (baseLevel - 0.02 + (hSmooth - 0.5) * 0.07)	 // nearly flat farmland, not eroded
+		 + cover[BIOME_DESERT] * (baseLevel + (h - 0.5) * 0.08 + dune)		 // flat with low dunes
+		 + cover[BIOME_TAIGA]  * (baseLevel + 0.03 + (h - 0.5) * 0.4)		 // hilly forest
+		 + cover[BIOME_SNOW]   * (baseLevel + 0.05 + (h - 0.5) * 0.35);		 // tundra
+}
+
+// base = baseNoise(p). work that can't change the result is skipped: the lowland under full mountains (it cancels
+// out), the dunes outside the desert, the mountains outside the mountains
+float getHeight(vec2 p, vec3 climate, vec3 base) {
+	float mountains = mountainShapeWeight(climate);
+	if (mountains >= 1.0) return getMountainHeight(p, base);
+
+	// the lowland biomes from the ground cover alone, the mountains are raised out of them below
+	float cover[BIOME_COUNT];
+	groundCover(climate, true, cover);
+
+	float u = undulation(p);
+	float hSmooth = base.x + u;
+	float h = getLowlandHeight(p, base, u, LOWLAND_EROSION);
+
+	float lowland = lowlandMix(cover, h, hSmooth, cover[BIOME_DESERT] > 0.0 ? dunes(p) * 0.017 : 0.0);
+	if (mountains <= 0.0) return lowland;
+
+	// the mountains rise out of the lowland instead of a straight crossfade between the two (that was a ramp with the
+	// mountains' valleys showing as pits in it). at the edge only what stands above the lowland counts, a smooth max
+	// so it doesn't crease, so the foothills are the massif's tops poking through; full mountains keep their valleys
+	float relief = getMountainHeight(p, base) - lowland; // 0..1, the eroded noise's own range
+	relief = mix(smax(relief, 0.0, 0.06), relief, mountains * mountains);
+	return lowland + mountains * relief;
+}
+
+// ------------------------------------------------------------------ the lowlands' flat look
+
+// the valley floor: every lowland biome's shape from the smooth base noise only, the slow trend of the land
+float valleyFloor(float weights[BIOME_COUNT], float baseHeight) {
+	return lowlandMix(weights, baseHeight, baseHeight, 0.0) / (1.0 - weights[BIOME_MOUNTAINS] + 1e-4);
+}
+
+// the lowlands pulled towards a few metres above the valley floor: their flat look. (it used to come out of the old
+// river code by accident: its bank cut and levees reached every texel. this is that math on its own)
+float flattenLowland(float height, float weights[BIOME_COUNT], float valley) {
+	const float x = 8.0 / 2.2;
+	float lowland = 1.0 - weights[BIOME_MOUNTAINS];
+	float strength = lowland * lowland * (1.0 - weights[BIOME_DESERT] * 0.7) * (1.0 - smoothstep(0.03, 0.06, height - valley));
+	float surface = valley - 0.004;
+	float flatLevel = surface + (8.0 - 2.2) * 0.0012;
+	height = mix(height, min(height, flatLevel), strength * (1.0 - smoothstep(3.0, 5.0, x)));
+	float raise = smoothstep(1.0, 1.4, x) * (1.0 - smoothstep(3.5, 5.0, x)) * smoothstep(0.2, 0.25, strength);
+	return mix(height, max(height, max(flatLevel, surface + 0.0008)), raise);
 }
 
 void main() {
-	initBiomes();
-    ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy) + pc.dirtyMin;
-    ivec2 size = imageSize(heightmap);
-    if (gl_GlobalInvocationID.x >= pc.updateSize.x ||  gl_GlobalInvocationID.y >= pc.updateSize.y) return;
-	
-	vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset);
-			
-	vec2 p = vec2(worldPos * 4.0) / size;
-	//vec3 biome = biomeMap(p);
-	//vec3 weights;
-	//ivec3 ids;
-	
-	//whatBiomes(biome, weights, ids);
-	
-	float height = getErodedHeight(p, 1.0);
-	
-	ivec2 physicalCoord = (texelCoord % size + size) % size;
-	
-	if(physicalCoord.x < 0.0 || physicalCoord.y < 0.0) p = vec2(1,1);
-	vec4 color = vec4(0.0, 0.0, 0.0, height);
-	
-	if(height > 1.0) color = vec4(1.0, 0.0, 0.0, 1.0);
-	if(height < 0.0) color = vec4(0.0, 0.0, 1.0, 1.0);
-	
-	//color.rgb = biome;
-	//color.a = 1.0;
-	
-	imageStore(heightmap, physicalCoord, color);
+	ivec2 texelCoord = ivec2(gl_GlobalInvocationID.xy) + pc.dirtyMin;
+	ivec2 size = imageSize(heightmap);
+	if (gl_GlobalInvocationID.x >= pc.updateSize.x ||  gl_GlobalInvocationID.y >= pc.updateSize.y) return;
 
+	vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset);
+	vec2 p = vec2(worldPos * 4.0) / size;
+	// paths are laid out in texels of a 4096 map (heightmapscale.glsl)
+	vec2 referencePos = worldPos * (HEIGHTMAP_REFERENCE_SIZE / float(size.x));
+
+	vec3 climate = climateAt(p);
+	vec3 base = baseNoise(p);
+	float height = getHeight(p, climate, base);
+
+	float weights[BIOME_COUNT];
+	biomeWeights(climate, weights);
+	height = flattenLowland(height, weights, valleyFloor(weights, base.x));
+	height = clamp(height, 0.0, 1.0);
+
+	// paths only get a texture, they don't change the height (see paths.glsl)
+	vec2 pathDistance = vec2(contourSignedDistance(referencePos, ROAD_SCALE, 0.0), contourSignedDistance(referencePos, TRAIL_SCALE, 37.0));
+
+	ivec2 physicalCoord = (texelCoord % size + size) % size;
+
+	// rgb = climate (terrain.frag turns it back into biome weights for texturing), a = height
+	imageStore(heightmap, physicalCoord, vec4(climate, height));
+	imageStore(pathMap, physicalCoord, vec4(pathDistance, 0.0, 0.0));
 }

@@ -1,0 +1,34 @@
+#version 450
+// the cloud coverage as a lookup table around the camera (clouds.glsl, CLOUD_COVERAGE_MAP): the warped fbm the
+// cumulus, their shadows and the light shafts all evaluate many times per pixel, once per texel instead.
+// the shape before the coverage threshold (clouds.glsl's cloudShape): r = 3 octaves (the cumulus), g = 4 octaves (the
+// shadows), b = the cumulus base height noise, a = the billows. wraps (a torus): when the camera / wind moved, only
+// the strips it moved into are redone (Application::drawLighting), the coverage changing needs nothing
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba16f, set = 0, binding = 0) uniform writeonly image2D coverageMap;
+
+#define ATMOSPHERE_SET 1
+#define ATMOSPHERE_BINDING 4
+#include "atmosphere.glsl"
+#include "clouds.glsl"
+
+layout(push_constant) uniform constants {
+	ivec2 start;  // the first texel to redo, in global texel coordinates (world km / texel, floored)
+	ivec2 size;	  // how many
+	float texel;  // km per texel
+} pc;
+
+void main() {
+	ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(id, pc.size))) return;
+	ivec2 global = pc.start + id;
+	ivec2 mapSize = imageSize(coverageMap);
+	ivec2 physical = (global % mapSize + mapSize) % mapSize; // a torus
+	vec2 worldKm = (vec2(global) + 0.5) * pc.texel;
+	vec2 p;
+	float shape3 = cloudShape(worldKm, 3, p);
+	float shape4 = cloudShape(worldKm, 4, p);
+	imageStore(coverageMap, physical, vec4(shape3, shape4, cloudFbm(worldKm * 0.7 + 23.0, 2), cloudBillowNoise(p)));
+}

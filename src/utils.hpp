@@ -5,7 +5,7 @@
 #include <SDL3/SDL.h>
 
 namespace util {
-	std::string getpath(const std::string& subDir) {
+	inline std::string getpath(const std::string& subDir) { // inline, this header is included in multiple .cpp files
 		const char* base = SDL_GetBasePath();
 		std::string path;
 

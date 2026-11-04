@@ -1,0 +1,2 @@
+﻿wood_endgrain.jpg + wood_endgrain_normal.jpg: 'Cross Section of Wood Log Texture' (Wood 0065), https://www.texturecan.com/details/590/
+License: CC0 1.0 Universal (https://www.texturecan.com/terms/). Normal map: the DirectX version, converted to JPEG.

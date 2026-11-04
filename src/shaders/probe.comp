@@ -1,0 +1,95 @@
+#version 450
+// gathers what you can collide with around the walking camera for the CPU (collision.cpp): a small patch of the
+// terrain, the tree trunks and the rock / log shapes, all in continuous world
+// space. the CPU resolves the player against it every frame, so collisions don't lag behind like they did when
+// this shader worked out the push itself a couple of frames late
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D heightmap;
+
+// must match collision.hpp
+#define PROBE_GRID 32
+#define PROBE_TREES 25	 // 5x5 tree cells
+#define PROBE_PROPS 49	 // 7x7 prop cells
+struct ProbeData {
+	vec4 header;					 // xy = world xz of grid sample (0, 0), z = grid spacing, w = 1 once written
+	vec4 trees[PROBE_TREES];		 // world xz, trunk radius, 1 if there's a tree
+	vec4 props[PROBE_PROPS * 2];	 // rock: (centre xyz, yaw) (radii xyz, 1), log: (end a xyz, radius) (end b xyz, 2)
+	float terrain[PROBE_GRID * PROBE_GRID];
+};
+layout(std430, set = 0, binding = 1) writeonly buffer Result { ProbeData results[]; };
+
+#include "terrainheight.glsl"
+#include "biometools.glsl"
+#define TREE_NO_PUSH_CONSTANTS
+#include "treecommon.glsl"
+#include "paths.glsl"
+#include "propplacement.glsl"
+
+layout(set = 0, binding = 2) uniform sampler2D pathMap;
+layout(push_constant) uniform constants {
+	vec2 position;	   // terrain space xz
+	ivec2 offset;	   // heightmap texel offset
+	float terrainSize; // world units covered by the heightmap
+	float factor;	   // terrain height scale
+	uint slot;		   // frame in flight
+	float density;	   // tree density, so collisions match the trees that are drawn
+	vec2 offsetWorld;  // terrain space -> continuous world
+	float spacing;	   // terrain patch sample spacing, world units
+	float pad;
+} pc;
+
+vec2 uvAt(vec2 terrainXZ) {
+	return (terrainXZ + 0.5 * pc.terrainSize) / pc.terrainSize + vec2(pc.offset) / vec2(textureSize(heightmap, 0));
+}
+
+void main() {
+	uint id = gl_LocalInvocationID.x;
+	// snapped to the sample spacing so the patch doesn't swim as you walk
+	vec2 origin = (floor((pc.position + pc.offsetWorld) / pc.spacing) - float(PROBE_GRID / 2 - 1)) * pc.spacing - pc.offsetWorld;
+	if (id == 0u) results[pc.slot].header = vec4(origin + pc.offsetWorld, pc.spacing, 1.0);
+
+	// terrain patch, the same surface you see
+	for (uint i = id; i < PROBE_GRID * PROBE_GRID; i += 64u) {
+		vec2 xz = origin + vec2(i % PROBE_GRID, i / PROBE_GRID) * pc.spacing;
+		results[pc.slot].terrain[i] = terrainHeight(heightmap, uvAt(xz), 0.0, 0.0, pc.factor, pc.terrainSize);
+	}
+
+	// trunks
+	if (id < PROBE_TREES) {
+		vec2 cell = floor((pc.position + pc.offsetWorld) / TREE_CELL_SIZE) + vec2(int(id % 5u) - 2, int(id / 5u) - 2);
+		TreePlacement t;
+		vec4 tree = vec4(0.0);
+		if (placeTree(heightmap, cell, pc.offsetWorld, pc.offset, pc.terrainSize, pc.density, t))
+			tree = vec4(t.xz + pc.offsetWorld, trunkRadius(t.species, t.height), 1.0);
+		results[pc.slot].trees[id] = tree;
+	}
+
+	// rocks and logs (the same placement props.comp draws)
+	if (id < PROBE_PROPS) {
+		vec2 cell = floor((pc.position + pc.offsetWorld) / PROP_CELL) + vec2(int(id % 7u) - 3, int(id / 7u) - 3);
+		PropPlacement prop;
+		vec4 a = vec4(0.0), b = vec4(0.0);
+		if (placeProp(heightmap, pathMap, cell, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, prop)) {
+			float propGround = terrainHeight(heightmap, prop.uv, 0.0, 0.0, pc.factor, pc.terrainSize);
+			if (prop.mesh >= 6u) {
+				// stump: a squat dome over its footprint (root flare included), you can step onto the short ones
+				a = vec4(prop.xz.x + pc.offsetWorld.x, propGround - 0.01 * prop.scale, prop.xz.y + pc.offsetWorld.y, prop.yaw);
+				b = vec4(vec3(STUMP_RADIUS * 1.3, STUMP_HEIGHT * 1.05, STUMP_RADIUS * 1.3) * prop.scale, 1.0);
+			} else if (prop.mesh < 4u) {
+				// rock: an ellipsoid (yaw only, the small tilt doesn't matter for walking)
+				a = vec4(prop.xz.x + pc.offsetWorld.x, propGround - ROCK_SINK * prop.scale, prop.xz.y + pc.offsetWorld.y, prop.yaw);
+				b = vec4(ROCK_RADII * prop.scale, 1.0);
+			} else {
+				// log: a capsule along its (tilted, yawed) axis
+				mat3 rotation = propRotation(prop.yaw, prop.tilt);
+				vec3 base = vec3(prop.xz.x + pc.offsetWorld.x, propGround - LOG_SINK * prop.scale, prop.xz.y + pc.offsetWorld.y);
+				a = vec4(base + rotation * vec3(-0.5, LOG_RADIUS, 0.0) * prop.scale, LOG_RADIUS * prop.scale);
+				b = vec4(base + rotation * vec3(0.5, LOG_RADIUS, 0.0) * prop.scale, 2.0);
+			}
+		}
+		results[pc.slot].props[id * 2u] = a;
+		results[pc.slot].props[id * 2u + 1u] = b;
+	}
+}

@@ -1,0 +1,75 @@
+#version 450
+// physically based bloom (after Jimenez, "Next generation post processing in Call of Duty"): the HDR image is
+// downsampled into a mip chain with a 13 tap filter, then upsampled back with a tent filter, each level added
+// onto the one above. every bright thing gets a wide, smooth glow instead of a threshold's hard halo.
+// mode 0: draw image -> mip 0 (with Karis averaging, so single bright pixels can't flicker into blobs)
+// mode 1: mip srcMip -> mip srcMip + 1
+// mode 2: mip srcMip + 1 upsampled and added onto mip srcMip
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D source; // the draw image (mode 0) or the bloom chain (all mips)
+layout(rgba16f, set = 0, binding = 1) uniform image2D target; // the mip being written
+
+layout(push_constant) uniform constants {
+	ivec2 targetSize;
+	int mode;
+	int srcMip;
+} pc;
+
+vec3 karisWeighted(vec3 a, vec3 b, vec3 c, vec3 d) {
+	// average of 4 weighted by 1 / (1 + luma): a lone very bright pixel contributes like an ordinary one
+	vec4 wa = vec4(a, 1.0) / (1.0 + dot(a, vec3(0.2126, 0.7152, 0.0722)));
+	vec4 wb = vec4(b, 1.0) / (1.0 + dot(b, vec3(0.2126, 0.7152, 0.0722)));
+	vec4 wc = vec4(c, 1.0) / (1.0 + dot(c, vec3(0.2126, 0.7152, 0.0722)));
+	vec4 wd = vec4(d, 1.0) / (1.0 + dot(d, vec3(0.2126, 0.7152, 0.0722)));
+	vec4 sum = wa + wb + wc + wd;
+	return sum.rgb / max(sum.a, 1e-5);
+}
+
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(p, pc.targetSize))) return;
+	vec2 uv = (vec2(p) + 0.5) / vec2(pc.targetSize);
+
+	if (pc.mode == 2) {
+		// 3x3 tent around this texel in the smaller mip, added onto what's here
+		float lod = float(pc.srcMip + 1);
+		vec2 texel = 1.0 / vec2(textureSize(source, pc.srcMip + 1));
+		vec3 sum = textureLod(source, uv, lod).rgb * 4.0;
+		sum += (textureLod(source, uv + vec2(-texel.x, 0.0), lod).rgb + textureLod(source, uv + vec2(texel.x, 0.0), lod).rgb
+			  + textureLod(source, uv + vec2(0.0, -texel.y), lod).rgb + textureLod(source, uv + vec2(0.0, texel.y), lod).rgb) * 2.0;
+		sum += textureLod(source, uv + vec2(-texel.x, -texel.y), lod).rgb + textureLod(source, uv + vec2(texel.x, -texel.y), lod).rgb
+			 + textureLod(source, uv + vec2(-texel.x, texel.y), lod).rgb + textureLod(source, uv + vec2(texel.x, texel.y), lod).rgb;
+		imageStore(target, p, vec4(imageLoad(target, p).rgb + sum / 16.0, 1.0));
+		return;
+	}
+
+	// 13 taps: a 4x4 box in the middle, 4 overlapping 2x2 boxes at the corners
+	float lod = pc.mode == 0 ? 0.0 : float(pc.srcMip);
+	// the first pass: the taps spaced by half a target texel, whatever the draw image's resolution is
+	vec2 texel = pc.mode == 0 ? 0.5 / vec2(pc.targetSize) : 1.0 / vec2(textureSize(source, int(lod)));
+	vec3 a = textureLod(source, uv + texel * vec2(-2.0, -2.0), lod).rgb;
+	vec3 b = textureLod(source, uv + texel * vec2( 0.0, -2.0), lod).rgb;
+	vec3 c = textureLod(source, uv + texel * vec2( 2.0, -2.0), lod).rgb;
+	vec3 d = textureLod(source, uv + texel * vec2(-2.0,  0.0), lod).rgb;
+	vec3 e = textureLod(source, uv, lod).rgb;
+	vec3 f = textureLod(source, uv + texel * vec2( 2.0,  0.0), lod).rgb;
+	vec3 g = textureLod(source, uv + texel * vec2(-2.0,  2.0), lod).rgb;
+	vec3 h = textureLod(source, uv + texel * vec2( 0.0,  2.0), lod).rgb;
+	vec3 i = textureLod(source, uv + texel * vec2( 2.0,  2.0), lod).rgb;
+	vec3 j = textureLod(source, uv + texel * vec2(-1.0, -1.0), lod).rgb;
+	vec3 k = textureLod(source, uv + texel * vec2( 1.0, -1.0), lod).rgb;
+	vec3 l = textureLod(source, uv + texel * vec2(-1.0,  1.0), lod).rgb;
+	vec3 m = textureLod(source, uv + texel * vec2( 1.0,  1.0), lod).rgb;
+
+	vec3 result;
+	if (pc.mode == 0) {
+		result = karisWeighted(j, k, l, m) * 0.5
+			   + (karisWeighted(a, b, d, e) + karisWeighted(b, c, e, f) + karisWeighted(d, e, g, h) + karisWeighted(e, f, h, i)) * 0.125;
+	} else {
+		result = (j + k + l + m) * 0.125
+			   + (a + c + g + i) * 0.03125 + (b + d + f + h) * 0.0625 + e * 0.125;
+	}
+	imageStore(target, p, vec4(max(result, 0.0), 1.0));
+}

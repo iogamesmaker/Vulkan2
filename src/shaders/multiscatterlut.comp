@@ -1,0 +1,106 @@
+#version 450
+// multiple scattering LUT, x = cos(sun zenith), y = height
+// only depends on the atmosphere parameters, so it's built once at startup
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(rgba32f, set = 0, binding = 0) uniform image2D multiscatter;
+layout(set = 0, binding = 1) uniform sampler2D transmittance;
+
+#define ATMOSPHERE_SET 1
+#define ATMOSPHERE_BINDING 0
+#include "atmosphere.glsl"
+
+const float GOLDEN_RATIO = 1.61803398875;
+const int SPHERE_SAMPLES = 64;
+const int STEP_COUNT = 20;
+const float uniformPhase = 1.0 / (4.0 * PI);
+
+struct RaymarchResult {
+	vec3 luminance;		  // 2nd order scattering
+	vec3 multiscattering; // fraction transferred by an isotropic scattering event (f_ms)
+};
+
+RaymarchResult integrateScatteredLuminance(vec3 pos, vec3 dir, vec3 sunDir) {
+	RaymarchResult result = RaymarchResult(vec3(0.0), vec3(0.0));
+
+	float atmosphereDist = raySphereIntersectNearest(pos, dir, ubo.radiustop);
+	float groundDist = raySphereIntersectNearest(pos, dir, ubo.radiusbottom);
+	if (atmosphereDist < 0.0) return result;
+	float tMax = groundDist > 0.0 ? groundDist : atmosphereDist;
+
+	vec3 throughput = vec3(1.0);
+	float t = 0.0;
+
+	for (int i = 0; i < STEP_COUNT; i++) {
+		float newT = tMax * (float(i) + 0.3) / float(STEP_COUNT);
+		float dt = newT - t;
+		t = newT;
+		vec3 samplePos = pos + t * dir;
+
+		vec3 rayleighScattering, mieScattering, extinction;
+		getScatteringValues(samplePos, rayleighScattering, mieScattering, extinction);
+		vec3 scattering = rayleighScattering + mieScattering;
+
+		vec3 stepTransmittance = exp(-dt * extinction);
+		vec3 sunLight = sunTransmittance(transmittance, samplePos, sunDir) * scattering * uniformPhase;
+
+		// analytical integration over the segment
+		vec3 safeExtinction = max(extinction, vec3(1e-7));
+		result.multiscattering += throughput * (scattering - scattering * stepTransmittance) / safeExtinction;
+		result.luminance	   += throughput * (sunLight - sunLight * stepTransmittance) / safeExtinction;
+
+		throughput *= stepTransmittance;
+	}
+
+	// light bouncing off the ground
+	if (groundDist > 0.0) {
+		vec3 hitPos = pos + groundDist * dir;
+		vec3 up = normalize(hitPos);
+		float NdotL = max(dot(up, sunDir), 0.0);
+		result.luminance += throughput * sampleTransmittance(transmittance, hitPos, sunDir) * NdotL * ubo.groundAlbedo / PI;
+	}
+
+	return result;
+}
+
+void main() {
+	ivec2 texcoord = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 size = imageSize(multiscatter);
+
+	if (texcoord.x >= size.x || texcoord.y >= size.y) return;
+
+	// sub uv -> unit so the edge texels land exactly on the parameter range ends
+	vec2 uv = (vec2(texcoord) + 0.5) / vec2(size);
+	uv = (uv - 0.5 / vec2(size)) / (1.0 - 1.0 / vec2(size));
+
+	float cosSunZenith = uv.x * 2.0 - 1.0;
+	vec3 sunDir = vec3(0.0, cosSunZenith, sqrt(clamp(1.0 - cosSunZenith * cosSunZenith, 0.0, 1.0)));
+
+	float viewHeight = ubo.radiusbottom + PLANET_RADIUS_OFFSET + uv.y * (ubo.radiustop - ubo.radiusbottom - 2.0 * PLANET_RADIUS_OFFSET);
+	vec3 pos = vec3(0.0, viewHeight, 0.0);
+
+	vec3 luminanceSum = vec3(0.0);
+	vec3 fmsSum = vec3(0.0);
+
+	// fibonacci sphere, uniform directions
+	for (int i = 0; i < SPHERE_SAMPLES; i++) {
+		float z = 1.0 - 2.0 * (float(i) + 0.5) / float(SPHERE_SAMPLES);
+		float r = sqrt(max(0.0, 1.0 - z * z));
+		float phi = 2.0 * PI * float(i) / GOLDEN_RATIO;
+		vec3 dir = vec3(r * cos(phi), z, r * sin(phi));
+
+		RaymarchResult result = integrateScatteredLuminance(pos, dir, sunDir);
+		luminanceSum += result.luminance;
+		fmsSum += result.multiscattering;
+	}
+
+	// integrated over the sphere with the uniform phase function
+	vec3 L2 = luminanceSum / float(SPHERE_SAMPLES);
+	vec3 fms = fmsSum / float(SPHERE_SAMPLES);
+
+	// infinite series of higher scattering orders: L2 * (1 + f + f^2 + ...)
+	vec3 psi = L2 / (1.0 - fms);
+
+	imageStore(multiscatter, texcoord, vec4(psi, 1.0));
+}

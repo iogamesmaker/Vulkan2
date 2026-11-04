@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
+
+# MSVC: link the static CRT so it matches vcpkg's x64-windows-static triplet
+cmake_policy(SET CMP0091 NEW)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 project(Vulkan2 CXX)
+
+if (MSVC)
+    # /RTC1 (default in Debug) is incompatible with the /O2 forced on textures.cpp below
+    string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    add_compile_options(/utf-8 /Zc:__cplusplus /permissive- /bigobj)
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,12 +76,34 @@ add_executable(${PROJECT_NAME}
 	src/loader.cpp
     src/application.cpp	
 	src/textures.cpp
-    src/atmosphere.cpp    
+    src/atmosphere.cpp
+	src/shadows.cpp
+	src/foliage.cpp
+	src/trees.cpp
+	src/bloom.cpp
+	src/props.cpp
+	src/collision.cpp
+	src/settings.cpp
+	src/loading.cpp
+	src/hiz.cpp
+	src/terraincache.cpp
+	src/debugview.cpp
+	src/interaction.cpp
+	src/volfog.cpp
+	src/weather.cpp
+	src/precipitation.cpp
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE vkguide_shared)
 
-if (WIN32)
+# texture decoding + block compression is painfully slow without optimisations, even in debug builds
+if (MSVC)
+    set_source_files_properties(src/textures.cpp PROPERTIES COMPILE_OPTIONS "/O2;/Ob2" SKIP_PRECOMPILE_HEADERS ON)
+else()
+    set_source_files_properties(src/textures.cpp PROPERTIES COMPILE_OPTIONS "-O2" SKIP_PRECOMPILE_HEADERS ON) # the PCH is built without -O2
+endif()
+
+if (MINGW)
     target_link_options(${PROJECT_NAME} PRIVATE 
         -static 
         -Wl,--allow-multiple-definition
@@ -104,8 +138,9 @@ foreach(SHADER ${SHADER_SOURCES})
     add_custom_command(
         OUTPUT ${SPIRV_OUT}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/bin"
-        COMMAND ${GLSLC_EXECUTABLE} ${SHADER} -o ${SPIRV_OUT}
+        COMMAND ${GLSLC_EXECUTABLE} ${SHADER} -o ${SPIRV_OUT} -MD -MF ${SPIRV_OUT}.d
         DEPENDS ${SHADER}
+        DEPFILE ${SPIRV_OUT}.d # the #included .glsl files too, otherwise editing one left its shaders stale
         COMMENT "compiling ${FILE_NAME} to bin/${FILE_NAME}.spv" # fuck this syntax
     )
     

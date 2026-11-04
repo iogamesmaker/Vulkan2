@@ -1,0 +1,57 @@
+#version 450
+// temporal accumulation for the volumetric clouds (half resolution): clouds.comp's march is 32 steps through up to
+// 20km of cloud with a new random start every frame, alone it's very noisy and the TAA's clamp lets most of that
+// noise through (it shimmered). here each pixel blends into last frame's result, reprojected, after clamping that
+// to what the march found around it this frame (so moving clouds and things passing in front don't smear)
+// rgb = in-scattered light, a = transmittance (clouds.comp)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D current;	   // this frame's march (half resolution)
+layout(set = 0, binding = 1) uniform sampler2D history;	   // last frame's result, linear filtered, clamped
+layout(set = 0, binding = 2) uniform sampler2D depthBuffer;   // full resolution
+layout(rgba16f, set = 0, binding = 3) uniform writeonly image2D resolved;
+
+layout(push_constant) uniform constants {
+	mat4 reproject;	  // this frame's NDC (as clouds.comp marched it) -> last frame's clip
+	float valid;	  // 0: no history (first frame, resize, clouds just turned on)
+	float blend;	  // how much of this frame goes in
+	vec2 pad;
+} pc;
+
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 size = imageSize(resolved);
+	if (any(greaterThanEqual(p, size))) return;
+
+	vec4 now = texelFetch(current, p, 0);
+	if (pc.valid < 0.5) { imageStore(resolved, p, now); return; }
+
+	// the neighbourhood's spread: history outside of it is something that isn't there any more
+	vec4 m1 = vec4(0.0), m2 = vec4(0.0);
+	for (int y = -1; y <= 1; y++) {
+		for (int x = -1; x <= 1; x++) {
+			vec4 c = texelFetch(current, clamp(p + ivec2(x, y), ivec2(0), size - 1), 0);
+			m1 += c;
+			m2 += c * c;
+		}
+	}
+	m1 /= 9.0;
+	vec4 sigma = sqrt(max(m2 / 9.0 - m1 * m1, 0.0));
+	// wide: the march's noise is the spread here, a tight box would let it all through again
+	vec4 low = m1 - sigma * 1.75, high = m1 + sigma * 1.75;
+
+	// where this pixel's ray was last frame (the clouds sit kilometres away, the scene's depth where it's in front)
+	vec2 fullSize = vec2(textureSize(depthBuffer, 0));
+	ivec2 full = p * max(ivec2(round(fullSize / vec2(size))), ivec2(1)); // half resolution, or full (Ultra)
+	vec2 uv = (vec2(full) + 0.5) / fullSize;
+	float depth = texelFetch(depthBuffer, full, 0).r;
+	vec4 previousClip = pc.reproject * vec4(uv * 2.0 - 1.0, depth > 0.0 ? depth : 1e-5, 1.0);
+	vec2 previousUV = previousClip.xy / previousClip.w * 0.5 + 0.5;
+	if (previousClip.w <= 0.0 || any(lessThan(previousUV, vec2(0.0))) || any(greaterThan(previousUV, vec2(1.0)))) {
+		imageStore(resolved, p, now);
+		return;
+	}
+	vec4 before = clamp(textureLod(history, previousUV, 0.0), low, high);
+	imageStore(resolved, p, mix(before, now, pc.blend));
+}

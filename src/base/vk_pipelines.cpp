@@ -53,8 +53,19 @@ VkPipeline PipelineBuilder::build_pipeline(VkDevice device)
 
     colorBlending.logicOpEnable = VK_FALSE;
     colorBlending.logicOp = VK_LOGIC_OP_COPY;
-    colorBlending.attachmentCount = 1;
+    colorBlending.attachmentCount = _renderInfo.colorAttachmentCount; // 0 for depth only pipelines
     colorBlending.pAttachments = &_colorBlendAttachment;
+
+	// more than one colour attachment: the same blend state for all of them
+	std::vector<VkPipelineColorBlendAttachmentState> blends;
+	if(_colorFormats.size() > 1) {
+		_renderInfo.colorAttachmentCount = static_cast<uint32_t>(_colorFormats.size());
+		_renderInfo.pColorAttachmentFormats = _colorFormats.data();
+		blends.assign(_colorFormats.size(), _colorBlendAttachment);
+		for(size_t i = 1; i < blends.size(); i++) blends[i].colorWriteMask = _extraWriteMasks[i - 1];
+		colorBlending.attachmentCount = _renderInfo.colorAttachmentCount;
+		colorBlending.pAttachments = blends.data();
+	}
 
     //< build_pipeline_1
 
@@ -220,6 +231,14 @@ void PipelineBuilder::set_color_attachment_format(VkFormat format)
     // connect the format to the renderInfo  structure
     _renderInfo.colorAttachmentCount = 1;
     _renderInfo.pColorAttachmentFormats = &_colorAttachmentformat;
+	_colorFormats = { format };
+	_extraWriteMasks.clear();
+}
+
+void PipelineBuilder::add_color_attachment(VkFormat format, VkColorComponentFlags writeMask)
+{
+	_colorFormats.push_back(format);
+	_extraWriteMasks.push_back(writeMask);
 }
 
 void PipelineBuilder::set_depth_format(VkFormat format)

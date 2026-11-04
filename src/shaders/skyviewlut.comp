@@ -1,0 +1,101 @@
+#version 450
+// sky view LUT: sky luminance (per unit of sun illuminance) around the camera
+// x = azimuth relative to the sun, y = altitude angle (non-linear, denser near the horizon)
+// includes moonlight, the moon sits opposite the sun
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(rgba16f, set = 0, binding = 0) uniform image2D skyview;
+layout(set = 0, binding = 1) uniform sampler2D transmittance;
+layout(set = 0, binding = 2) uniform sampler2D multiscattering;
+
+#define ATMOSPHERE_SET 1
+#define ATMOSPHERE_BINDING 0
+#include "atmosphere.glsl"
+
+layout(push_constant) uniform constants {
+	mat4 invViewProj;
+	vec3 camPos; // km, planet centred
+	float starRotation;
+	vec3 sunDir;
+	float latitude;
+} pc;
+
+const int STEP_COUNT = 30;
+
+vec3 raymarchScattering(vec3 pos, vec3 dir, vec3 sunDir, float tMax, bool hitsGround) {
+	float cosTheta = dot(dir, sunDir);
+
+	vec3 luminance = vec3(0.0);
+	vec3 throughput = vec3(1.0);
+	float t = 0.0;
+
+	for (int i = 0; i < STEP_COUNT; i++) {
+		// quadratic step distribution, more samples close to the camera where the air is dense
+		float s = (float(i) + 0.3) / float(STEP_COUNT);
+		float newT = s * s * tMax;
+		float dt = newT - t;
+		t = newT;
+		vec3 samplePos = pos + t * dir;
+
+		vec3 rayleighScattering, mieScattering, extinction;
+		getScatteringValues(samplePos, rayleighScattering, mieScattering, extinction);
+
+		vec3 stepTransmittance = exp(-dt * extinction);
+		vec3 scattered = inScattering(transmittance, multiscattering, samplePos, sunDir, cosTheta, rayleighScattering, mieScattering);
+
+		luminance += throughput * (scattered - scattered * stepTransmittance) / max(extinction, vec3(1e-7));
+		throughput *= stepTransmittance;
+	}
+
+	// the ground itself, so looking down past the edge of the terrain shows hazy land instead of black
+	if (hitsGround) {
+		vec3 groundPos = pos + tMax * dir;
+		vec3 up = normalize(groundPos);
+		float moonRatio = ubo.moonIlluminance / ubo.sunIlluminance;
+		vec3 groundLight = sunTransmittance(transmittance, groundPos, sunDir) * max(dot(up, sunDir), 0.0)
+						 + sunTransmittance(transmittance, groundPos, -sunDir) * max(dot(up, -sunDir), 0.0) * moonRatio
+						 + (sampleMultiscattering(multiscattering, groundPos, sunDir) + moonRatio * sampleMultiscattering(multiscattering, groundPos, -sunDir)) * PI;
+		luminance += throughput * groundLight * ubo.groundAlbedo / PI;
+	}
+
+	return luminance;
+}
+
+void main() {
+	ivec2 texcoord = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 size = imageSize(skyview);
+
+	if (texcoord.x >= size.x || texcoord.y >= size.y) return;
+
+	vec2 uv = (vec2(texcoord) + 0.5) / vec2(size);
+
+	float height = length(pc.camPos);
+	vec3 pos = vec3(0.0, height, 0.0); // LUT is built in a frame where the camera is on +Y
+
+	// inverse of skyviewUV() in atmosphere.glsl
+	float azimuthAngle = (uv.x - 0.5) * 2.0 * PI;
+	float coord = uv.y * 2.0 - 1.0;
+	float adjV = sign(coord) * coord * coord;
+
+	float horizonAngle = acos(clamp(sqrt(max(height * height - ubo.radiusbottom * ubo.radiusbottom, 0.0)) / height, -1.0, 1.0)) - 0.5 * PI;
+	float altitudeAngle = adjV * 0.5 * PI - horizonAngle;
+
+	float cosAltitude = cos(altitudeAngle);
+	vec3 dir = vec3(cosAltitude * sin(azimuthAngle), sin(altitudeAngle), -cosAltitude * cos(azimuthAngle));
+
+	// sun at azimuth 0 in this frame
+	float sunAltitude = 0.5 * PI - acos(clamp(dot(pc.sunDir, normalize(pc.camPos)), -1.0, 1.0));
+	vec3 sunDir = vec3(0.0, sin(sunAltitude), -cos(sunAltitude));
+
+	float atmosphereDist = raySphereIntersectNearest(pos, dir, ubo.radiustop);
+	float groundDist = raySphereIntersectNearest(pos, dir, ubo.radiusbottom);
+
+	vec3 luminance = vec3(0.0);
+	if (atmosphereDist > 0.0) {
+		float tMax = groundDist > 0.0 ? groundDist : atmosphereDist;
+		luminance = raymarchScattering(pos, dir, sunDir, tMax, groundDist > 0.0);
+	}
+
+	imageStore(skyview, texcoord, vec4(luminance, 1.0));
+}

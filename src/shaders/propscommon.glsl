@@ -1,0 +1,23 @@
+// shared between props.comp / props.vert: rocks, boulders and fallen logs scattered around the camera
+#ifndef PROPS_COMMON_GLSL
+#define PROPS_COMMON_GLSL
+
+#include "foliagecommon.glsl" // the same push constants as the grass (FoliagePushConstants)
+
+// meshes: 0..3 rock shapes (also scaled up into boulders), 4..5 logs. every mesh has a detailed and a cheap LOD
+#define PROP_MESHES 8 // Props::MESHES: 4 rocks, 2 logs, 2 stumps
+// bins: mesh * 2 + lod for the camera, then PROP_MESHES shadow caster bins (cheap LOD), every bin PROP_CAPACITY
+#define PROP_BINS (PROP_MESHES * 3)
+#define PROP_CAPACITY 4096u
+
+// PROP_CELL: propplacement.glsl
+#define PROP_RADIUS 160.0  // ~1km
+#define PROP_LOD_DISTANCE 25.0
+#define PROP_SHADOW_DISTANCE 90.0
+
+struct PropInstance {
+	vec4 posScale; // xyz terrain space, w = size in world units
+	vec4 params;   // x = yaw, y = tilt (logs lie on the slope), z = seed, w = moss (how wet / shaded it is)
+};
+
+#endif

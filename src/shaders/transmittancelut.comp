@@ -1,11 +1,107 @@
 #version 450
+
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(rgba32f, set = 0, binding = 0) uniform image2D transmittance;
-layout(set = 1, binding = 0) uniform UBO {
-	vec3 sunDir;
-} ubo;
+
+#define ATMOSPHERE_SET 1
+#define ATMOSPHERE_BINDING 0
+#include "atmosphere.glsl"
+
+const int kSampleCount = 500;
+
+float ClampCosine(float mu) {
+    return clamp(mu, -1.0, 1.0);
+}
+
+float ClampDistance(float d) {
+    return max(d, 0.0);
+}
+
+float ClampRadius(float r) {
+    return clamp(r, ubo.radiusbottom, ubo.radiustop);
+}
+
+float SafeSqrt(float a) {
+    return sqrt(max(a, 0.0));
+}
+
+float DistanceToTopAtmosphereBoundary(float r, float mu) {
+    float discriminant = r * r * (mu * mu - 1.0) + ubo.radiustop * ubo.radiustop;
+    return ClampDistance(-r * mu + SafeSqrt(discriminant));
+}
+
+void GetRMuFromTransmittanceTextureUv_new17(in vec2 uv, out float r, out float mu) {
+    float H = sqrt(ubo.radiustop * ubo.radiustop - ubo.radiusbottom * ubo.radiusbottom);
+    float x_mu = uv.x;
+    float x_r = uv.y;
+    float rho = H * x_r;
+    r = sqrt(rho * rho + ubo.radiusbottom * ubo.radiusbottom);
+    
+    float d_min = ubo.radiustop - r;
+    float d_max = rho + H;
+    float d = d_min + x_mu * (d_max - d_min);
+    
+    mu = d <= 0.0 ? 1.0 : (H * H - rho * rho - d * d) / (2.0 * r * d);
+    mu = ClampCosine(mu);
+}
+
+float ComputeOpticalLengthToTopAtmosphereBoundary(float h_scale, float r, float mu) {
+    float dx = DistanceToTopAtmosphereBoundary(r, mu) / float(kSampleCount);
+    float result = 0.0;
+    for (int i = 0; i <= kSampleCount; ++i) {
+        float d_i = float(i) * dx;
+        float r_i = sqrt(d_i * d_i + 2.0 * r * mu * d_i + r * r);
+        float y_i = clamp(exp(-(r_i - ubo.radiusbottom) / h_scale), 0.0, 1.0);
+        result += y_i * dx;
+    }
+    return result;
+}
+
+float ComputeOpticalLengthToTopAtmosphereBoundary_O3(float r, float mu) {
+    float dx = DistanceToTopAtmosphereBoundary(r, mu) / float(kSampleCount);
+    float result = 0.0;
+    for (int i = 0; i <= kSampleCount; ++i) {
+        float d_i = float(i) * dx;
+        float r_i = sqrt(d_i * d_i + 2.0 * r * mu * d_i + r * r);
+        float height = r_i - ubo.radiusbottom;
+        
+        float linear_term = 0.0, constant_term = 0.0;
+
+        linear_term = height < 25.0 ? 0.066667 : -0.066667;
+        constant_term = height < 25.0 ? -0.66667 : 2.666667;
+        
+        float y_i = linear_term * height + constant_term;
+        y_i = clamp(y_i, 0.0, 1.0);
+        result += y_i * dx;
+    }
+    return result;
+}
+
+vec3 ComputeTransmittanceToTopAtmosphereBoundary(float r, float mu) {
+    vec3 attenuation_rayleigh = ubo.rayleigh * ComputeOpticalLengthToTopAtmosphereBoundary(ubo.rayleighscale, r, mu);
+    vec3 attenuation_mie = ubo.mie * 1.11 * ComputeOpticalLengthToTopAtmosphereBoundary(ubo.miescale, r, mu);
+    vec3 attenuation_total = attenuation_rayleigh + attenuation_mie;
+    
+    attenuation_total += ubo.absorbtion * ComputeOpticalLengthToTopAtmosphereBoundary_O3(r, mu);
+    
+    return exp(-attenuation_total);
+}
 
 void main() {
-	ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 texcoord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(transmittance);
+    
+    if (texcoord.x >= size.x || texcoord.y >= size.y) return;
+    
+    vec2 uv = (vec2(texcoord) + 0.5) / vec2(size);
+    
+    float r, mu;
+	
+	GetRMuFromTransmittanceTextureUv_new17(uv, r, mu);
+
+    
+    vec3 col = ComputeTransmittanceToTopAtmosphereBoundary(r, mu);
+    
+    imageStore(transmittance, texcoord, vec4(col, 1.0));
 }

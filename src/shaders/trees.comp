@@ -1,0 +1,123 @@
+#version 450
+// culls the placed trees (trees_place.comp) every frame and sorts them into the bins of their mesh / LOD:
+// full mesh up close, the cheaper mesh further out, baked billboard impostors in the distance, plus a list of
+// shadow casters near the camera that isn't frustum culled
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "treecommon.glsl"
+
+layout(std430, set = 0, binding = 0) writeonly buffer Instances { TreeInstance instances[]; };
+
+struct DrawCommand { uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset; uint firstInstance; };
+layout(std430, set = 0, binding = 1) buffer Commands { DrawCommand commands[]; };
+layout(std430, set = 0, binding = 2) readonly buffer Placed { TreeInstance placed[]; };
+layout(std430, set = 0, binding = 3) readonly buffer Counter { uint placedCount; };
+
+struct ImpostorCommand { uint vertexCount; uint instanceCount; uint firstVertex; uint firstInstance; };
+layout(std430, set = 0, binding = 4) buffer ImpostorCommands { ImpostorCommand impostorCommands[]; };
+
+// occlusion culling (hiz.cpp): last frame's depth pyramid (farthest depth per texel) and the camera it was drawn
+// with. a tree whose bounding box is behind the farthest thing over its whole screen rect is hidden
+layout(set = 0, binding = 5) uniform sampler2D depthPyramid;
+layout(std140, set = 0, binding = 6) uniform Occlusion {
+	mat4 viewProj; // last frame's (jittered, what the depth was drawn with)
+	vec4 size;	   // xy = pyramid mip 0 size, z = mips, w = 1 when it's valid and turned on
+} occlusion;
+
+bool occluded(vec3 centre, float radius) {
+	if (occlusion.size.w < 0.5) return false;
+	if (distance(centre, pc.campos) < radius * 1.8) return false; // the box would reach behind the camera
+	vec2 lo = vec2(1e9), hi = vec2(-1e9);
+	float nearest = 0.0; // reversed z: the biggest value is the closest point
+	for (int i = 0; i < 8; i++) {
+		vec3 corner = centre + radius * vec3((i & 1) != 0 ? 1.0 : -1.0, (i & 2) != 0 ? 1.0 : -1.0, (i & 4) != 0 ? 1.0 : -1.0);
+		vec4 clip = occlusion.viewProj * vec4(corner, 1.0);
+		if (clip.w <= 1e-4) return false;
+		vec3 ndc = clip.xyz / clip.w;
+		lo = min(lo, ndc.xy);
+		hi = max(hi, ndc.xy);
+		nearest = max(nearest, ndc.z);
+	}
+	vec2 uvLo = lo * 0.5 + 0.5, uvHi = hi * 0.5 + 0.5;
+	// (partly) outside what last frame saw: nothing known about it, draw it
+	if (any(lessThan(uvLo, vec2(0.0))) || any(greaterThan(uvHi, vec2(1.0)))) return false;
+	// the mip where the rect is at most a texel across, so its (up to) 2x2 texels cover it
+	vec2 pixels = (uvHi - uvLo) * occlusion.size.xy;
+	int mip = int(clamp(ceil(log2(max(max(pixels.x, pixels.y), 1.0))), 0.0, occlusion.size.z - 1.0));
+	ivec2 mipSize = max(ivec2(occlusion.size.xy) >> mip, ivec2(1));
+	ivec2 a = clamp(ivec2(uvLo * vec2(mipSize)), ivec2(0), mipSize - 1);
+	ivec2 b = clamp(ivec2(uvHi * vec2(mipSize)), ivec2(0), mipSize - 1);
+	float farthest = min(min(texelFetch(depthPyramid, a, mip).r, texelFetch(depthPyramid, ivec2(b.x, a.y), mip).r),
+						 min(texelFetch(depthPyramid, ivec2(a.x, b.y), mip).r, texelFetch(depthPyramid, b, mip).r));
+	return nearest < farthest;
+}
+
+void append(uint bin, TreeInstance instance) {
+	uint slot = atomicAdd(commands[bin].instanceCount, 1u);
+	if (slot >= binCapacity(bin)) {
+		atomicAdd(commands[bin].instanceCount, uint(-1)); // bin is full
+		return;
+	}
+	instances[binOffset(bin) + slot] = instance;
+}
+
+// one pool for every mesh's impostors, the mesh travels in the fade
+void appendImpostor(uint mesh, TreeInstance instance) {
+	uint slot = atomicAdd(impostorCommands[0].instanceCount, 1u);
+	if (slot >= CAPACITY_IMPOSTOR) {
+		atomicAdd(impostorCommands[0].instanceCount, uint(-1));
+		return;
+	}
+	instance.params.w = packImpostorFade(mesh, instance.params.w);
+	instances[binOffset(27u) + slot] = instance;
+}
+
+void main() {
+	uint id = gl_GlobalInvocationID.x;
+	if (id >= min(placedCount, MAX_PLACED_TREES)) return;
+
+	TreeInstance tree = placed[id];
+	uint mesh = uint(tree.params.w + 0.5);
+	vec3 pos = vec3(tree.posScale.x - pc.offsetWorld.x, tree.posScale.y, tree.posScale.z - pc.offsetWorld.y);
+	float treeHeight = tree.posScale.w;
+	if (distance(pos.xz, pc.campos.xz) > PLACE_RADIUS) return; // the placement area is horizontal
+	// everything else goes by the real distance to the middle of the tree (flying high = far away)
+	float dist = distance(pos + vec3(0.0, treeHeight * 0.5, 0.0), pc.campos);
+
+	float jitter = fract(tree.params.z * 0.618); // per tree, so LOD switches don't form rings
+	bool bush = mesh / VARIANTS == SPECIES_BUSH;
+
+	TreeInstance instance;
+	instance.posScale = vec4(pos, treeHeight);
+	float fade = bush ? 1.0 - smoothstep(BUSH_RADIUS * 0.8, BUSH_RADIUS, dist) : 1.0 - smoothstep(PLACE_RADIUS * 0.85, PLACE_RADIUS, dist);
+	if (fade <= 0.0) return;
+	instance.params = vec4(tree.params.xyz, fade);
+
+	// shadow casters near the camera, regardless of where it's looking (no dither in the shadow pass)
+	if (dist < SHADOW_DISTANCE) append(18u + mesh, instance);
+
+	// frustum cull with a sphere around the tree
+	vec4 clip = pc.viewproj * vec4(pos + vec3(0.0, treeHeight * 0.5, 0.0), 1.0);
+	float radius = treeHeight * 0.6 * 1.5; // * projection scale
+	if (clip.w < -treeHeight || abs(clip.x) > clip.w + radius || abs(clip.y) > clip.w + radius) return;
+	// behind a hill / ridge / other trees (last frame's depth): no mesh, no impostor. the shadow casters above stay
+	if (occluded(pos + vec3(0.0, treeHeight * 0.5, 0.0), treeHeight * 0.6)) return;
+
+	float lod0 = LOD0_DISTANCE * (0.8 + 0.4 * jitter) * (bush ? 0.5 : 1.0);
+	if (dist < lod0) { append(mesh, instance); return; }
+	if (bush) { append(9u + mesh, instance); return; } // bushes end before the impostors start
+
+	// mesh -> impostor: a dithered crossfade over a band instead of a hard switch, drawn as both inside it
+	float lod1 = LOD1_DISTANCE * (0.85 + 0.3 * jitter);
+	float toImpostor = smoothstep(lod1 * (1.0 - IMPOSTOR_BLEND), lod1, dist);
+	if (toImpostor < 1.0) {
+		TreeInstance meshInstance = instance;
+		meshInstance.params.w = fade * (1.0 - toImpostor);
+		append(9u + mesh, meshInstance);
+	}
+	if (toImpostor > 0.0) {
+		instance.params.w = fade * toImpostor;
+		appendImpostor(mesh, instance);
+	}
+}

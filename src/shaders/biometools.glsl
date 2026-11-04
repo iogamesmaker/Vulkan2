@@ -1,116 +1,66 @@
 #ifndef BIOME_TOOLS_GLSL
 #define BIOME_TOOLS_GLSL
+#include "heightmapscale.glsl"
+// biomes come from three slowly varying climate fields, written into the heightmap's rgb by heightmap.comp:
+//   r = temperature, g = moisture, b = ruggedness (all 0..1)
+// every biome is a soft region in that space, so the weights (and with them the heights and textures) blend
+// smoothly. taiga needs it cold and desert needs it hot, and temperature only changes slowly, so there's
+// always a temperate band (plains / wheat) between them, they can never touch.
+// used by both heightmap.comp (heights) and terrain.frag (textures) so they always agree.
 
-#define N_BIOMES    3
+#define BIOME_COUNT 6
 
-#define MOUNTAIN	0
-#define COLDPEAKS   1
-#define PLAINS		2
-//#define WHEATFIELD	3
+// these double as the texture indices (albedo[] / normalmap[] / pom[] in terrain.frag)
+#define BIOME_PLAINS	0 // grass
+#define BIOME_WHEAT		1 // soil for now, wheat later
+#define BIOME_MOUNTAINS	2 // rock
+#define BIOME_DESERT	3 // sand
+#define BIOME_TAIGA		4 // forest floor
+#define BIOME_SNOW		5 // snow
 
-vec3 linnormalize(vec3 val) { // makes val.x + val.y + val.z equal to 1
-	return val / (val.x + val.y + val.z);
+// temperature thresholds, the gap between taiga and desert is what keeps them apart
+#define TAIGA_MAX_TEMP	0.38
+#define DESERT_MIN_TEMP	0.62
+
+// what the ground is covered with given the climate, ignoring mountains (mountains only change the shape,
+// their slopes keep the local cover and get rock on cliffs / up high, see terrain.frag)
+void groundCover(vec3 climate, bool allowFarmland, out float weights[BIOME_COUNT]) {
+	float temperature = climate.r;
+	float moisture	  = climate.g;
+
+	float snow	 = smoothstep(0.22, 0.12, temperature);
+	float taiga	 = smoothstep(TAIGA_MAX_TEMP, TAIGA_MAX_TEMP - 0.1, temperature) * (1.0 - snow);
+	float desert = smoothstep(DESERT_MIN_TEMP, DESERT_MIN_TEMP + 0.1, temperature) * smoothstep(0.45, 0.33, moisture);
+
+	// whatever's left is temperate: wheat in a fairly dry band of it, grassy plains everywhere else
+	float temperate = max(1.0 - snow - taiga - desert, 0.0);
+	float wheat	 = allowFarmland ? temperate * smoothstep(0.30, 0.35, moisture) * smoothstep(0.45, 0.40, moisture) : 0.0;
+
+	weights[BIOME_PLAINS]	 = temperate - wheat;
+	weights[BIOME_WHEAT]	 = wheat;
+	weights[BIOME_MOUNTAINS] = 0.0;
+	weights[BIOME_DESERT]	 = desert;
+	weights[BIOME_TAIGA]	 = taiga;
+	weights[BIOME_SNOW]		 = snow;
 }
 
-struct Biome {
-	vec3 value; // r = temperature, g = humidity, b = altitude
-	vec3 importance;
-	vec3 debugcolor;
-	
-	float blend;
-	
-	ivec4 textures; // 1: normal, 2: steep, 34 unused
-};
-
-Biome biomes[N_BIOMES];
-
-void initBiomes() {
-	// Mountain biome
-	biomes[MOUNTAIN].textures = ivec4(1, 0, -1, -1);
-	biomes[MOUNTAIN].blend = 10.f / 3.5f;
-	biomes[MOUNTAIN].value = vec3(0.5, 0.5, 0.7);
-	biomes[MOUNTAIN].importance = linnormalize(vec3(0.1, 0.1, 0.6));
-	biomes[MOUNTAIN].debugcolor = vec3(0.5);
-
-	// Cold peaks biome
-	biomes[COLDPEAKS].textures = ivec4(1, 0, -1, -1);
-	biomes[COLDPEAKS].blend = 10.f / 3.5f;
-	biomes[COLDPEAKS].value = vec3(0.1, 0.5, 1.0);
-	biomes[COLDPEAKS].importance = linnormalize(vec3(0.3, 0.0, 0.6));
-	biomes[COLDPEAKS].debugcolor = vec3(1.0);
-	
-	// Plains
-	biomes[PLAINS].textures = ivec4(1, 0, -1, -1);
-	biomes[PLAINS].blend = 10.f / 8.0f;
-	biomes[PLAINS].value = vec3(0.5, 0.5, 0.5);
-	biomes[PLAINS].importance = linnormalize(vec3(0.6, 0.5, 0.5));
-	biomes[PLAINS].debugcolor = vec3(0.8, 0.8, 0.0);
+float mountainWeight(vec3 climate) {
+	return smoothstep(0.55, 0.72, climate.b);
 }
 
-int whatBiome(vec3 value) {
-	float weight = -1.0;
-	int biome = -1;
-	
-	for(int i = 0; i < N_BIOMES; i++) {
-		float humidity    = 1.0 - abs(biomes[i].value.x - value.x);
-		float temperature = 1.0 - abs(biomes[i].value.y - value.y);
-		float altitude    = 1.0 - abs(biomes[i].value.z - value.z);
-		
-		float finalweight = humidity * biomes[i].importance.x +  temperature * biomes[i].importance.y +  altitude * biomes[i].importance.z;
-		
-		if(finalweight > weight) {
-			biome = i;
-			weight= finalweight;
-		}
-	}
-	
-	return biome;
+// how much of the mountains' relief the terrain shape gets: a wider band than mountainWeight (the texturing,
+// trees, snow), so the land rises into them over ~twice the distance instead of a steep ramp. starts a bit before
+// the rock and snow do, the foothills are still green
+float mountainShapeWeight(vec3 climate) {
+	return smoothstep(0.45, 0.8, climate.b);
 }
 
-void whatBiomes(vec3 value, out vec3 weights, out ivec3 ids) {
-	weights = vec3(-1.0);
-	ids = ivec3(-1);
-	
-	for(int i = 0; i < N_BIOMES; i++) {
-		float humidity    = 1.0 - abs(biomes[i].value.x - value.x);
-		float temperature = 1.0 - abs(biomes[i].value.y - value.y);
-		float altitude    = 1.0 - abs(biomes[i].value.z - value.z);
-		
-		float finalweight = humidity * biomes[i].importance.x +  temperature * biomes[i].importance.y +  altitude * biomes[i].importance.z;
-		
-		if(finalweight > weights.x) {
-			if(finalweight > weights.y) {
-				if(finalweight > weights.z) {
-					ids.x = ids.y; weights.x = weights.y;
-					ids.y = ids.z; weights.y = weights.z;
-					ids.z = i; weights.z = finalweight;
-				} else {
-					ids.x = ids.y; weights.x = weights.y;
-					ids.y = i; weights.y = finalweight;
-				}
-			} else {
-				ids.x = i; weights.x = finalweight;
-			}
-		}
-	}
-	
-	if(weights.x <= 0.0) ids.x = -1;
-	if(weights.y <= 0.0) ids.y = -1;
-	if(weights.z <= 0.0) ids.z = -1;
-	if(ids.x == -1) {weights.x = 0.0;}
-	else {
-		weights.x = max(0.0, 1.0 - (biomes[ids.x].blend * (weights.z - weights.x)));
-		if(weights.x == 0.0) ids.x = -1;
-	}
-	if(ids.y == -1) {weights.y = 0.0;}
-	else {
-		weights.y = max(0.0, 1.0 - (biomes[ids.y].blend * (weights.z - weights.y)));
-		if(weights.y == 0.0) ids.y = -1;
-	}
-	if(ids.z == -1) {weights.z = 0.0;}
-	else {weights.z = 1.0;}
-	
-	weights = linnormalize(weights);
+// biome weights for the terrain shape (heightmap.comp)
+void biomeWeights(vec3 climate, out float weights[BIOME_COUNT]) {
+	groundCover(climate, true, weights);
+	float mountains = mountainShapeWeight(climate);
+	for (int i = 0; i < BIOME_COUNT; i++) weights[i] *= 1.0 - mountains;
+	weights[BIOME_MOUNTAINS] = mountains;
 }
 
 #endif

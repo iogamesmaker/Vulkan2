@@ -1,0 +1,171 @@
+#version 450
+// volumetric fog, step 1 of 2 (volfog.glsl): what every froxel holds. rgb = light it scatters towards the camera
+// per world unit, a = extinction per world unit
+//   - ground mist that pools in hollows and valleys (the terrain sits lower than its surroundings there), thickest
+//     around dawn and at night, thinning out to a light veil by midday
+//   - a thin haze near the ground everywhere, fading out with height
+//   - both broken up by slowly drifting 3D noise
+// lit by the sun / moon through the shadow maps and the cloud shadows, which is what draws the beams through the
+// trees and past ridges, plus the sky. every froxel samples a different depth inside its slice each frame and
+// blends into last frame's result (reprojected), so 64 slices come out smooth
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D heightmap; // a = height (terrainheight.glsl), repeating
+layout(set = 0, binding = 1) uniform sampler3D history;   // last frame's froxels, linear
+layout(rgba16f, set = 0, binding = 2) uniform writeonly image3D froxels;
+layout(set = 0, binding = 3) uniform sampler2D cloudCoverageMap; // cloudmap.comp
+layout(std140, set = 0, binding = 4) uniform CloudMapInfo { vec4 cloudMapInfo; }; // xy centre (km), z extent, w valid
+
+layout(set = 1, binding = 0) uniform sampler2D transmittanceLUT;
+layout(set = 1, binding = 2) uniform sampler2D skyviewLUT;
+#define ATMOSPHERE_SET 1
+#define ATMOSPHERE_BINDING 4
+#include "atmosphere.glsl"
+#define CLOUD_COVERAGE_MAP
+#include "clouds.glsl"
+#define SHADOW_PIXEL vec2(gl_GlobalInvocationID.xy)
+#include "shadowsampling.glsl" // set 2
+#include "volfog.glsl"
+
+layout(push_constant) uniform constants {
+	mat4 invViewProj;  // this frame, unjittered, terrain space
+	mat4 prevViewProj; // last frame's, unjittered
+	vec3 campos;
+	float frame;
+	vec3 sundir;
+	float terrainSize; // world units covered by the heightmap
+	vec3 prevCampos;
+	float factor;	   // terrain height scale (terrainheight.glsl)
+	vec2 cloudWind;	   // km the clouds have drifted
+	ivec2 mapOffset;   // heightmap texel offset
+	vec4 params;	   // x = density, y = valley mist, z = 1 when the history is usable, w = time (s)
+	vec4 weather;	   // weather.cpp: rgb = the haze's colour (droplets .. sandstorm dust), a = extra haze (0 clear .. ~5 sandstorm)
+} pc;
+
+float hash13(vec3 p) {
+	p = fract(p * 0.1031);
+	p += dot(p, p.zyx + 31.32);
+	return fract((p.x + p.y) * p.z);
+}
+
+float valueNoise(vec3 p) {
+	vec3 i = floor(p), f = fract(p);
+	vec3 u = f * f * (3.0 - 2.0 * f);
+	return mix(mix(mix(hash13(i), hash13(i + vec3(1, 0, 0)), u.x), mix(hash13(i + vec3(0, 1, 0)), hash13(i + vec3(1, 1, 0)), u.x), u.y),
+			   mix(mix(hash13(i + vec3(0, 0, 1)), hash13(i + vec3(1, 0, 1)), u.x), mix(hash13(i + vec3(0, 1, 1)), hash13(i + vec3(1, 1, 1)), u.x), u.y), u.z);
+}
+
+float fbm(vec3 p) {
+	return valueNoise(p) * 0.55 + valueNoise(p * 2.03 + 17.1) * 0.3 + valueNoise(p * 4.11 - 5.7) * 0.15;
+}
+
+// henyey-greenstein
+float hg(float cosTheta, float g) {
+	float g2 = g * g;
+	return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * cosTheta, 1e-4), 1.5));
+}
+
+// water droplets scatter mostly forward (the glow around the sun, beams brightest looking into the light), a little back.
+// toned down from g 0.65 at 3/4 (~13x the light towards the sun as sideways): into a low sun the whole view went
+// under a bright veil, beautiful but you couldn't see anything. ~5x now, the beams still read
+float fogPhase(float cosTheta) {
+	return mix(hg(cosTheta, -0.2), hg(cosTheta, 0.55), 0.6);
+}
+
+float terrainAt(vec2 uv) {
+	return (textureLod(heightmap, uv, 0.0).a - 0.5) * pc.factor;
+}
+
+void main() {
+	ivec3 id = ivec3(gl_GlobalInvocationID);
+	ivec3 size = imageSize(froxels);
+	if (any(greaterThanEqual(id, size))) return;
+	float far = ubo.fogDistance;
+
+	// this froxel's column (a view ray) and a jittered depth inside its slice
+	vec2 uv = (vec2(id.xy) + 0.5) / vec2(size.xy);
+	vec4 farPoint = pc.invViewProj * vec4(uv * 2.0 - 1.0, 1e-5, 1.0); // reversed z
+	vec3 dir = normalize(farPoint.xyz / farPoint.w - pc.campos);
+	float jitter = fract(interleavedGradientNoise(vec2(id.xy) + float(id.z) * 7.13) + pc.frame * 0.618034);
+	float dist = fogSliceDistance((float(id.z) + jitter) / float(size.z), far);
+	vec3 pos = pc.campos + dir * dist;
+
+	// the ground under it and around it (~300m): lower than the surroundings is a hollow, where cold air and mist collect
+	float metres = 0.001 / ubo.worldScale; // per world unit
+	vec2 hmSize = vec2(textureSize(heightmap, 0));
+	vec2 hmUV = (pos.xz + 0.5 * pc.terrainSize) / pc.terrainSize + vec2(pc.mapOffset) / hmSize;
+	float ground = terrainAt(hmUV);
+	float r = 50.0 / pc.terrainSize;
+	float around = 0.25 * (terrainAt(hmUV + vec2(r, 0.0)) + terrainAt(hmUV - vec2(r, 0.0)) + terrainAt(hmUV + vec2(0.0, r)) + terrainAt(hmUV - vec2(0.0, r)));
+	float hollow = clamp((around - ground) * metres / 25.0, 0.0, 1.0); // 25m below the surroundings: a proper valley
+	float above = max(pos.y - ground, 0.0) * metres; // metres above the ground
+
+	// mist: a thick layer in the valleys, a thin one elsewhere, heaviest from night through sunrise
+	// (it burns off quicker than it did: thick from 0.1 to 0.55 of sun height, the evening sun brought it back too and
+	// the low sun views went under a milky veil. and outside the valleys only a trace: 6% of the valley's density was
+	// still ~10x the haze, every ray skimming a slope went through it)
+	float dawn = 1.0 - 0.85 * smoothstep(0.03, 0.3, pc.sundir.y);
+	float mistHeight = mix(5.0, 40.0, hollow); // metres
+	float mist = pc.params.y * dawn * mix(0.02, 1.0, hollow * hollow) * exp(-above / mistHeight);
+	// broken up into banks and wisps that drift with the wind (~100m features)
+	vec3 drift = vec3(pc.cloudWind.x, 0.0, pc.cloudWind.y) * 1000.0 * 0.4 + vec3(0.0, pc.params.w * 0.15, 0.0);
+	vec3 worldMetres = (pos + vec3(float(pc.mapOffset.x), 0.0, float(pc.mapOffset.y)) * (pc.terrainSize / hmSize.x)) * metres;
+	float n = fbm((worldMetres - drift) * 0.01);
+	mist *= smoothstep(0.3, 0.7, n) * 1.8;
+	// haze: thin everywhere close to the ground, fading over a few hundred metres up
+	float haze = exp(-above / 300.0);
+	// the weather thickens the haze near the ground: rain and snow to a kilometre or two of visibility, a sandstorm to a
+	// few hundred metres (its dust hugs the ground a little more)
+	float weatherHaze = pc.weather.a * mix(1.0, exp(-above / 120.0) * 1.6, clamp(pc.weather.a / 5.0, 0.0, 1.0));
+	// (the haze ~6.5km of mean free path near the ground: at 4km it veiled every view, the distance haze is on top)
+	float extinction = (mist * 0.025 + haze * 0.00015 * (1.0 + weatherHaze * 10.0)) * pc.params.x / metres; // per world unit
+
+	vec4 current = vec4(0.0);
+	if (extinction > 1e-8) {
+		float altKm = ubo.baseAltitude + pos.y * ubo.worldScale;
+		vec3 posKm = vec3(0.0, ubo.radiusbottom + max(altKm, PLANET_RADIUS_OFFSET), 0.0);
+		vec3 sunDir = pc.sundir, moonDir = -pc.sundir;
+		vec3 sunLight = sunTransmittance(transmittanceLUT, posKm, sunDir) * ubo.sunIlluminance;
+		vec3 moonLight = sunTransmittance(transmittanceLUT, posKm, moonDir) * ubo.moonIlluminance;
+
+		// the shadow maps follow whichever of the two is up, the clouds shade both
+		vec3 lightDir = sunDir.y > 0.0 ? sunDir : moonDir;
+		float shadow = sampleShadowFast(pos, vec3(0.0, 1.0, 0.0), lightDir, dist);
+		vec2 km = (pos.xz + vec2(pc.mapOffset) * (pc.terrainSize / hmSize.x)) * ubo.worldScale + pc.cloudWind;
+		if (ubo.cloudShadows > 0.5) shadow *= cloudShadow(km, altKm, lightDir);
+		vec3 direct = sunLight * fogPhase(dot(dir, sunDir)) * (sunDir.y > 0.0 ? shadow : 1.0)
+					+ moonLight * fogPhase(dot(dir, moonDir)) * (moonDir.y > 0.0 ? shadow : 1.0);
+
+		// the sky all around (isotropic): straight up and the horizon on both sides of the sun (90 degrees off it, like
+		// lighting.comp's ambient). the horizon in this ray's own direction looked straight into the sun's halo when
+		// facing it: the fog towards the sun was lit unshadowed, a bright band through mountains (only the azimuth
+		// mattered, so it had straight vertical edges)
+		vec3 camKm = vec3(0.0, ubo.radiusbottom + max(ubo.baseAltitude + pc.campos.y * ubo.worldScale, PLANET_RADIUS_OFFSET), 0.0);
+		vec3 skyUp = textureLod(skyviewLUT, skyviewUV(camKm, vec3(0.0, 1.0, 0.0), sunDir), 0.0).rgb;
+		vec3 skyAround = 0.5 * (textureLod(skyviewLUT, vec2(0.25, 0.6), 0.0).rgb + textureLod(skyviewLUT, vec2(0.75, 0.6), 0.0).rgb);
+		vec3 ambient = overcastSky((skyUp + skyAround) * 0.5) * ubo.sunIlluminance * 0.75;
+		// lightning lights the whole sky's haze for a moment
+		ambient += vec3(0.75, 0.8, 1.0) * ubo.weather.z * ubo.sunIlluminance * 0.05;
+		// a faint bluish fill at night, like lighting.comp (the sky LUT has next to nothing then)
+		ambient += moonLight * max(moonDir.y, 0.0) * vec3(0.1, 0.12, 0.18) * 0.25;
+
+		vec3 albedo = pc.weather.rgb; // droplets barely absorb, dust does (and tints it)
+		current = vec4(extinction * albedo * (direct + ambient), extinction);
+	}
+
+	// last frame's value where this froxel's (unjittered) centre was, so the jittered samples average out
+	if (pc.params.z > 0.5) {
+		vec3 centre = pc.campos + dir * fogSliceDistance((float(id.z) + 0.5) / float(size.z), far);
+		vec4 clip = pc.prevViewProj * vec4(centre, 1.0);
+		if (clip.w > 0.0) {
+			vec2 prevUV = clip.xy / clip.w * 0.5 + 0.5;
+			float prevS = fogSliceCoord(distance(centre, pc.prevCampos), far);
+			if (all(greaterThanEqual(prevUV, vec2(0.0))) && all(lessThanEqual(prevUV, vec2(1.0))) && prevS < 1.0) {
+				vec4 previous = textureLod(history, vec3(prevUV, prevS), 0.0);
+				current = mix(previous, current, 0.1);
+			}
+		}
+	}
+	imageStore(froxels, id, current);
+}

@@ -1,0 +1,74 @@
+#version 450
+// the volumetric clouds' noise as a lookup table (once at startup): 64^3, tiling in every direction, sampled with a
+// repeating linear sampler (one fetch instead of dozens of hashed noise evaluations per ray march step)
+//   r = Perlin-Worley: gradient noise fbm carved by billowy (inverted) Worley cells, the cauliflower lobes a
+//       cumulus is made of (4 cells across)
+//   g, b, a = inverted Worley at 8, 16 and 32 cells: the billows that eat into the edges, as an fbm in volclouds.glsl
+// (smooth value noise everywhere made every cloud a soft blob of cotton)
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(rgba8, set = 0, binding = 0) uniform writeonly image3D noiseLUT;
+
+vec3 hash3(ivec3 c) {
+	vec3 p = vec3(c);
+	p = vec3(dot(p, vec3(127.1, 311.7, 74.7)), dot(p, vec3(269.5, 183.3, 246.1)), dot(p, vec3(113.5, 271.9, 124.6)));
+	return fract(sin(p) * 43758.5453123);
+}
+
+ivec3 wrap(ivec3 c, int cells) { return ((c % cells) + cells) % cells; }
+
+// gradient noise with `cells` cells across the texture, wrapped so it tiles, -1..1
+float tiledPerlin(vec3 p, int cells) {
+	vec3 q = p * float(cells);
+	ivec3 i = ivec3(floor(q));
+	vec3 f = fract(q);
+	vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+	float n[8];
+	for (int k = 0; k < 8; k++) {
+		ivec3 o = ivec3(k & 1, (k >> 1) & 1, k >> 2);
+		vec3 g = normalize(hash3(wrap(i + o, cells)) * 2.0 - 1.0);
+		n[k] = dot(g, f - vec3(o));
+	}
+	return mix(mix(mix(n[0], n[1], u.x), mix(n[2], n[3], u.x), u.y), mix(mix(n[4], n[5], u.x), mix(n[6], n[7], u.x), u.y), u.z);
+}
+
+// 1 - distance to the nearest feature point (one per cell, wrapped): round billows, bright in their middles
+float tiledWorley(vec3 p, int cells) {
+	vec3 q = p * float(cells);
+	ivec3 i = ivec3(floor(q));
+	vec3 f = fract(q);
+	float nearest = 1e9;
+	for (int z = -1; z <= 1; z++)
+		for (int y = -1; y <= 1; y++)
+			for (int x = -1; x <= 1; x++) {
+				ivec3 o = ivec3(x, y, z);
+				vec3 feature = vec3(o) + hash3(wrap(i + o, cells));
+				vec3 d = feature - f;
+				nearest = min(nearest, dot(d, d));
+			}
+	return 1.0 - clamp(sqrt(nearest), 0.0, 1.0);
+}
+
+float worleyFbm(vec3 p, int cells) {
+	return tiledWorley(p, cells) * 0.625 + tiledWorley(p, cells * 2) * 0.25 + tiledWorley(p, cells * 4) * 0.125;
+}
+
+float remap(float v, float a, float b, float c, float d) { return c + (v - a) / (b - a) * (d - c); }
+
+void main() {
+	ivec3 c = ivec3(gl_GlobalInvocationID);
+	ivec3 size = imageSize(noiseLUT);
+	if (any(greaterThanEqual(c, size))) return;
+	vec3 p = (vec3(c) + 0.5) / vec3(size);
+
+	// Perlin-Worley (Schneider, "The real-time volumetric cloudscapes of Horizon Zero Dawn"): the connected,
+	// wispy gradient noise, with the billowy Worley cells pushing it up into lobes
+	float perlin = tiledPerlin(p, 4) * 0.5 + tiledPerlin(p, 8) * 0.25 + tiledPerlin(p, 16) * 0.125;
+	perlin = clamp(perlin * 0.9 + 0.5, 0.0, 1.0);
+	float worley = worleyFbm(p, 4);
+	float perlinWorley = clamp(remap(perlin, worley - 1.0, 1.0, 0.0, 1.0), 0.0, 1.0);
+	// that lands in ~0.54 .. 0.79 (5th / 95th percentile): stretched to the full range, or the lobes barely move an edge
+	perlinWorley = clamp((perlinWorley - 0.52) / 0.3, 0.0, 1.0);
+
+	imageStore(noiseLUT, c, vec4(perlinWorley, tiledWorley(p, 8), tiledWorley(p, 16), tiledWorley(p, 32)));
+}

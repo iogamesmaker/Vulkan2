@@ -1,8 +1,7 @@
 #include <vk_images.h>
 #include <vk_initializers.h>
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
+#include "stb_image.h" // implemented in textures.cpp (built optimised), twice broke the MSVC link
 
 //> transition
 #include <vk_initializers.h>

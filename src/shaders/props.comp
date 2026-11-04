@@ -1,0 +1,64 @@
+#version 450
+// scatters rocks, boulders and fallen logs on a world anchored grid around the camera every frame (like the grass):
+// rocks everywhere there's rock or steep ground (scree under cliffs, boulders on the mountains, a few in the
+// meadows), logs in the forests. culled, binned per mesh / LOD for indexed indirect draws + shadow casters
+
+layout(local_size_x = 64) in;
+
+#include "propscommon.glsl"
+#include "biometools.glsl"
+#include "terrainheight.glsl"
+#include "paths.glsl"
+#include "propplacement.glsl"
+
+layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 1) uniform sampler2D pathMap;
+layout(std430, set = 0, binding = 2) writeonly buffer Instances { PropInstance instances[]; };
+struct DrawCommand { uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset; uint firstInstance; };
+layout(std430, set = 0, binding = 3) buffer Commands { DrawCommand commands[PROP_BINS]; };
+
+void append(uint bin, PropInstance instance) {
+	uint slot = atomicAdd(commands[bin].instanceCount, 1u);
+	if (slot >= PROP_CAPACITY) { atomicAdd(commands[bin].instanceCount, uint(-1)); return; }
+	instances[bin * PROP_CAPACITY + slot] = instance;
+}
+
+const uint SIDE = uint(2.0 * PROP_RADIUS / PROP_CELL); // Props::GRID_SIDE
+
+void main() {
+	uint id = gl_GlobalInvocationID.x;
+	if (id >= SIDE * SIDE) return;
+
+	vec2 camWorld = pc.campos.xz + pc.offsetWorld;
+	vec2 cellIndex = floor(camWorld / PROP_CELL) - float(SIDE / 2u) + vec2(id % SIDE, id / SIDE);
+	PropPlacement placement;
+	if (!placeProp(heightmap, pathMap, cellIndex, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, placement)) return;
+	vec2 xz = placement.xz;
+	float distXZ = distance(xz, pc.campos.xz);
+	if (distXZ > PROP_RADIUS) return;
+	uint mesh = placement.mesh;
+	float scale = placement.scale;
+
+	float roughY = placement.height * pc.factor - pc.factor * 0.5;
+	float dist = length(vec2(distXZ, roughY - pc.campos.y));
+	if (dist > PROP_RADIUS) return;
+	// small rocks only near the camera, big ones further out
+	float visibleTo = scale > 0.4 ? PROP_RADIUS : PROP_RADIUS * clamp(scale * 2.5, 0.25, 1.0);
+	if (dist > visibleTo) return;
+
+	// horizontal distance, like terrain.tese (the 3D one floated / buried the rocks when the camera was above them)
+	float groundY = terrainHeight(heightmap, placement.uv, distXZ, terrainSpacing(distXZ, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
+	groundY -= meshSag(heightmap, placement.uv, terrainSpacing(dist, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize); // (foliage.comp)
+	PropInstance instance;
+	// rocks sink in a bit (the bottom of the mesh is flat at -0.3), logs lie on the ground
+	instance.posScale = vec4(xz.x, groundY - (mesh < 4u ? ROCK_SINK : (mesh < 6u ? LOG_SINK : 0.01)) * scale, xz.y, scale);
+	instance.params = vec4(placement.yaw, placement.tilt, placement.seed, placement.moss);
+
+	if (dist < PROP_SHADOW_DISTANCE) append(uint(PROP_MESHES * 2) + mesh, instance);
+
+	// frustum cull with a sphere around the prop
+	vec4 clip = pc.viewproj * vec4(instance.posScale.xyz + vec3(0.0, scale * 0.3, 0.0), 1.0);
+	float radius = scale * 1.2;
+	if (clip.w < -radius || abs(clip.x) > clip.w + radius * 1.5 || abs(clip.y) > clip.w + radius * 1.5) return;
+	append(mesh * 2u + (dist < PROP_LOD_DISTANCE * max(scale * 3.0, 1.0) ? 0u : 1u), instance);
+}

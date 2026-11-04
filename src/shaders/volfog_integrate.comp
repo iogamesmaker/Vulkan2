@@ -1,0 +1,35 @@
+#version 450
+// volumetric fog, step 2 of 2 (volfog.glsl): one thread per froxel column walks it front to back and keeps what's
+// been scattered towards the camera so far and how much of what's behind still gets through. each texel stores the
+// sum up to the end of its slice. the light within a slice is integrated analytically (Hillaire, "Physically based
+// and unified volumetric rendering in Frostbite", 2015), so thick slices far away don't over-brighten
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler3D froxels; // volfog_inject.comp: rgb scattered light, a = extinction
+layout(rgba16f, set = 0, binding = 1) uniform writeonly image3D integrated; // rgb scattered light, a = transmittance
+
+#include "volfog.glsl"
+
+layout(push_constant) uniform constants {
+	float far; // ubo.fogDistance
+	float pad0, pad1, pad2;
+} pc;
+
+void main() {
+	ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+	ivec3 size = imageSize(integrated);
+	if (any(greaterThanEqual(xy, size.xy))) return;
+
+	vec3 light = vec3(0.0);
+	float transmittance = 1.0;
+	for (int z = 0; z < size.z; z++) {
+		vec4 froxel = texelFetch(froxels, ivec3(xy, z), 0);
+		float thickness = fogSliceDistance(float(z + 1) / float(size.z), pc.far) - fogSliceDistance(float(z) / float(size.z), pc.far);
+		float extinction = max(froxel.a, 1e-7);
+		float through = exp(-extinction * thickness);
+		light += transmittance * (froxel.rgb - froxel.rgb * through) / extinction;
+		transmittance *= through;
+		imageStore(integrated, ivec3(xy, z), vec4(light, transmittance));
+	}
+}

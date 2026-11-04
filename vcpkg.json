@@ -5,6 +5,7 @@
     "glm",
     "vk-bootstrap",
     "vulkan-memory-allocator",
+    "vulkan-utility-libraries",
 	"fmt",
 	"fastgltf",
 	"stb",

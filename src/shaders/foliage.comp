@@ -1,0 +1,192 @@
+#version 450
+// scatters grass / wheat clumps on two rings of grid cells around the camera and writes the visible ones
+// into an instance buffer + the indirect draw's instance count. placement is anchored to the world, not the
+// camera, so clumps stay put while you move
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "foliagecommon.glsl"
+#include "biometools.glsl"
+#include "terrainheight.glsl"
+#include "paths.glsl"
+
+layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 3) uniform sampler2D pathMap;
+layout(std430, set = 0, binding = 1) writeonly buffer Instances { FoliageInstance instances[]; };
+struct DrawCommand { uint vertexCount; uint instanceCount; uint firstVertex; uint firstInstance; };
+// [0] = what the camera sees (outer rings), [1] = shadow casters near the camera (not frustum culled), stored after
+// the first, [2] = what the camera sees in the near ring (curved blades, foliagecommon.glsl), after those
+layout(std430, set = 0, binding = 2) buffer Indirect { DrawCommand commands[3]; };
+
+const float SHADOW_CASTER_DISTANCE = 7.0; // ~40m, grass shadows further away aren't visible anyway
+
+// the capacities must hold everything the rings can produce: once a list is full, which clumps get dropped depends
+// on the order the threads run in, which changes every frame (they flicker)
+void append(uint command, uint capacity, FoliageInstance instance) {
+	uint slot = atomicAdd(commands[command].instanceCount, 1u);
+	if (slot >= capacity) {
+		atomicAdd(commands[command].instanceCount, uint(-1)); // full, undo
+		return;
+	}
+	instances[commands[command].firstInstance + slot] = instance;
+}
+
+// near ring: small dense clumps, then bigger clumps further apart, then sparse wide cards out to the distance where
+// the terrain's own colour takes over (grids are RING_SIDE x RING_SIDE cells)
+const uint RING_SIDE[4] = uint[](140u, 200u, 200u, 200u);		  // Foliage::RING_SIDE_NEAR / MID / FAR / WHEAT
+const float CELL_SIZE[4] = float[](0.065, 0.18, 0.36, 0.7);	  // world units (~6m each)
+const float RING_RADIUS[4] = float[](4.5, 18.0, 36.0, 70.0); // ~27m of dense grass, ~110m of mid, ~215m in total, wheat to ~420m
+
+// terrain.frag's rock / snow line noise, the same function at the same heightmap coordinate
+float lineHash(vec2 p) {
+	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.x + p3.y) * p3.z);
+}
+
+float lineValueNoise(vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	vec2 u = f * f * (3.0 - 2.0 * f);
+	return mix(mix(lineHash(i), lineHash(i + vec2(1.0, 0.0)), u.x),
+			   mix(lineHash(i + vec2(0.0, 1.0)), lineHash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+
+void main() {
+	uint id = gl_GlobalInvocationID.x;
+	// the rings are consecutive thread ranges
+	uint ring = 0u, local = id;
+	for (; ring < 3u && local >= RING_SIDE[ring] * RING_SIDE[ring]; ring++) local -= RING_SIDE[ring] * RING_SIDE[ring];
+	if (local >= RING_SIDE[ring] * RING_SIDE[ring]) return;
+
+	float cell = CELL_SIZE[ring];
+	float radius = RING_RADIUS[ring];
+
+	// grid cells in continuous world space, centred on the camera
+	vec2 camWorld = pc.campos.xz + pc.offsetWorld;
+	uint side = RING_SIDE[ring];
+	vec2 baseCell = floor(camWorld / cell) - float(side / 2u);
+	vec2 cellIndex = baseCell + vec2(local % side, local / side);
+
+	vec4 rnd = hash42(cellIndex + float(ring) * 1013.0);
+	vec2 world = (cellIndex + rnd.xy) * cell;
+	vec2 xz = world - pc.offsetWorld; // back to terrain space
+
+	// horizontally outside the ring: can't be inside it in 3D either, skip before touching any textures
+	float distXZ = distance(xz, pc.campos.xz);
+	if (distXZ > radius) return;
+
+	// terrain at that spot
+	vec2 size = vec2(textureSize(heightmap, 0));
+	vec2 uv = heightmapUV(xz, size);
+	vec4 data = textureLod(heightmap, uv, 0.0);
+
+	// the rings and their fades go by the real distance (the raw height is close enough for that), so looking
+	// down from high up there's no full detail grass under the camera. the terrain mesh LODs by it too
+	float roughY = data.a * pc.factor - pc.factor * 0.5;
+	float dist = length(vec2(distXZ, roughY - pc.campos.y));
+	if (dist > radius) return;
+	// the hand over between rings is a density crossfade: plants keep their full size, across [0.6, 1] of the inner
+	// ring's radius the inner ring thins out at random while this one fills in at random, so the total density
+	// stays even and there's no clean circle (shrinking both rings' plants made a thin band and a visible step).
+	// the outermost ring thins out to nothing the same way, the terrain's colour takes over
+	float keep = hash42(cellIndex * 0.73 + 17.0 + float(ring) * 59.0).x;
+	if (keep < smoothstep(radius * 0.6, radius, dist)) return;
+	if (ring > 0u) {
+		float inner = RING_RADIUS[ring - 1u];
+		if (keep >= smoothstep(inner * 0.6, inner, dist)) return;
+	}
+	float fade = 1.0;
+
+	float hR = textureLodOffset(heightmap, uv, 0.0, ivec2(1, 0)).a;
+	float hL = textureLodOffset(heightmap, uv, 0.0, ivec2(-1, 0)).a;
+	float hT = textureLodOffset(heightmap, uv, 0.0, ivec2(0, 1)).a;
+	float hB = textureLodOffset(heightmap, uv, 0.0, ivec2(0, -1)).a;
+	float dzdx = (hR - hL) * heightmapSlopeScale(size.x);
+	float dzdy = (hT - hB) * heightmapSlopeScale(size.x);
+	float slope = dzdx * dzdx + dzdy * dzdy;
+
+	// grow wherever the ground SHOWS grass: terrain.frag's own rock and snow masks, noise included, so slopes and
+	// alpine meadows are covered right up to where the ground turns to rock / snow, and nothing grows on the stone.
+	// (a fixed slope 0.3 cut and a height cut on every mountain left lots of grass texture with nothing growing on it;
+	// the masks without the noise put grass on the rock wherever the noise had pulled the rock line down)
+	float mountains = mountainWeight(data.rgb);
+	float lineNoise = lineValueNoise(uv * 180.0) * 0.65 + lineValueNoise(uv * 900.0) * 0.35;
+	// bare rock on cliffs: in the lowlands only where it's really steep (the erosion's small scarps on the grassy hills
+	// were all rock streaks), the mountains from a gentler slope
+	float steepRock = smoothstep(mix(0.6, 0.35, mountains), mix(1.0, 0.75, mountains), slope + (lineNoise - 0.5) * 0.3);
+	float rockline = 0.58 + (lineNoise - 0.5) * 0.12;
+	float highRock = smoothstep(rockline, rockline + 0.06, data.a) * mountains;
+	float snowline = mix(0.44, 0.68, data.r);
+	// the snow exactly as terrain.frag maps it (its cover goes through a 0.3..0.7 edge, the plants stop inside it)
+	float snowCover = smoothstep(snowline - 0.03, snowline + 0.06, data.a) * (1.0 - steepRock * 0.8);
+	float snowCap = smoothstep(0.1, 0.3, snowCover) * mountains; // (a margin: the terrain frays its snow edge with noise)
+	float stone = max(steepRock, highRock);
+	if (stone > 0.2) return; // the rock texture already shows through from ~0.2: no grass on stone at all
+	float bare = max(stone * 4.0, snowCap);
+	if (bare > 0.85) return;
+
+	float weights[BIOME_COUNT];
+	groundCover(data.rgb, true, weights);
+	// follow what the ground looks like, not the raw blend: in a transition the ground texture already shows the
+	// dominant material, so only grow grass / wheat where they clearly dominate and never near sand or snow
+	float barren = smoothstep(0.1, 0.3, weights[BIOME_DESERT] + weights[BIOME_SNOW]);
+	// wheat fields grow nothing but wheat, densely, right up to their edge
+	float field = smoothstep(0.35, 0.5, weights[BIOME_WHEAT] * (1.0 - mountains));
+	float wheat = field * (1.0 - barren);
+	float grass = smoothstep(0.2, 0.5, weights[BIOME_PLAINS] + weights[BIOME_WHEAT] * mountains) + smoothstep(0.5, 0.8, weights[BIOME_TAIGA]) * 0.7;
+	grass = min(grass, 1.0) * (1.0 - barren) * (1.0 - field) * (1.0 - smoothstep(0.3, 0.85, bare)); // thinning towards rock / snow
+
+	// flowers grow in patches in the meadows, a slow noise decides where
+	vec2 patchCell = floor(world / 4.0);
+	vec2 patchFrac = fract(world / 4.0);
+	vec2 smoothFrac = patchFrac * patchFrac * (3.0 - 2.0 * patchFrac);
+	float patchNoise = mix(mix(hash42(patchCell).x, hash42(patchCell + vec2(1, 0)).x, smoothFrac.x),
+						   mix(hash42(patchCell + vec2(0, 1)).x, hash42(patchCell + vec2(1, 1)).x, smoothFrac.x), smoothFrac.y);
+	float flowers = grass * smoothstep(0.6, 0.85, patchNoise) * 0.45;
+
+	// undergrowth on forest floors (taiga). not in the meadows: leafy branch cards lying in the grass read as
+	// smeared photos up close
+	// (a sparse accent: each clump is ten big leaf cards, at 30% of the clumps they buried the grass)
+	float undergrowth = weights[BIOME_TAIGA] * 0.06 * (1.0 - barren) * (1.0 - field);
+
+	float type;
+	if (rnd.z < undergrowth) type = FOLIAGE_UNDERGROWTH;
+	else if (rnd.z - undergrowth < wheat) type = FOLIAGE_WHEAT;
+	else if (rnd.z - undergrowth < wheat + flowers) type = FOLIAGE_FLOWERS;
+	else if (rnd.z - undergrowth < wheat + grass) type = FOLIAGE_GRASS;
+	else return;
+	// the outermost ring is for the wheat fields only: a field is big and flat, its plants stand out against the
+	// sky far away (a meadow's grass far away is just the ground's colour)
+	if (ring == 3u && type != FOLIAGE_WHEAT) return;
+
+	// exactly the surface the terrain mesh has here (same bicubic + detail + LOD prefilter). terrain.tese fades the
+	// detail bumps and sizes the prefilter by the HORIZONTAL distance: the 3D one put the grass on a different surface
+	// whenever the camera was above it (floating clumps on slopes and when flying, up to the bumps' 70cm)
+	float groundY = terrainHeight(heightmap, uv, distXZ, terrainSpacing(distXZ, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
+	// and down to where the mesh's flat triangles actually are on rounded ground (they're sized by the 3D distance,
+	// terrain.tesc): at low tessellation the clumps on every hilltop floated
+	groundY -= meshSag(heightmap, uv, terrainSpacing(dist, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
+	vec3 pos = vec3(xz.x, groundY - 0.005, xz.y);
+
+	FoliageInstance instance;
+	float clumpSize = fade * mix(0.8, 1.2, rnd.w);
+	float seed = hash42(cellIndex + 57.0).x * 1000.0;
+	instance.posScale = vec4(pos, clumpSize);
+	// x = the ground's normal (xz as two halves, foliage.frag lights the blades mostly like the ground they grow
+	// on), the card yaw comes from the seed
+	float heightPerTexel = pc.factor / (2.0 * pc.terrainSize / size.x); // as terrain.frag
+	vec3 groundNormal = normalize(cross(vec3(0.0, (hT - hB) * heightPerTexel, 1.0), vec3(1.0, (hR - hL) * heightPerTexel, 0.0)));
+	instance.params = vec4(uintBitsToFloat(packHalf2x16(groundNormal.xz)), type + 8.0 * float(ring), seed, data.g);
+
+	if (dist < SHADOW_CASTER_DISTANCE) append(1u, MAX_FOLIAGE_SHADOW_INSTANCES, instance);
+
+	// frustum cull with a generous sphere around the clump
+	vec4 clip = pc.viewproj * vec4(pos + vec3(0.0, 0.1, 0.0), 1.0);
+	float margin = ring == 3u ? 1.6 : 0.6; // clump radius (~0.4, the wheat ring's ~1.1) times the projection scale (~1.4), in clip units
+	if (clip.w < -0.4 || abs(clip.x) > clip.w + margin || abs(clip.y) > clip.w + margin) return;
+
+	// (curved blades within ~15m, further away a blade is a few pixels tall and its bend doesn't show)
+	if (ring == 0u && dist < 2.5) append(2u, MAX_FOLIAGE_NEAR_INSTANCES, instance);
+	else append(0u, MAX_FOLIAGE_INSTANCES, instance);
+}

@@ -1,0 +1,36 @@
+#version 450
+// contrast adaptive sharpening after the TAA resolve (after AMD's FidelityFX CAS): TAA softens the image a bit,
+// this gives the detail back without ringing, it sharpens less where the local contrast is already high.
+// reads the resolved history, writes the draw image (replaces a plain copy, so it costs about nothing extra)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D resolved;		 // this frame's TAA result (nearest)
+layout(rgba16f, set = 0, binding = 1) uniform writeonly image2D target; // the draw image
+
+layout(push_constant) uniform constants {
+	float sharpness; // 0 = off .. 1 = strong
+} pc;
+
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 size = imageSize(target);
+	if (any(greaterThanEqual(p, size))) return;
+
+	// cross neighbourhood, in a compressed range so HDR highlights don't decide the sharpening
+	vec3 c = texelFetch(resolved, p, 0).rgb;
+	vec3 n = texelFetch(resolved, clamp(p + ivec2(0, -1), ivec2(0), size - 1), 0).rgb;
+	vec3 s = texelFetch(resolved, clamp(p + ivec2(0, 1), ivec2(0), size - 1), 0).rgb;
+	vec3 w = texelFetch(resolved, clamp(p + ivec2(-1, 0), ivec2(0), size - 1), 0).rgb;
+	vec3 e = texelFetch(resolved, clamp(p + ivec2(1, 0), ivec2(0), size - 1), 0).rgb;
+	vec3 cc = c / (1.0 + c), nc = n / (1.0 + n), sc = s / (1.0 + s), wc = w / (1.0 + w), ec = e / (1.0 + e);
+
+	vec3 minimum = min(cc, min(min(nc, sc), min(wc, ec)));
+	vec3 maximum = max(cc, max(max(nc, sc), max(wc, ec)));
+	// how much headroom there is before the neighbourhood clips: little room (high contrast) = little sharpening
+	vec3 amount = sqrt(clamp(min(minimum, 1.0 - maximum) / max(maximum, 1e-4), 0.0, 1.0));
+	vec3 weight = -amount * mix(0.125, 0.2, pc.sharpness); // negative lobe of the cross filter
+	vec3 sharpened = (cc + (nc + sc + wc + ec) * weight) / (1.0 + 4.0 * weight);
+	sharpened = clamp(sharpened, 0.0, 0.999);
+	imageStore(target, p, vec4(sharpened / (1.0 - sharpened), 1.0));
+}
