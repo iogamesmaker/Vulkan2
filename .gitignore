@@ -70,6 +70,7 @@ Testing/
 
 # compressed texture cache (rebuilt from the source images)
 assets/cache/
+assets/**/cache/
 
 # Claude Code worktrees (separate checkouts)
 .claude/worktrees/

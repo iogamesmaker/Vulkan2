@@ -36,6 +36,8 @@ struct GraphicsSettings {
 	bool trees = true;
 	float treeDensity = 1.0f;
 	bool props = true;
+	bool groundCover = true;		 // ferns, bushes, weeds, dead branches
+	float groundCoverDensity = 1.0f;
 
 	// lighting extras + post
 	bool ssao = true;
@@ -101,7 +103,7 @@ inline GraphicsSettings qualityPreset(Quality q) {
 		s.pomDistance = 0.0f; s.pomShadows = false;
 		s.softShadows = false; s.shadowSmoothing = 1; s.shadowResolution = 0;
 		s.grassShadows = false; s.cloudShadows = false;
-		s.grassRange = 0; s.treeDensity = 0.7f;
+		s.grassRange = 0; s.treeDensity = 0.7f; s.groundCoverDensity = 0.5f;
 		s.ssao = false; s.contactShadows = false; s.bounceLight = false;
 		s.cloudDetail = false;
 		s.volumetricFog = false;
@@ -113,7 +115,7 @@ inline GraphicsSettings qualityPreset(Quality q) {
 		s.cloudDetail = false; // volumetric clouds cost a few ms on integrated GPUs
 		s.shadowSmoothing = 2;
 		s.grassShadows = false;
-		s.grassRange = 1;
+		s.grassRange = 1; s.groundCoverDensity = 0.75f;
 		s.contactShadows = false; s.bounceLight = false;
 		break;
 	case Quality::Ultra: // tuned for a desktop GPU at 1080p (RTX 4060 class)
@@ -137,7 +139,7 @@ inline GraphicsSettings everythingOff(GraphicsSettings s) {
 	s.triplanar = false; s.detailBumps = false; s.macroLayer = false;
 	s.pomDistance = 0.0f; s.pomShadows = false;
 	s.shadows = false; s.softShadows = false; s.shadowSmoothing = 0; s.grassShadows = false; s.cloudShadows = false;
-	s.foliage = false; s.trees = false; s.props = false;
+	s.foliage = false; s.trees = false; s.props = false; s.groundCover = false;
 	s.ssao = false; s.contactShadows = false; s.bounceLight = false; s.bloom = 0.0f;
 	s.clouds = false; s.cloudDetail = false; s.aerialPerspective = false;
 	s.volumetricFog = false;

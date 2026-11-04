@@ -82,6 +82,7 @@ add_executable(${PROJECT_NAME}
 	src/trees.cpp
 	src/bloom.cpp
 	src/props.cpp
+	src/groundcover.cpp
 	src/collision.cpp
 	src/settings.cpp
 	src/loading.cpp

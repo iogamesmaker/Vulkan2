@@ -39,6 +39,7 @@
 #include "gbuffer.hpp"
 #include "bloom.hpp"
 #include "props.hpp"
+#include "groundcover.hpp"
 #include "collision.hpp"
 #include "settings.hpp"
 #include "hiz.hpp"
@@ -307,6 +308,7 @@ private:
 	ComputeEffect m_SSAOEffect;
 	Bloom m_Bloom;
 	Props m_Props; // rocks, boulders, fallen logs
+	GroundCover m_GroundCover; // ferns, bushes, weeds, dead branches
 	VkDescriptorSetLayout m_LightingLayout;
 	VkDescriptorSet m_LightingSet = VK_NULL_HANDLE;
 	ComputeEffect m_LightingEffect;
