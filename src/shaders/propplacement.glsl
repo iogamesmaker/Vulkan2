@@ -29,14 +29,14 @@ vec4 propHash42(vec2 p) {
 	return fract((p4.xxyz + p4.yzzw) * p4.zywx);
 }
 
-bool placeProp(sampler2D hm, vec2 cellIndex, vec2 offsetWorld, ivec2 offset, float terrainSize, float factor, out PropPlacement p) {
+bool placeProp(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld, ivec2 offset, float terrainSize, float factor, out PropPlacement p) {
 	vec4 rnd = propHash42(cellIndex * 1.71 + 3.3);
 	vec4 rnd2 = propHash42(cellIndex * 0.37 - 9.1);
 	p.xz = (cellIndex + 0.1 + rnd.xy * 0.8) * PROP_CELL - offsetWorld;
 
 	vec2 size = vec2(textureSize(hm, 0));
 	p.uv = (p.xz + 0.5 * terrainSize) / terrainSize + vec2(offset) / size;
-	vec4 data = textureLod(hm, p.uv, 0.0);
+	vec4 data = vec4(textureLod(climate, p.uv, 0.0).rgb, textureLod(hm, p.uv, 0.0).a); // climate (half resolution), height
 	float hR = textureLodOffset(hm, p.uv, 0.0, ivec2(1, 0)).a, hL = textureLodOffset(hm, p.uv, 0.0, ivec2(-1, 0)).a;
 	float hT = textureLodOffset(hm, p.uv, 0.0, ivec2(0, 1)).a, hB = textureLodOffset(hm, p.uv, 0.0, ivec2(0, -1)).a;
 	float slope = pow((hR - hL) * heightmapSlopeScale(size.x), 2.0) + pow((hT - hB) * heightmapSlopeScale(size.x), 2.0); // the same measure terrain.frag uses

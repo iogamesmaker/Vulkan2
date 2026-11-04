@@ -2,7 +2,7 @@
 #include "gbuffer.hpp"
 #include "application.hpp"
 
-void Foliage::init(Application* engine, const AllocatedImage& heightmap, VkSampler heightmapSampler, VkFormat shadowFormat,
+void Foliage::init(Application* engine, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler, VkFormat shadowFormat,
 				   const AllocatedImage& bladeAtlas, const AllocatedImage& flowerAtlas, const AllocatedImage& wheatAtlas,
 				   const AllocatedImage& undergrowthAtlas, VkSampler atlasSampler,
 				   VkDescriptorSetLayout atmosphereLayout, VkDescriptorSetLayout shadowLayout, VkBuffer interactionBuffer) {
@@ -18,7 +18,8 @@ void Foliage::init(Application* engine, const AllocatedImage& heightmap, VkSampl
 	DescriptorLayoutBuilder computeBuilder;
 	computeBuilder.add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // heightmap
 	computeBuilder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);		  // instances
-	computeBuilder.add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	computeBuilder.add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);		  // indirect args
+	computeBuilder.add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // climate map
 
 	m_ComputeLayout = computeBuilder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_ComputeSet = engine->g_DescriptorAllocator.allocate(m_Device, m_ComputeLayout);
@@ -57,7 +58,7 @@ void Foliage::init(Application* engine, const AllocatedImage& heightmap, VkSampl
 	writes[6].dstSet = m_RenderSet;	 writes[6].dstBinding = 4; writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[6].pImageInfo = &undergrowthInfo;
 	writes[7].dstSet = m_RenderSet;	 writes[7].dstBinding = 5; writes[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[7].pBufferInfo = &interactionInfo;
 	vkUpdateDescriptorSets(m_Device, 8, writes, 0, nullptr);
-	setHeightmap(heightmap, heightmapSampler); // compute set binding 0
+	setHeightmap(heightmap, climateMap, heightmapSampler); // compute set bindings 0 and 3
 
 	// scatter pipeline
 	VkPushConstantRange computeRange{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FoliagePushConstants) };
@@ -139,15 +140,21 @@ void Foliage::init(Application* engine, const AllocatedImage& heightmap, VkSampl
 	vkDestroyShaderModule(m_Device, prepassShader.shader, nullptr);
 }
 
-void Foliage::setHeightmap(const AllocatedImage& heightmap, VkSampler heightmapSampler) {
-	VkDescriptorImageInfo info{ heightmapSampler, heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-	VkWriteDescriptorSet write{ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-	write.dstSet = m_ComputeSet;
-	write.dstBinding = 0;
-	write.descriptorCount = 1;
-	write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	write.pImageInfo = &info;
-	vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
+void Foliage::setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler) {
+	VkDescriptorImageInfo infos[2] = {
+		{ heightmapSampler, heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ heightmapSampler, climateMap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+	VkWriteDescriptorSet writes[2] = {};
+	for(uint32_t i = 0; i < 2; i++) {
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = m_ComputeSet;
+		writes[i].dstBinding = i == 0 ? 0 : 3;
+		writes[i].descriptorCount = 1;
+		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[i].pImageInfo = &infos[i];
+	}
+	vkUpdateDescriptorSets(m_Device, 2, writes, 0, nullptr);
 }
 
 void Foliage::destroy() {

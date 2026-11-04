@@ -29,7 +29,7 @@ class Foliage {
 public:
 	// atmosphere / shadow layouts are sets 1 and 2 of the graphics pipeline, same as the terrain
 	// the blade atlas is owned (loaded / destroyed) by the application
-	void init(Application* engine, const AllocatedImage& heightmap, VkSampler heightmapSampler, VkFormat shadowFormat,
+	void init(Application* engine, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler, VkFormat shadowFormat,
 			  const AllocatedImage& bladeAtlas, const AllocatedImage& flowerAtlas, const AllocatedImage& wheatAtlas,
 			  const AllocatedImage& undergrowthAtlas, VkSampler atlasSampler,
 			  VkDescriptorSetLayout atmosphereLayout, VkDescriptorSetLayout shadowLayout, VkBuffer interactionBuffer);
@@ -49,7 +49,7 @@ public:
 	bool m_CastShadows = true;
 private:
 	// init's writes of the heightmap + path map into the sets that sample them
-	void setHeightmap(const AllocatedImage& heightmap, VkSampler heightmapSampler);
+	void setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler);
 	VkDevice m_Device;
 	VmaAllocator m_Allocator;
 

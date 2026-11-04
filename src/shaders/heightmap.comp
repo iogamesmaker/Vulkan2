@@ -9,7 +9,11 @@
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
-layout (rgba16, set = 0, binding = 0) uniform writeonly image2D heightmap; // RGBA16 unorm: rgb = climate, a = height, all 0..1
+layout (r16, set = 0, binding = 0) uniform writeonly image2D heightmap; // R16 unorm: the height, 0..1
+// rgb = climate (temperature, moisture, ruggedness) 0..1, half resolution: it's smooth over kilometres (terrain.frag,
+// the trees, grass and rocks, the weather on the ground read it). it used to share an RGBA16 texel with the height,
+// 302 MB at 6144^2, these two are ~112 MB
+layout (rgba8, set = 0, binding = 1) uniform writeonly image2D climateMap;
 
 layout ( push_constant ) uniform constants {
     ivec2 offset;
@@ -335,6 +339,7 @@ void main() {
 
 	ivec2 physicalCoord = (texelCoord % size + size) % size;
 
-	// rgb = climate (terrain.frag turns it back into biome weights for texturing), a = height
-	imageStore(heightmap, physicalCoord, vec4(climate, height));
+	imageStore(heightmap, physicalCoord, vec4(height));
+	// the climate map's texel is the 2x2 whose even corner this is (every strip the map updates spans whole rows / columns)
+	if (((physicalCoord.x | physicalCoord.y) & 1) == 0) imageStore(climateMap, physicalCoord / 2, vec4(climate, 0.0));
 }

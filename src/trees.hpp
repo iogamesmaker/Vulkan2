@@ -24,7 +24,7 @@ class Trees {
 public:
 	// TREE_TEXTURES textures: bark conifer, bark broadleaf, conifer branch card, broadleaf cluster card, the barks'
 	// normal maps, roughness maps and height maps (owned by the application)
-	void init(Application* engine, const AllocatedImage& heightmap, VkSampler heightmapSampler,
+	void init(Application* engine, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler,
 			  const AllocatedImage* textures, VkSampler textureSampler,
 			  VkDescriptorSetLayout atmosphereLayout, VkDescriptorSetLayout shadowLayout, VkFormat shadowFormat, VkBuffer interactionBuffer);
 	void destroy();
@@ -46,7 +46,7 @@ public:
 	float m_Density = 1.0f;
 private:
 	// init's writes of the heightmap + path map into the sets that sample them
-	void setHeightmap(const AllocatedImage& heightmap, VkSampler heightmapSampler);
+	void setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler);
 	struct Mesh { uint32_t firstIndex, indexCount; };
 	
 	static constexpr uint32_t SPECIES = 3, VARIANTS = 3, MESHES = SPECIES * VARIANTS;

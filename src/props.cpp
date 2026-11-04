@@ -158,7 +158,7 @@ void Props::buildStump(uint32_t segments, bool broken, float seed, std::vector<V
 
 // ---------------------------------------------------------------- setup
 
-void Props::init(Application* engine, const AllocatedImage& heightmap, VkSampler heightmapSampler,
+void Props::init(Application* engine, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler,
 				 const VkImageView* textures, bool endGrainTexture, VkSampler textureSampler, VkFormat shadowFormat) {
 	m_Device = engine->m_Device;
 	m_Allocator = engine->getAllocator();
@@ -206,6 +206,7 @@ void Props::init(Application* engine, const AllocatedImage& heightmap, VkSampler
 	// descriptors
 	DescriptorLayoutBuilder computeBuilder;
 	computeBuilder.add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // heightmap
+	computeBuilder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // climate map
 
 	computeBuilder.add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);		  // instances
 	computeBuilder.add_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);		  // draw commands
@@ -229,7 +230,7 @@ void Props::init(Application* engine, const AllocatedImage& heightmap, VkSampler
 	writes[2].dstSet = m_RenderSet; writes[2].dstBinding = 0; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[2].pBufferInfo = &instanceInfo;
 	writes[3].dstSet = m_RenderSet; writes[3].dstBinding = 1; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[3].descriptorCount = PROP_TEXTURES; writes[3].pImageInfo = textureInfos;
 	vkUpdateDescriptorSets(m_Device, 4, writes, 0, nullptr);
-	setHeightmap(heightmap, heightmapSampler); // compute set binding 0
+	setHeightmap(heightmap, climateMap, heightmapSampler); // compute set bindings 0 and 1
 
 	// pipelines
 	VkPushConstantRange computeRange{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FoliagePushConstants) };
@@ -300,15 +301,21 @@ void Props::init(Application* engine, const AllocatedImage& heightmap, VkSampler
 	vkDestroyShaderModule(m_Device, shadowShader.shader, nullptr);
 }
 
-void Props::setHeightmap(const AllocatedImage& heightmap, VkSampler heightmapSampler) {
-	VkDescriptorImageInfo info{ heightmapSampler, heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-	VkWriteDescriptorSet write{ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-	write.dstSet = m_ComputeSet;
-	write.dstBinding = 0;
-	write.descriptorCount = 1;
-	write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	write.pImageInfo = &info;
-	vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
+void Props::setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler) {
+	VkDescriptorImageInfo infos[2] = {
+		{ heightmapSampler, heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+		{ heightmapSampler, climateMap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+	};
+	VkWriteDescriptorSet writes[2] = {};
+	for(uint32_t i = 0; i < 2; i++) {
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = m_ComputeSet;
+		writes[i].dstBinding = i;
+		writes[i].descriptorCount = 1;
+		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[i].pImageInfo = &infos[i];
+	}
+	vkUpdateDescriptorSets(m_Device, 2, writes, 0, nullptr);
 }
 
 void Props::destroy() {

@@ -445,7 +445,8 @@ ComputeEffect Application::loadComputeShader(std::string path, std::string name,
 void Application::initComputePipelines() {
 	// create descriptor set layout for heightmap
 	DescriptorLayoutBuilder builder;
-	builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE); // height
+	builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE); // climate (half resolution)
 	m_HeightmapDescriptorLayout = builder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	
 	m_HeightmapDescriptors = g_DescriptorAllocator.allocate(m_Device, m_HeightmapDescriptorLayout);
@@ -480,8 +481,8 @@ void Application::initComputePipelines() {
 	VkDescriptorImageInfo heightmapImgInfo{};
 	
 	heightmapImgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-	heightmapImgInfo.imageView = m_Heightmap.imageView;
-	
+	heightmapImgInfo.imageView = m_HeightmapStorageView;
+
 	VkWriteDescriptorSet heightmapWrite = {};
 	heightmapWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	heightmapWrite.pNext = nullptr;
@@ -490,7 +491,12 @@ void Application::initComputePipelines() {
 	heightmapWrite.descriptorCount = 1;
 	heightmapWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	heightmapWrite.pImageInfo = &heightmapImgInfo;
-	
+
+	vkUpdateDescriptorSets(m_Device, 1, &heightmapWrite, 0, nullptr);
+
+	VkDescriptorImageInfo climateImgInfo{ VK_NULL_HANDLE, m_ClimateMap.imageView, VK_IMAGE_LAYOUT_GENERAL };
+	heightmapWrite.dstBinding = 1;
+	heightmapWrite.pImageInfo = &climateImgInfo;
 	vkUpdateDescriptorSets(m_Device, 1, &heightmapWrite, 0, nullptr);
 
 	m_HeightmapPC.offset = {0,0};
@@ -534,6 +540,7 @@ void Application::initTessellationPipeline() {
 	builder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_TEXTURES); // albedo
 	builder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_TEXTURES); // normal
 	builder.add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_TEXTURES); // pom
+	builder.add_binding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1); // climate map (half resolution)
 	builder.add_binding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1); // sky visibility (horizon AO)
 	builder.add_binding(6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1);		  // terrain cache: where each level is baked
 	builder.add_binding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1); // terrain cache: albedo
@@ -642,6 +649,11 @@ void Application::initTessellationPipeline() {
 	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	descriptorWrite.pImageInfo = &terrainImgInfo;
 	
+	vkUpdateDescriptorSets(m_Device, 1, &descriptorWrite, 0, nullptr);
+
+	VkDescriptorImageInfo climateMapInfo{ m_HeightmapSampler, m_ClimateMap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+	descriptorWrite.dstBinding = 4;
+	descriptorWrite.pImageInfo = &climateMapInfo;
 	vkUpdateDescriptorSets(m_Device, 1, &descriptorWrite, 0, nullptr);
 
 	VkDescriptorImageInfo skyVisibilityInfo{ m_HeightmapSampler, m_SkyVisibility.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
@@ -797,9 +809,9 @@ void Application::initDefaultData() {
 	parseShots();
 
 	m_PlayerTrail.init(this);
-	m_Foliage.init(this, m_Heightmap, m_HeightmapSampler, m_Shadows.getFormat(), m_BladeAtlas, m_FlowerAtlas, m_WheatAtlas, m_TreeTextures[3], m_Sampler,
+	m_Foliage.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Shadows.getFormat(), m_BladeAtlas, m_FlowerAtlas, m_WheatAtlas, m_TreeTextures[3], m_Sampler,
 				   m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_PlayerTrail.buffer());
-	m_Trees.init(this, m_Heightmap, m_HeightmapSampler, m_TreeTextures, m_Sampler,
+	m_Trees.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_TreeTextures, m_Sampler,
 				 m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_Shadows.getFormat(), m_PlayerTrail.buffer());
 	// rocks get the terrain's rock texture, logs the broadleaf bark, moss is the grass
 	// and the cut ends the end grain photo (the bark stands in for it when it's missing, unused then)
@@ -807,7 +819,7 @@ void Application::initDefaultData() {
 												m_TreeTextures[1].imageView, m_TreeTextures[5].imageView, m_AlbedoMaps[0].imageView,
 												m_HasEndGrain ? m_EndGrain[0].imageView : m_TreeTextures[1].imageView,
 												m_HasEndGrain ? m_EndGrain[1].imageView : m_TreeTextures[5].imageView };
-	m_Props.init(this, m_Heightmap, m_HeightmapSampler, propTextures, m_HasEndGrain, m_Sampler, m_Shadows.getFormat());
+	m_Props.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, propTextures, m_HasEndGrain, m_Sampler, m_Shadows.getFormat());
 	m_Trees.setOcclusionSource(m_HiZ.getView(), m_HiZ.getSampler());
 	m_Precipitation.init(this, m_OutputImage.imageFormat, m_AtmosphereManager.getRenderDescriptorLayout());
 	m_Precipitation.setDepth(m_DepthBuffer.imageView, m_NearestSampler);
@@ -844,12 +856,14 @@ void Application::initProbe() {
 	DescriptorLayoutBuilder builder;
 	builder.add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 	builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+	builder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // climate map (tree / rock placement)
 	m_ProbeLayout = builder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_ProbeSet = g_DescriptorAllocator.allocate(m_Device, m_ProbeLayout);
 
 	VkDescriptorImageInfo imageInfo{ m_HeightmapSampler, m_Heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+	VkDescriptorImageInfo climateInfo{ m_HeightmapSampler, m_ClimateMap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	VkDescriptorBufferInfo bufferInfo{ m_ProbeBuffer.buffer, 0, VK_WHOLE_SIZE };
-	VkWriteDescriptorSet writes[2] = {};
+	VkWriteDescriptorSet writes[3] = {};
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_ProbeSet;
 	writes[0].dstBinding = 0;
@@ -861,7 +875,10 @@ void Application::initProbe() {
 	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[1].pImageInfo = nullptr;
 	writes[1].pBufferInfo = &bufferInfo;
-	vkUpdateDescriptorSets(m_Device, 2, writes, 0, nullptr);
+	writes[2] = writes[0];
+	writes[2].dstBinding = 2;
+	writes[2].pImageInfo = &climateInfo;
+	vkUpdateDescriptorSets(m_Device, 3, writes, 0, nullptr);
 
 	VkPushConstantRange range{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ProbePushConstants) };
 	VkPipelineLayoutCreateInfo layoutCI = vkinit::pipeline_layout_create_info();
@@ -1146,6 +1163,7 @@ void Application::generateHeightmap() {
 	// fresh images into the layout the generation expects, then the whole map in strips
 	immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		vkutil::transition_image(cmd, m_ClimateMap.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	});
 	Uint64 start = SDL_GetPerformanceCounter();
 	regenerateHeightmap();
@@ -1171,6 +1189,7 @@ void Application::updateHeightmap() {
 	m_HeightmapPC.offset = pos;
 	immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+		vkutil::transition_image(cmd, m_ClimateMap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 		
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.layout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
@@ -1226,6 +1245,7 @@ void Application::updateHeightmap() {
 			vkCmdDispatch(cmd, groupNX, groupNY, 1);
 		}
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		vkutil::transition_image(cmd, m_ClimateMap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		for(auto& [start, extent] : regions) dispatchHorizonAO(cmd, start, extent);
 	});	
 }
@@ -1240,6 +1260,7 @@ void Application::regenerateHeightmap() {
 	for(int y = 0; y < m_HeightmapSize; y += rows) {
 		immediateSubmit([&](VkCommandBuffer cmd) {
 			vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+			vkutil::transition_image(cmd, m_ClimateMap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.layout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
 			HeightmapPushConstants pc = m_HeightmapPC;
@@ -1249,6 +1270,7 @@ void Application::regenerateHeightmap() {
 			vkCmdPushConstants(cmd, m_HeightmapEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pc);
 			vkCmdDispatch(cmd, (pc.updateSize.x + 15) / 16, (pc.updateSize.y + 15) / 16, 1);
 			vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			vkutil::transition_image(cmd, m_ClimateMap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		});
 	}
 	for(int y = 0; y < m_HeightmapSize; y += rows * 4) { // the AO is half resolution, cheaper per texel
@@ -1451,6 +1473,7 @@ void Application::initLighting() {
 	builder.add_binding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // volumetric clouds (half resolution)
 	builder.add_binding(9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // cloud coverage map
 	builder.add_binding(10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);		   // where the map is
+	builder.add_binding(11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // the climate map (snow / wetness follow it)
 	builder.add_binding(12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // the heightmap (the local climate: snow / wetness)
 	m_LightingLayout = builder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_LightingSet = g_DescriptorAllocator.allocate(m_Device, m_LightingLayout);
@@ -1666,11 +1689,15 @@ void Application::writeLightingDescriptors() {
 	};
 	writeMap(m_LightingSet, 9);
 
-	// the heightmap's climate (12): the weather on the ground follows the local climate
-	VkDescriptorImageInfo climateInfo{ m_HeightmapSampler, m_Heightmap.imageView, read };
+	// the climate map (11): the weather on the ground follows the local climate. and the heightmap (12), the uv math
+	// goes by its size (the map offset is in its texels)
+	VkDescriptorImageInfo climateInfo{ m_HeightmapSampler, m_ClimateMap.imageView, read };
+	VkDescriptorImageInfo heightmapInfo{ m_HeightmapSampler, m_Heightmap.imageView, read };
 	VkWriteDescriptorSet climateWrite{ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-	climateWrite.dstSet = m_LightingSet; climateWrite.dstBinding = 12; climateWrite.descriptorCount = 1;
+	climateWrite.dstSet = m_LightingSet; climateWrite.dstBinding = 11; climateWrite.descriptorCount = 1;
 	climateWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; climateWrite.pImageInfo = &climateInfo;
+	vkUpdateDescriptorSets(m_Device, 1, &climateWrite, 0, nullptr);
+	climateWrite.dstBinding = 12; climateWrite.pImageInfo = &heightmapInfo;
 	vkUpdateDescriptorSets(m_Device, 1, &climateWrite, 0, nullptr);
 
 	writeMap(m_CloudSet, 3);
@@ -2399,16 +2426,19 @@ void Application::initHorizonAO() {
 	DescriptorLayoutBuilder builder;
 	builder.add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 	builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+	builder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // the climate map (the canopy)
 	m_SkyVisibilityLayout = builder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_SkyVisibilitySet = g_DescriptorAllocator.allocate(m_Device, m_SkyVisibilityLayout);
 
 	VkDescriptorImageInfo heightmapInfo{ m_HeightmapSampler, m_Heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	VkDescriptorImageInfo outputInfo{ VK_NULL_HANDLE, m_SkyVisibility.imageView, VK_IMAGE_LAYOUT_GENERAL };
-	VkWriteDescriptorSet writes[2] = {};
+	VkDescriptorImageInfo climateInfo{ m_HeightmapSampler, m_ClimateMap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+	VkWriteDescriptorSet writes[3] = {};
 	for(auto& write : writes) { write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write.dstSet = m_SkyVisibilitySet; write.descriptorCount = 1; }
 	writes[0].dstBinding = 0; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &heightmapInfo;
 	writes[1].dstBinding = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[1].pImageInfo = &outputInfo;
-	vkUpdateDescriptorSets(m_Device, 2, writes, 0, nullptr);
+	writes[2].dstBinding = 2; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[2].pImageInfo = &climateInfo;
+	vkUpdateDescriptorSets(m_Device, 3, writes, 0, nullptr);
 
 	VkPushConstantRange range{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::ivec4) + sizeof(glm::vec4) };
 	VkPipelineLayoutCreateInfo layoutCI = vkinit::pipeline_layout_create_info();
@@ -2462,8 +2492,18 @@ void Application::createHeightmapImages() {
 		VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &image.imageView));
 	};
 	uint32_t size = static_cast<uint32_t>(m_HeightmapSize);
-	// rgb = climate, a = height (heightmap.comp)
-	create(m_Heightmap, VK_FORMAT_R16G16B16A16_UNORM, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, size);
+	// the height (heightmap.comp). its sampled view puts the height in .a, where every shader reads it from (they used
+	// to share an RGBA16 texel with the climate), and zeros in rgb: a climate read left on it shows as snow everywhere.
+	// heightmap.comp writes through a plain view (storage views can't swizzle)
+	create(m_Heightmap, VK_FORMAT_R16_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, size);
+	m_HeightmapStorageView = m_Heightmap.imageView;
+	{
+		VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(VK_FORMAT_R16_UNORM, m_Heightmap.image, VK_IMAGE_ASPECT_COLOR_BIT);
+		viewCI.components = { VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R };
+		VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &m_Heightmap.imageView));
+	}
+	// rgb = climate (temperature, moisture, ruggedness), half resolution: smooth over kilometres
+	create(m_ClimateMap, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, size / 2);
 	// horizon AO, half the resolution (horizonao.comp)
 	create(m_SkyVisibility, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, m_FullResSkyVisibility ? size : size / 2);
 }
@@ -2502,7 +2542,8 @@ void Application::recreateSkyVisibility() {
 }
 
 void Application::destroyHeightmapImages() {
-	for(AllocatedImage* image : { &m_Heightmap, &m_SkyVisibility }) {
+	vkDestroyImageView(m_Device, m_HeightmapStorageView, nullptr);
+	for(AllocatedImage* image : { &m_Heightmap, &m_ClimateMap, &m_SkyVisibility }) {
 		vkDestroyImageView(m_Device, image->imageView, nullptr);
 		vmaDestroyImage(m_Allocator, image->image, image->allocation);
 	}
@@ -2690,7 +2731,8 @@ std::vector<DebugTexture> Application::debugTextures() {
 	add("aerial perspective LUT", m_AtmosphereManager.aerial.imageView, read, DebugTexHint::Hdr, m_AtmosphereManager.aerial.imageExtent).kind = DebugTexKind::Tex3D;
 
 	// terrain
-	add("heightmap (temp, moisture, mountains, height)", m_Heightmap.imageView, read, DebugTexHint::Data, m_Heightmap.imageExtent);
+	add("heightmap (a = height)", m_Heightmap.imageView, read, DebugTexHint::Data, m_Heightmap.imageExtent);
+	add("climate map (temperature, moisture, ruggedness)", m_ClimateMap.imageView, read, DebugTexHint::Data, m_ClimateMap.imageExtent);
 	if(m_SkyVisibilityReady) add("sky visibility (r = horizon AO, g = forest canopy)", m_SkyVisibility.imageView, read, DebugTexHint::Data, m_SkyVisibility.imageExtent);
 	for(int normal = 0; normal < 2; normal++) {
 		DebugTexture& cache = add(normal ? "terrain cache normal" : "terrain cache albedo", normal ? m_TerrainCache.getNormalView() : m_TerrainCache.getAlbedoView(),

@@ -337,7 +337,7 @@ namespace {
 	}
 }
 
-void Trees::init(Application* engine, const AllocatedImage& heightmap, VkSampler heightmapSampler,
+void Trees::init(Application* engine, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler,
 				 const AllocatedImage* textures, VkSampler textureSampler,
 				 VkDescriptorSetLayout atmosphereLayout, VkDescriptorSetLayout shadowLayout, VkFormat shadowFormat, VkBuffer interactionBuffer) {
 	m_Device = engine->m_Device;
@@ -382,7 +382,7 @@ void Trees::init(Application* engine, const AllocatedImage& heightmap, VkSampler
 
 	// descriptor sets
 	const VkDescriptorType SAMPLER = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, SSBO = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	m_PlaceLayout = storageLayout(m_Device, { SAMPLER, SSBO, SSBO }, VK_SHADER_STAGE_COMPUTE_BIT);
+	m_PlaceLayout = storageLayout(m_Device, { SAMPLER, SSBO, SSBO, SAMPLER }, VK_SHADER_STAGE_COMPUTE_BIT); // + the climate map
 	m_ComputeLayout = storageLayout(m_Device, { SSBO, SSBO, SSBO, SSBO, SSBO, SAMPLER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER }, VK_SHADER_STAGE_COMPUTE_BIT); // + depth pyramid, occlusion
 	DescriptorLayoutBuilder renderBuilder;
 	renderBuilder.add_binding(0, SSBO);
@@ -396,7 +396,7 @@ void Trees::init(Application* engine, const AllocatedImage& heightmap, VkSampler
 	m_RenderSet = engine->g_DescriptorAllocator.allocate(m_Device, m_RenderLayout);
 	m_ImpostorSet = engine->g_DescriptorAllocator.allocate(m_Device, m_ImpostorLayout);
 
-	setHeightmap(heightmap, heightmapSampler); // place set binding 0
+	setHeightmap(heightmap, climateMap, heightmapSampler); // place set bindings 0 and 3
 	VkDescriptorBufferInfo placedInfo{ m_Placed.buffer, 0, VK_WHOLE_SIZE }, countInfo{ m_PlacedCount.buffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo instanceInfo{ m_Instances.buffer, 0, VK_WHOLE_SIZE }, commandInfo{ m_Commands.buffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo impostorCommandInfo{ m_ImpostorCommands.buffer, 0, VK_WHOLE_SIZE };
@@ -499,10 +499,12 @@ void Trees::init(Application* engine, const AllocatedImage& heightmap, VkSampler
 		vkDestroyShaderModule(m_Device, shader->shader, nullptr);
 }
 
-void Trees::setHeightmap(const AllocatedImage& heightmap, VkSampler heightmapSampler) {
+void Trees::setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler) {
 	VkDescriptorImageInfo heightmapInfo{ heightmapSampler, heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 
+	VkDescriptorImageInfo climateInfo{ heightmapSampler, climateMap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	writeSet(m_Device, m_PlaceSet, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &heightmapInfo, nullptr);
+	writeSet(m_Device, m_PlaceSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &climateInfo, nullptr);
 
 }
 

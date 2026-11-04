@@ -416,7 +416,9 @@ private:
 	std::vector<AllocatedImage> m_NormalMaps;
 	std::vector<AllocatedImage> m_HeightMaps;
 	
-	AllocatedImage m_Heightmap;
+	AllocatedImage m_Heightmap;		  // R16 height, its view puts it in .a (createHeightmapImages)
+	VkImageView m_HeightmapStorageView; // the plain view heightmap.comp writes through
+	AllocatedImage m_ClimateMap;	  // RGBA8, half resolution: rgb = temperature, moisture, ruggedness
 	AllocatedImage m_SkyVisibility; // RG16F, half the heightmap's resolution: r = horizon AO, g = forest canopy (horizonao.comp)
 	VkDescriptorSetLayout m_SkyVisibilityLayout;
 	VkDescriptorSet m_SkyVisibilitySet;

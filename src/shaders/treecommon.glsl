@@ -164,14 +164,14 @@ vec3 treeChances(vec4 data, float treelineJitter, float density) {
 	return vec3(conifer, broadleaf, bush) * density * (1.0 - field);
 }
 
-bool placeTree(sampler2D hm, vec2 cellIndex, vec2 offsetWorld, ivec2 offset, float terrainSize, float density, out TreePlacement t) {
+bool placeTree(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld, ivec2 offset, float terrainSize, float density, out TreePlacement t) {
 	t.rnd = hash42(cellIndex * 1.37 + 11.0);
 	t.rnd2 = hash42(cellIndex * 0.71 - 5.0);
 	t.xz = (cellIndex + 0.15 + t.rnd.xy * 0.7) * TREE_CELL_SIZE - offsetWorld;
 
 	vec2 size = vec2(textureSize(hm, 0));
 	t.uv = (t.xz + 0.5 * terrainSize) / terrainSize + vec2(offset) / size;
-	vec4 data = textureLod(hm, t.uv, 0.0);
+	vec4 data = vec4(textureLod(climate, t.uv, 0.0).rgb, textureLod(hm, t.uv, 0.0).a); // climate (half resolution), height
 	float hR = textureLodOffset(hm, t.uv, 0.0, ivec2(1, 0)).a;
 	float hL = textureLodOffset(hm, t.uv, 0.0, ivec2(-1, 0)).a;
 	float hT = textureLodOffset(hm, t.uv, 0.0, ivec2(0, 1)).a;

@@ -2,7 +2,7 @@
 // scales, triplanar cliffs, parallax up close and the colour grading on top. shared by terrain.frag (per pixel)
 // and terraincache.comp (bakes the same surface into the far field cache, see terraincache.hpp), so the two
 // match exactly where one hands over to the other
-// the includer declares heightmap, albedo[], normalmap[], pom[] and the atmosphere UBO (ubo)
+// the includer declares heightmap, climateMap, albedo[], normalmap[], pom[] and the atmosphere UBO (ubo)
 #ifndef TERRAINMATERIAL_GLSL
 #define TERRAINMATERIAL_GLSL
 
@@ -209,7 +209,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	float dzdy = (hT - hB) * heightmapSlopeScale(size.x);
 	float slope = dzdx * dzdx + dzdy * dzdy;
 
-	vec4 terrainData = textureLod(heightmap, readCoord, 0.0);
+	vec4 terrainData = vec4(textureLod(climateMap, readCoord, 0.0).rgb, textureLod(heightmap, readCoord, 0.0).a); // climate (half resolution), height
 	vec3 climate = terrainData.rgb;
 	float terrainHeight = terrainData.a;
 

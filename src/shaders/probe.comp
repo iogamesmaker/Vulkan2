@@ -7,6 +7,7 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 2) uniform sampler2D climateMap; // half resolution
 
 // must match collision.hpp
 #define PROBE_GRID 32
@@ -59,7 +60,7 @@ void main() {
 		vec2 cell = floor((pc.position + pc.offsetWorld) / TREE_CELL_SIZE) + vec2(int(id % 5u) - 2, int(id / 5u) - 2);
 		TreePlacement t;
 		vec4 tree = vec4(0.0);
-		if (placeTree(heightmap, cell, pc.offsetWorld, pc.offset, pc.terrainSize, pc.density, t))
+		if (placeTree(heightmap, climateMap, cell, pc.offsetWorld, pc.offset, pc.terrainSize, pc.density, t))
 			tree = vec4(t.xz + pc.offsetWorld, trunkRadius(t.species, t.height), 1.0);
 		results[pc.slot].trees[id] = tree;
 	}
@@ -69,7 +70,7 @@ void main() {
 		vec2 cell = floor((pc.position + pc.offsetWorld) / PROP_CELL) + vec2(int(id % 7u) - 3, int(id / 7u) - 3);
 		PropPlacement prop;
 		vec4 a = vec4(0.0), b = vec4(0.0);
-		if (placeProp(heightmap, cell, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, prop)) {
+		if (placeProp(heightmap, climateMap, cell, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, prop)) {
 			float propGround = terrainHeight(heightmap, prop.uv, 0.0, 0.0, pc.factor, pc.terrainSize);
 			if (prop.mesh >= 6u) {
 				// stump: a squat dome over its footprint (root flare included), you can step onto the short ones

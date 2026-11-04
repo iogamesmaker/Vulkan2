@@ -17,6 +17,7 @@
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap; // .a = height, repeat addressing (ring buffer)
+layout(set = 0, binding = 2) uniform sampler2D climateMap; // rgb = climate, half resolution (the canopy)
 layout(rg16f, set = 0, binding = 1) uniform writeonly image2D skyVisibility;
 
 layout(push_constant) uniform constants {
@@ -34,7 +35,7 @@ const int STEPS = 10;
 // the crowns' share of the sky over a cell: a conifer's cone covers ~70% of its ~10m cell seen from below, a
 // broadleaf's wider crown ~90%. bushes are under the canopy, not part of it
 float canopyCover(vec2 uv) {
-	vec4 data = textureLod(heightmap, uv, 0.0);
+	vec4 data = vec4(textureLod(climateMap, uv, 0.0).rgb, textureLod(heightmap, uv, 0.0).a);
 	vec2 size = vec2(textureSize(heightmap, 0));
 	float hR = textureLodOffset(heightmap, uv, 0.0, ivec2(1, 0)).a, hL = textureLodOffset(heightmap, uv, 0.0, ivec2(-1, 0)).a;
 	float hT = textureLodOffset(heightmap, uv, 0.0, ivec2(0, 1)).a, hB = textureLodOffset(heightmap, uv, 0.0, ivec2(0, -1)).a;

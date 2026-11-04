@@ -18,7 +18,8 @@ layout(rgba16f, set = 0, binding = 4) uniform image2D colorImage; // read where 
 layout(rgba16f, set = 0, binding = 5) uniform writeonly image2D directImage; // sun / moon light + shadow
 layout(set = 0, binding = 6) uniform sampler2D skyVisibility; // horizon AO, half (or full) the heightmap's resolution, wraps
 layout(set = 0, binding = 8) uniform sampler2D cloudTexture; // half resolution (clouds.comp): rgb in-scattered, a = transmittance
-layout(set = 0, binding = 12) uniform sampler2D heightmapClimate; // the heightmap: rgb = climate (temperature, moisture, ruggedness), wraps
+layout(set = 0, binding = 12) uniform sampler2D heightmapClimate; // the heightmap (its size: the map offset is in its texels), wraps
+layout(set = 0, binding = 11) uniform sampler2D climateMap; // heightmap.comp: rgb = climate (temperature, moisture, ruggedness), half resolution, wraps
 layout(set = 0, binding = 7) uniform sampler2D ssaoTexture;	 // half resolution (ssao.comp): r = AO
 
 layout(set = 1, binding = 0) uniform sampler2D transmittanceLUT;
@@ -222,7 +223,7 @@ void main() {
 	// the weather is the one under the camera, the ground far off has its own climate: no snow settles in a hot desert
 	// you look at from the taiga's edge, the desert doesn't soak up a temperate rain
 	vec2 climateUV = (position.xz + 0.5 * pc.terrainSize) / pc.terrainSize + vec2(pc.mapOffset) / weatherTexels;
-	vec3 climateHere = textureLod(heightmapClimate, climateUV, 0.0).rgb;
+	vec3 climateHere = textureLod(climateMap, climateUV, 0.0).rgb;
 	float snowable = smoothstep(0.5, 0.36, climateHere.r);
 	float soakable = 1.0 - smoothstep(0.6, 0.7, climateHere.r) * smoothstep(0.45, 0.33, climateHere.g);
 	float snowHere = 0.0;

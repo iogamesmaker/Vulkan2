@@ -14,6 +14,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 // the terrain's own descriptor set and the atmosphere's (the UBO)
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 4) uniform sampler2D climateMap; // half resolution
 layout(set = 0, binding = 1) uniform sampler2D albedo[];
 layout(set = 0, binding = 2) uniform sampler2D normalmap[];
 layout(set = 0, binding = 3) uniform sampler2D pom[];

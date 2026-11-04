@@ -10,6 +10,7 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 #include "terrainheight.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 3) uniform sampler2D climateMap; // half resolution
 layout(std430, set = 0, binding = 1) writeonly buffer Instances { FoliageInstance instances[]; };
 struct DrawCommand { uint vertexCount; uint instanceCount; uint firstVertex; uint firstInstance; };
 // [0] = what the camera sees (outer rings), [1] = shadow casters near the camera (not frustum culled), stored after
@@ -77,7 +78,7 @@ void main() {
 	// terrain at that spot
 	vec2 size = vec2(textureSize(heightmap, 0));
 	vec2 uv = heightmapUV(xz, size);
-	vec4 data = textureLod(heightmap, uv, 0.0);
+	vec4 data = vec4(textureLod(climateMap, uv, 0.0).rgb, textureLod(heightmap, uv, 0.0).a); // climate (half resolution), height
 
 	// the rings and their fades go by the real distance (the raw height is close enough for that), so looking
 	// down from high up there's no full detail grass under the camera. the terrain mesh LODs by it too

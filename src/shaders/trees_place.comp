@@ -9,6 +9,7 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 #include "terrainheight.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 3) uniform sampler2D climateMap; // half resolution
 layout(std430, set = 0, binding = 1) writeonly buffer Placed { TreeInstance placed[]; };
 layout(std430, set = 0, binding = 2) buffer Counter { uint placedCount; };
 
@@ -20,7 +21,7 @@ void main() {
 	vec2 cellIndex = floor(camWorld / TREE_CELL_SIZE) - float(PLACE_GRID_SIDE / 2u) + vec2(id % PLACE_GRID_SIDE, id / PLACE_GRID_SIDE);
 
 	TreePlacement t;
-	if (!placeTree(heightmap, cellIndex, pc.offsetWorld, pc.offset, pc.terrainSize, pc.density, t)) return;
+	if (!placeTree(heightmap, climateMap, cellIndex, pc.offsetWorld, pc.offset, pc.terrainSize, pc.density, t)) return;
 	float dist = distance(t.xz, pc.campos.xz);
 	if (dist > PLACE_RADIUS) return;
 	if (t.species == SPECIES_BUSH && dist > BUSH_RADIUS) return; // too small to see that far

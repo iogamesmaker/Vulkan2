@@ -15,7 +15,7 @@ class Props {
 public:
 	// textures: rock albedo, rock normal, bark albedo, bark normal, moss albedo (owned by the application)
 	// textures: PROP_TEXTURES views (props.frag). endGrainTexture: [5] / [6] are the real cross section, not stand ins
-	void init(Application* engine, const AllocatedImage& heightmap, VkSampler heightmapSampler,
+	void init(Application* engine, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler,
 			  const VkImageView* textures, bool endGrainTexture, VkSampler textureSampler, VkFormat shadowFormat);
 	void destroy();
 
@@ -27,7 +27,7 @@ public:
 
 private:
 	// init's writes of the heightmap + path map into the sets that sample them
-	void setHeightmap(const AllocatedImage& heightmap, VkSampler heightmapSampler);
+	void setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler);
 	struct Vertex {
 		glm::vec4 positionMaterial; // xyz, w = 0 rock, 1 bark, 2 log end
 		glm::vec4 normalAO;
