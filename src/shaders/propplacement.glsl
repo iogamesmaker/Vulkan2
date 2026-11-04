@@ -1,6 +1,6 @@
 // which rock / boulder / log sits in a placement cell (world anchored, a pure function of the cell), shared by the
 // scatter (props.comp) and the walking probe (probe.comp, collisions), so you collide with exactly what's drawn.
-// include biometools.glsl and paths.glsl first
+// include biometools.glsl first
 #ifndef PROP_PLACEMENT_GLSL
 #define PROP_PLACEMENT_GLSL
 
@@ -29,7 +29,7 @@ vec4 propHash42(vec2 p) {
 	return fract((p4.xxyz + p4.yzzw) * p4.zywx);
 }
 
-bool placeProp(sampler2D hm, sampler2D paths, vec2 cellIndex, vec2 offsetWorld, ivec2 offset, float terrainSize, float factor, out PropPlacement p) {
+bool placeProp(sampler2D hm, vec2 cellIndex, vec2 offsetWorld, ivec2 offset, float terrainSize, float factor, out PropPlacement p) {
 	vec4 rnd = propHash42(cellIndex * 1.71 + 3.3);
 	vec4 rnd2 = propHash42(cellIndex * 0.37 - 9.1);
 	p.xz = (cellIndex + 0.1 + rnd.xy * 0.8) * PROP_CELL - offsetWorld;

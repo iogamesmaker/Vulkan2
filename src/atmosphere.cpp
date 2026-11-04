@@ -10,7 +10,6 @@ void Atmosphere::destroy() {
 	vkDestroyPipelineLayout(m_Device, m_SkyviewEffect.layout, nullptr);
 	vkDestroyPipelineLayout(m_Device, m_AerialEffect.layout, nullptr);
 	vkDestroyPipelineLayout(m_Device, m_PostEffect.layout, nullptr);
-	vkDestroySampler(m_Device, m_DepthSampler, nullptr);
 
 	vkDestroyPipelineLayout(m_Device, m_SkyLayout, nullptr);
 	vkDestroyPipeline(m_Device, m_SkyPipeline, nullptr);
@@ -189,22 +188,12 @@ void Atmosphere::init(VkDevice device, VmaAllocator allocator, Application* engi
 	// post processing
 	DescriptorLayoutBuilder postbuilder;
 	postbuilder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);		   // draw image, read + write
-	postbuilder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // depth buffer
-	postbuilder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // transmittance
 	postbuilder.add_binding(3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);		   // atmosphere UBO
 	postbuilder.add_binding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);		   // auto exposure state (exposure.comp)
 	postbuilder.add_binding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // bloom (setBloom)
 	m_PostDescriptorLayout = postbuilder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 
 	m_PostDescriptor = engine->g_DescriptorAllocator.allocate(m_Device, m_PostDescriptorLayout);
-
-	VkSamplerCreateInfo depthSamplerCI = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-	depthSamplerCI.magFilter = VK_FILTER_NEAREST;
-	depthSamplerCI.minFilter = VK_FILTER_NEAREST;
-	depthSamplerCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	depthSamplerCI.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	depthSamplerCI.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	VK_CHECK(vkCreateSampler(m_Device, &depthSamplerCI, nullptr, &m_DepthSampler));
 
 	// create descriptor sets for UBO
 	DescriptorLayoutBuilder ubobuilder;
@@ -359,15 +348,7 @@ void Atmosphere::init(VkDevice device, VmaAllocator allocator, Application* engi
 	imageWrite.dstSet = m_SkyDescriptor;
 	imageWrite.dstBinding = 8;
 	vkUpdateDescriptorSets(m_Device, 1, &imageWrite, 0, nullptr); // BINDING 8: READ AERIAL SUN
-	// post (binding 0 + 1 are the render targets, see setRenderTargets)
-	sampleInfo.imageView = transmittance.imageView;
-	imageWrite.pImageInfo = &sampleInfo;
-	imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	imageWrite.dstSet = m_PostDescriptor;
-	imageWrite.dstBinding = 2;
-	vkUpdateDescriptorSets(m_Device, 1, &imageWrite, 0, nullptr); // BINDING 2: READ TRANSMITTANCE
-
-	setRenderTargets(engine->m_OutputImage, engine->m_DepthBuffer); // post processing runs on the output image
+	setRenderTargets(engine->m_OutputImage); // post processing runs on the output image (binding 0)
 
 	// create the compute shader pipelines
 
@@ -616,30 +597,18 @@ void Atmosphere::setCirrusNoise(VkImageView view, VkSampler sampler) {
 	vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
 }
 
-void Atmosphere::setRenderTargets(const AllocatedImage& drawImage, const AllocatedImage& depthBuffer) {
+void Atmosphere::setRenderTargets(const AllocatedImage& drawImage) {
 	VkDescriptorImageInfo storageInfo{};
 	storageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	storageInfo.imageView = drawImage.imageView;
 
-	VkDescriptorImageInfo depthInfo{};
-	depthInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	depthInfo.imageView = depthBuffer.imageView;
-	depthInfo.sampler = m_DepthSampler;
-
-	VkWriteDescriptorSet writes[2] = {};
-	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[0].dstSet = m_PostDescriptor;
-	writes[0].dstBinding = 0;
-	writes[0].descriptorCount = 1;
-	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	writes[0].pImageInfo = &storageInfo;
-
-	writes[1] = writes[0];
-	writes[1].dstBinding = 1;
-	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	writes[1].pImageInfo = &depthInfo;
-
-	vkUpdateDescriptorSets(m_Device, 2, writes, 0, nullptr);
+	VkWriteDescriptorSet write{ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+	write.dstSet = m_PostDescriptor;
+	write.dstBinding = 0;
+	write.descriptorCount = 1;
+	write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	write.pImageInfo = &storageInfo;
+	vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
 }
 
 void Atmosphere::update(VkCommandBuffer cmd, const glm::mat4& view, const glm::mat4& projection, glm::vec3 campos, glm::vec2 cameraWorld) {
@@ -659,27 +628,9 @@ void Atmosphere::update(VkCommandBuffer cmd, const glm::mat4& view, const glm::m
 	m_PushConstants.frame = std::fmod(m_PushConstants.frame + 1.0f, 1024.0f);
 
 	// post: the exposure itself is automatic (exposure.comp), this is the compensation on top
-	m_PostPushConstants.invViewProj = m_PushConstants.invViewProj;
-	m_PostPushConstants.camPos = m_PushConstants.camPos;
 	m_PostPushConstants.exposure = std::exp2(m_ExposureEV);
-	m_PostPushConstants.pad = glm::vec2(m_Deltatime, m_BloomStrength);
-
-	// godrays come from whichever of the sun / moon is up
-	bool sunUp = m_SunDir.y > 0.0f;
-	glm::vec3 lightDir = sunUp ? m_SunDir : -m_SunDir;
-	m_PostPushConstants.lightDir = lightDir;
-	m_PostPushConstants.lightIlluminance = sunUp ? m_AtmosphereData.sunIlluminance : m_AtmosphereData.moonIlluminance;
-
-	glm::vec4 lightClip = rotationViewProj * glm::vec4(lightDir, 0.0f); // direction = point at infinity
-	float onScreen = 0.0f;
-	if(lightClip.w > 0.0f) {
-		glm::vec2 uv = glm::vec2(lightClip) / lightClip.w * 0.5f + 0.5f;
-		m_PostPushConstants.lightUV = uv;
-		float outside = std::max(std::max(-uv.x, uv.x - 1.0f), std::max(-uv.y, uv.y - 1.0f));
-		onScreen = glm::clamp(1.0f - outside / 0.5f, 0.0f, 1.0f);
-	}
-	onScreen *= glm::smoothstep(-0.02f, 0.06f, lightDir.y); // fade out at the horizon
-	m_PostPushConstants.lightOnScreen = onScreen;
+	m_PostPushConstants.deltaTime = m_Deltatime;
+	m_PostPushConstants.bloomStrength = m_BloomStrength;
 
 	// sky view
 	vkutil::transition_image(cmd, skyview.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);

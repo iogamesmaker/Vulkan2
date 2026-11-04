@@ -24,10 +24,8 @@ layout(std430, set = 0, binding = 1) writeonly buffer Result { ProbeData results
 #include "biometools.glsl"
 #define TREE_NO_PUSH_CONSTANTS
 #include "treecommon.glsl"
-#include "paths.glsl"
 #include "propplacement.glsl"
 
-layout(set = 0, binding = 2) uniform sampler2D pathMap;
 layout(push_constant) uniform constants {
 	vec2 position;	   // terrain space xz
 	ivec2 offset;	   // heightmap texel offset
@@ -71,7 +69,7 @@ void main() {
 		vec2 cell = floor((pc.position + pc.offsetWorld) / PROP_CELL) + vec2(int(id % 7u) - 3, int(id / 7u) - 3);
 		PropPlacement prop;
 		vec4 a = vec4(0.0), b = vec4(0.0);
-		if (placeProp(heightmap, pathMap, cell, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, prop)) {
+		if (placeProp(heightmap, cell, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, prop)) {
 			float propGround = terrainHeight(heightmap, prop.uv, 0.0, 0.0, pc.factor, pc.terrainSize);
 			if (prop.mesh >= 6u) {
 				// stump: a squat dome over its footprint (root flare included), you can step onto the short ones

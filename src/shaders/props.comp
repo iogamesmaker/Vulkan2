@@ -8,11 +8,9 @@ layout(local_size_x = 64) in;
 #include "propscommon.glsl"
 #include "biometools.glsl"
 #include "terrainheight.glsl"
-#include "paths.glsl"
 #include "propplacement.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
-layout(set = 0, binding = 1) uniform sampler2D pathMap;
 layout(std430, set = 0, binding = 2) writeonly buffer Instances { PropInstance instances[]; };
 struct DrawCommand { uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset; uint firstInstance; };
 layout(std430, set = 0, binding = 3) buffer Commands { DrawCommand commands[PROP_BINS]; };
@@ -32,7 +30,7 @@ void main() {
 	vec2 camWorld = pc.campos.xz + pc.offsetWorld;
 	vec2 cellIndex = floor(camWorld / PROP_CELL) - float(SIDE / 2u) + vec2(id % SIDE, id / SIDE);
 	PropPlacement placement;
-	if (!placeProp(heightmap, pathMap, cellIndex, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, placement)) return;
+	if (!placeProp(heightmap, cellIndex, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, placement)) return;
 	vec2 xz = placement.xz;
 	float distXZ = distance(xz, pc.campos.xz);
 	if (distXZ > PROP_RADIUS) return;

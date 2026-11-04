@@ -1,12 +1,10 @@
-// the terrain's surface: which materials show where (climate, rock, snow, paths), the detail textures at three
+// the terrain's surface: which materials show where (climate, rock, snow), the detail textures at three
 // scales, triplanar cliffs, parallax up close and the colour grading on top. shared by terrain.frag (per pixel)
 // and terraincache.comp (bakes the same surface into the far field cache, see terraincache.hpp), so the two
 // match exactly where one hands over to the other
-// the includer declares heightmap, albedo[], normalmap[], pom[], pathMap and the atmosphere UBO (ubo)
+// the includer declares heightmap, albedo[], normalmap[], pom[] and the atmosphere UBO (ubo)
 #ifndef TERRAINMATERIAL_GLSL
 #define TERRAINMATERIAL_GLSL
-
-#define MATERIAL_PATH 6 // after the biome materials
 
 // the detail textures' world space period: near (1.2), far (6, rotated 3-4-5) and macro (42, rotated 7-24-25)
 // repeats all line up again after 1050 world units, so the detail space can wrap at it without a seam. it keeps
@@ -74,8 +72,8 @@ Material sampleMaterial(int index, DetailUV near, DetailUV far, DetailUV macro, 
 #define POM_STEP_LIMIT 64 // hard cap on ubo.pomSteps
 
 // how much parallax each material gets (times ubo.pomDepth). grass' height map is noise, parallax on it just
-// smears the stalks around, so it gets none. order: the BIOME_ defines, then MATERIAL_PATH
-const float POM_MATERIAL_DEPTH[BIOME_COUNT + 1] = float[](0.0, 0.6, 1.0, 0.6, 0.35, 0.3, 1.0);
+// smears the stalks around, so it gets none. order: the BIOME_ defines
+const float POM_MATERIAL_DEPTH[BIOME_COUNT] = float[](0.0, 0.6, 1.0, 0.6, 0.35, 0.3);
 
 // height blending: where both are present the material that's physically higher wins (sand in the cracks, grass
 // tufts poking through), which looks a lot more natural than a plain crossfade. wFirst is normalised (the two
@@ -267,16 +265,15 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	for (int i = 0; i < BIOME_COUNT; i++) weights[i] *= 1.0 - snowCap;
 	weights[BIOME_SNOW] += snowCap;
 
-	float materials[BIOME_COUNT + 1];
+	float materials[BIOME_COUNT];
 	for (int i = 0; i < BIOME_COUNT; i++) materials[i] = weights[i];
-	materials[MATERIAL_PATH] = 0.0; // (nothing uses the path material right now)
 
 	// only the two strongest materials get sampled. the third strongest is taken off both weights, so a material
 	// has faded out completely by the time it swaps places with the next one (otherwise every swap is a seam)
 	int first = 0, second = 1;
 	if (materials[1] > materials[0]) { first = 1; second = 0; }
 	float third = 0.0;
-	for (int i = 2; i < BIOME_COUNT + 1; i++) {
+	for (int i = 2; i < BIOME_COUNT; i++) {
 		if (materials[i] > materials[first]) { third = materials[second]; second = first; first = i; }
 		else if (materials[i] > materials[second]) { third = materials[second]; second = i; }
 		else third = max(third, materials[i]);

@@ -1,34 +1,20 @@
 #version 450
-// HDR post processing: exposure (auto, exposure.comp) + tonemapping + a light grade, in place
-// on the draw image
+// HDR post processing: exposure (auto, exposure.comp) + bloom + tonemapping + a light grade, in place on the output
+// image
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(rgba16f, set = 0, binding = 0) uniform image2D image;
-layout(set = 0, binding = 1) uniform sampler2D depthBuffer;
-layout(set = 0, binding = 2) uniform sampler2D transmittance;
 
 layout(std430, set = 0, binding = 4) readonly buffer Exposure { float autoExposure; }; // exposure.comp
 layout(set = 0, binding = 5) uniform sampler2D bloomTexture; // bloom.comp, mip 0 is half resolution
 
-#define ATMOSPHERE_SET 0
-#define ATMOSPHERE_BINDING 3
-#include "atmosphere.glsl"
-
-layout(push_constant) uniform constants {
-	mat4 invViewProj;	   // rotation only
-	vec3 camPos;		   // km, planet centred
-	float exposure;		   // compensation (2^EV) on top of the automatic exposure
-	vec3 lightDir;		   // sun or moon, whichever is up
-	float lightIlluminance;
-	vec2 lightUV;		   // light position on screen
-	float godrayStrength;
-	float lightOnScreen;   // fades out as the light leaves the screen
-	float godrayDecay;
-	float godrayLength;
-	vec2 pad;			   // x = delta time (exposure.comp), y = bloom strength
+layout(push_constant) uniform constants { // PostPushConstants (atmosphere.hpp), shared with exposure.comp
+	float exposure;		 // compensation (2^EV) on top of the automatic exposure
+	float deltaTime;	 // exposure.comp's
+	float bloomStrength; // the mix of the bloom chain, energy conserving
+	float pad;
 } pc;
-
 
 // ACES fitted to the RRT + ODT (Stephen Hill, BakingLab). unlike the single curve approximation it works in the
 // ACES working space, so bright colours roll off towards white keeping their hue instead of clipping per channel
@@ -65,15 +51,6 @@ vec3 tonemap(vec3 hdr) {
 	return linearToSRGB(clamp(grade(tonemapACES(hdr)), 0.0, 1.0));
 }
 
-float interleavedGradientNoise(vec2 p) {
-	return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
-}
-
-vec3 viewDirection(vec2 uv) {
-	vec4 world = pc.invViewProj * vec4(uv * 2.0 - 1.0, 0.5, 1.0);
-	return normalize(world.xyz / world.w);
-}
-
 void main() {
 	ivec2 texcoord = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 size = imageSize(image);
@@ -81,11 +58,9 @@ void main() {
 
 	vec3 color = imageLoad(image, texcoord).rgb;
 
-	// (the light shafts are world space now, lighting.comp)
-
 	// bloom: a wide glow around everything bright, mixed in (energy conserving) before the exposure
 	vec3 bloom = textureLod(bloomTexture, (vec2(texcoord) + 0.5) / vec2(size), 0.0).rgb;
-	color = mix(color, bloom, pc.pad.y);
+	color = mix(color, bloom, pc.bloomStrength);
 
 	imageStore(image, texcoord, vec4(tonemap(color * autoExposure * pc.exposure), 1.0));
 }

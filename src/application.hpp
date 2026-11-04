@@ -422,7 +422,6 @@ private:
 	VkDescriptorSet m_SkyVisibilitySet;
 	ComputeEffect m_SkyVisibilityEffect;
 	bool m_SkyVisibilityReady = false; // false until the first dispatch moved it out of UNDEFINED
-	AllocatedImage m_PathMap; // RG16F signed distance to roads / trails, written together with the heightmap
 	
 	VkExtent2D m_DrawExtent;
 	

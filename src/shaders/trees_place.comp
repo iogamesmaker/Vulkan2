@@ -7,12 +7,10 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 #include "biometools.glsl"
 #include "treecommon.glsl"
 #include "terrainheight.glsl"
-#include "paths.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
 layout(std430, set = 0, binding = 1) writeonly buffer Placed { TreeInstance placed[]; };
 layout(std430, set = 0, binding = 2) buffer Counter { uint placedCount; };
-layout(set = 0, binding = 3) uniform sampler2D pathMap;
 
 void main() {
 	uint id = gl_GlobalInvocationID.x;

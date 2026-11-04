@@ -77,19 +77,12 @@ struct AtmospherePushConstants {
 };
 static_assert(sizeof(AtmospherePushConstants) <= 128, "push constants are only guaranteed to have 128 bytes");
 
-// godrays + tonemapping
+// auto exposure (exposure.comp) + bloom + tonemapping (post.comp), they share it
 struct PostPushConstants {
-	glm::mat4 invViewProj;
-	glm::vec3 camPos;
-	float exposure;
-	glm::vec3 lightDir;
-	float lightIlluminance;
-	glm::vec2 lightUV;
-	float godrayStrength;
-	float lightOnScreen;
-	float godrayDecay;
-	float godrayLength;
-	glm::vec2 pad;
+	float exposure;		 // compensation (2^EV) on top of the automatic exposure
+	float deltaTime;	 // seconds since the last frame (the exposure adapts over time)
+	float bloomStrength; // the mix of the bloom chain
+	float pad;
 };
 static_assert(sizeof(PostPushConstants) <= 128, "push constants are only guaranteed to have 128 bytes");
 
@@ -119,7 +112,7 @@ public:
 	ShadowLightKeys getShadowLight(float stepDegrees) const;
 
 	// the post pass reads the depth buffer and writes the draw image, call again after they get recreated
-	void setRenderTargets(const AllocatedImage& drawImage, const AllocatedImage& depthBuffer);
+	void setRenderTargets(const AllocatedImage& drawImage);
 	void setMoonTexture(VkImageView view, VkSampler sampler); // equirectangular colour map, owned by the application
 	void setCirrusNoise(VkImageView view, VkSampler sampler); // the cirrus' noise lattice (linear, repeating), owned by the application
 	void setVolumetricFog(VkImageView view, VkSampler sampler); // the integrated froxel fog (GENERAL), owned by the application
@@ -203,7 +196,6 @@ private:
 
 	VkDescriptorSetLayout m_PostDescriptorLayout;
 	VkDescriptorSet m_PostDescriptor;
-	VkSampler m_DepthSampler; // nearest, depth formats don't have to support linear filtering
 
 	VkPipeline m_SkyPipeline;
 	VkPipelineLayout m_SkyLayout;

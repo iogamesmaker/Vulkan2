@@ -4,7 +4,6 @@
 #include "gbuffer.glsl"
 #include "biometools.glsl"
 #include "terrainheight.glsl"
-#include "paths.glsl"
 
 
 layout(location = 0) in vec3 fragPos;
@@ -16,7 +15,6 @@ layout(set = 0, binding = 0) uniform sampler2D heightmap;
 layout(set = 0, binding = 1) uniform sampler2D albedo[];
 layout(set = 0, binding = 2) uniform sampler2D normalmap[];
 layout(set = 0, binding = 3) uniform sampler2D pom[];
-layout(set = 0, binding = 4) uniform sampler2D pathMap; // signed distance to roads / trails, baked by heightmap.comp
 layout(set = 0, binding = 5) uniform sampler2D skyVisibility; // horizon AO from the heightmap (horizonao.comp)
 
 // the far field cache (terraincache.hpp): the finished surface baked around the camera in levels of doubling size

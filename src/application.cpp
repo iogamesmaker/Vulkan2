@@ -446,7 +446,6 @@ void Application::initComputePipelines() {
 	// create descriptor set layout for heightmap
 	DescriptorLayoutBuilder builder;
 	builder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
-	builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE); // path map
 	m_HeightmapDescriptorLayout = builder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	
 	m_HeightmapDescriptors = g_DescriptorAllocator.allocate(m_Device, m_HeightmapDescriptorLayout);
@@ -494,12 +493,6 @@ void Application::initComputePipelines() {
 	
 	vkUpdateDescriptorSets(m_Device, 1, &heightmapWrite, 0, nullptr);
 
-	VkDescriptorImageInfo pathMapImgInfo{ VK_NULL_HANDLE, m_PathMap.imageView, VK_IMAGE_LAYOUT_GENERAL };
-	VkWriteDescriptorSet pathMapWrite = heightmapWrite;
-	pathMapWrite.dstBinding = 1;
-	pathMapWrite.pImageInfo = &pathMapImgInfo;
-	vkUpdateDescriptorSets(m_Device, 1, &pathMapWrite, 0, nullptr);
-
 	m_HeightmapPC.offset = {0,0};
 	m_HeightmapPC.dirtyMin = {0,0};
 	m_HeightmapEffect = loadComputeShader("src/shaders/bin/heightmap.comp.spv", "heightmap shader", heightmapLayout);
@@ -528,7 +521,7 @@ CompiledShader Application::loadShader(std::string path, VkShaderStageFlagBits s
 }
 
 void Application::initTessellationPipeline() {
-	const uint32_t MAX_TEXTURES = 7; // one material per biome + paths, see biometools.glsl / terrain.frag
+	const uint32_t MAX_TEXTURES = 6; // one material per biome, see biometools.glsl / terrain.frag
 	
 	CompiledShader   vertexShader = loadShader("src/shaders/bin/terrain.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
 	CompiledShader fragmentShader = loadShader("src/shaders/bin/terrain.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -541,7 +534,6 @@ void Application::initTessellationPipeline() {
 	builder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_TEXTURES); // albedo
 	builder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_TEXTURES); // normal
 	builder.add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_TEXTURES); // pom
-	builder.add_binding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1); // path map
 	builder.add_binding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1); // sky visibility (horizon AO)
 	builder.add_binding(6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1);		  // terrain cache: where each level is baked
 	builder.add_binding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1); // terrain cache: albedo
@@ -650,11 +642,6 @@ void Application::initTessellationPipeline() {
 	descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	descriptorWrite.pImageInfo = &terrainImgInfo;
 	
-	vkUpdateDescriptorSets(m_Device, 1, &descriptorWrite, 0, nullptr);
-
-	VkDescriptorImageInfo pathMapInfo{ m_HeightmapSampler, m_PathMap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-	descriptorWrite.dstBinding = 4;
-	descriptorWrite.pImageInfo = &pathMapInfo;
 	vkUpdateDescriptorSets(m_Device, 1, &descriptorWrite, 0, nullptr);
 
 	VkDescriptorImageInfo skyVisibilityInfo{ m_HeightmapSampler, m_SkyVisibility.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
@@ -810,9 +797,9 @@ void Application::initDefaultData() {
 	parseShots();
 
 	m_PlayerTrail.init(this);
-	m_Foliage.init(this, m_Heightmap, m_PathMap, m_HeightmapSampler, m_Shadows.getFormat(), m_BladeAtlas, m_FlowerAtlas, m_WheatAtlas, m_TreeTextures[3], m_Sampler,
+	m_Foliage.init(this, m_Heightmap, m_HeightmapSampler, m_Shadows.getFormat(), m_BladeAtlas, m_FlowerAtlas, m_WheatAtlas, m_TreeTextures[3], m_Sampler,
 				   m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_PlayerTrail.buffer());
-	m_Trees.init(this, m_Heightmap, m_PathMap, m_HeightmapSampler, m_TreeTextures, m_Sampler,
+	m_Trees.init(this, m_Heightmap, m_HeightmapSampler, m_TreeTextures, m_Sampler,
 				 m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_Shadows.getFormat(), m_PlayerTrail.buffer());
 	// rocks get the terrain's rock texture, logs the broadleaf bark, moss is the grass
 	// and the cut ends the end grain photo (the bark stands in for it when it's missing, unused then)
@@ -820,7 +807,7 @@ void Application::initDefaultData() {
 												m_TreeTextures[1].imageView, m_TreeTextures[5].imageView, m_AlbedoMaps[0].imageView,
 												m_HasEndGrain ? m_EndGrain[0].imageView : m_TreeTextures[1].imageView,
 												m_HasEndGrain ? m_EndGrain[1].imageView : m_TreeTextures[5].imageView };
-	m_Props.init(this, m_Heightmap, m_PathMap, m_HeightmapSampler, propTextures, m_HasEndGrain, m_Sampler, m_Shadows.getFormat());
+	m_Props.init(this, m_Heightmap, m_HeightmapSampler, propTextures, m_HasEndGrain, m_Sampler, m_Shadows.getFormat());
 	m_Trees.setOcclusionSource(m_HiZ.getView(), m_HiZ.getSampler());
 	m_Precipitation.init(this, m_OutputImage.imageFormat, m_AtmosphereManager.getRenderDescriptorLayout());
 	m_Precipitation.setDepth(m_DepthBuffer.imageView, m_NearestSampler);
@@ -857,14 +844,12 @@ void Application::initProbe() {
 	DescriptorLayoutBuilder builder;
 	builder.add_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
 	builder.add_binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-	builder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // path map (rock / log placement keeps paths clear)
 	m_ProbeLayout = builder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_ProbeSet = g_DescriptorAllocator.allocate(m_Device, m_ProbeLayout);
 
 	VkDescriptorImageInfo imageInfo{ m_HeightmapSampler, m_Heightmap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	VkDescriptorBufferInfo bufferInfo{ m_ProbeBuffer.buffer, 0, VK_WHOLE_SIZE };
-	VkDescriptorImageInfo pathInfo{ m_HeightmapSampler, m_PathMap.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-	VkWriteDescriptorSet writes[3] = {};
+	VkWriteDescriptorSet writes[2] = {};
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_ProbeSet;
 	writes[0].dstBinding = 0;
@@ -876,10 +861,7 @@ void Application::initProbe() {
 	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[1].pImageInfo = nullptr;
 	writes[1].pBufferInfo = &bufferInfo;
-	writes[2] = writes[0];
-	writes[2].dstBinding = 2;
-	writes[2].pImageInfo = &pathInfo;
-	vkUpdateDescriptorSets(m_Device, 3, writes, 0, nullptr);
+	vkUpdateDescriptorSets(m_Device, 2, writes, 0, nullptr);
 
 	VkPushConstantRange range{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ProbePushConstants) };
 	VkPipelineLayoutCreateInfo layoutCI = vkinit::pipeline_layout_create_info();
@@ -900,7 +882,7 @@ void Application::initProbe() {
 
 void Application::loadTextures() {
 	// one material per biome, in the order of the BIOME_ defines in biometools.glsl
-	// all from ambientCG (CC0): grass Grass001 (Grass004 had rows that striped whole hillsides), soil, rock, sand, taiga = forest floor Ground037, path Ground078
+	// all from ambientCG (CC0): grass Grass001 (Grass004 had rows that striped whole hillsides), soil, rock, sand, taiga = forest floor Ground037
 	const char* materials[] = {
 		"grass", // BIOME_PLAINS
 		"soil",	 // BIOME_WHEAT, wheat textures later
@@ -908,7 +890,6 @@ void Application::loadTextures() {
 		"sand",	 // BIOME_DESERT
 		"taiga", // BIOME_TAIGA
 		"snow",	 // BIOME_SNOW + snow caps
-		"path",	 // MATERIAL_PATH in terrain.frag, paths (ambientCG Ground078)
 	};
 	for(const char* name : materials) {
 		std::string base = std::string("assets\\") + name;
@@ -1124,7 +1105,7 @@ void Application::resizeSwapchain(bool vsync) {
 	m_Height = h * m_RenderScale;
 
 	initSwapchain(vsync);
-	m_AtmosphereManager.setRenderTargets(m_OutputImage, m_DepthBuffer); // post processing, at the output resolution
+	m_AtmosphereManager.setRenderTargets(m_OutputImage); // post processing, at the output resolution
 	m_ShadowFilter.setTargets(m_DrawImage, m_DepthBuffer);
 	writeLightingDescriptors();
 	writeTAADescriptors();
@@ -1165,7 +1146,6 @@ void Application::generateHeightmap() {
 	// fresh images into the layout the generation expects, then the whole map in strips
 	immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		vkutil::transition_image(cmd, m_PathMap.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	});
 	Uint64 start = SDL_GetPerformanceCounter();
 	regenerateHeightmap();
@@ -1191,7 +1171,6 @@ void Application::updateHeightmap() {
 	m_HeightmapPC.offset = pos;
 	immediateSubmit([&](VkCommandBuffer cmd) {
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
-		vkutil::transition_image(cmd, m_PathMap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 		
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.layout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
@@ -1247,7 +1226,6 @@ void Application::updateHeightmap() {
 			vkCmdDispatch(cmd, groupNX, groupNY, 1);
 		}
 		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		vkutil::transition_image(cmd, m_PathMap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		for(auto& [start, extent] : regions) dispatchHorizonAO(cmd, start, extent);
 	});	
 }
@@ -1262,7 +1240,6 @@ void Application::regenerateHeightmap() {
 	for(int y = 0; y < m_HeightmapSize; y += rows) {
 		immediateSubmit([&](VkCommandBuffer cmd) {
 			vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
-			vkutil::transition_image(cmd, m_PathMap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
 			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.layout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
 			HeightmapPushConstants pc = m_HeightmapPC;
@@ -1272,7 +1249,6 @@ void Application::regenerateHeightmap() {
 			vkCmdPushConstants(cmd, m_HeightmapEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pc);
 			vkCmdDispatch(cmd, (pc.updateSize.x + 15) / 16, (pc.updateSize.y + 15) / 16, 1);
 			vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-			vkutil::transition_image(cmd, m_PathMap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		});
 	}
 	for(int y = 0; y < m_HeightmapSize; y += rows * 4) { // the AO is half resolution, cheaper per texel
@@ -2483,8 +2459,6 @@ void Application::createHeightmapImages() {
 	uint32_t size = static_cast<uint32_t>(m_HeightmapSize);
 	// rgb = climate, a = height (heightmap.comp)
 	create(m_Heightmap, VK_FORMAT_R16G16B16A16_UNORM, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, size);
-	// baked so the shaders don't evaluate the noise every pixel: roads / trails (paths.glsl)
-	create(m_PathMap, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, size);
 	// horizon AO, half the resolution (horizonao.comp)
 	create(m_SkyVisibility, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, m_FullResSkyVisibility ? size : size / 2);
 }
@@ -2523,7 +2497,7 @@ void Application::recreateSkyVisibility() {
 }
 
 void Application::destroyHeightmapImages() {
-	for(AllocatedImage* image : { &m_Heightmap, &m_PathMap, &m_SkyVisibility }) {
+	for(AllocatedImage* image : { &m_Heightmap, &m_SkyVisibility }) {
 		vkDestroyImageView(m_Device, image->imageView, nullptr);
 		vmaDestroyImage(m_Allocator, image->image, image->allocation);
 	}
@@ -2712,7 +2686,6 @@ std::vector<DebugTexture> Application::debugTextures() {
 
 	// terrain
 	add("heightmap (temp, moisture, mountains, height)", m_Heightmap.imageView, read, DebugTexHint::Data, m_Heightmap.imageExtent);
-	add("path map (rg = road / trail distance)", m_PathMap.imageView, read, DebugTexHint::Data, m_PathMap.imageExtent);
 	if(m_SkyVisibilityReady) add("sky visibility (r = horizon AO, g = forest canopy)", m_SkyVisibility.imageView, read, DebugTexHint::Data, m_SkyVisibility.imageExtent);
 	for(int normal = 0; normal < 2; normal++) {
 		DebugTexture& cache = add(normal ? "terrain cache normal" : "terrain cache albedo", normal ? m_TerrainCache.getNormalView() : m_TerrainCache.getAlbedoView(),

@@ -8,10 +8,8 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 #include "foliagecommon.glsl"
 #include "biometools.glsl"
 #include "terrainheight.glsl"
-#include "paths.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
-layout(set = 0, binding = 3) uniform sampler2D pathMap;
 layout(std430, set = 0, binding = 1) writeonly buffer Instances { FoliageInstance instances[]; };
 struct DrawCommand { uint vertexCount; uint instanceCount; uint firstVertex; uint firstInstance; };
 // [0] = what the camera sees (outer rings), [1] = shadow casters near the camera (not frustum culled), stored after

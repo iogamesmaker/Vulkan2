@@ -1,7 +1,7 @@
 #version 450
 // auto exposure: one workgroup meters the HDR image (log average luminance, weighted towards the middle of the
 // screen) and eases the exposure towards it over time, like an eye adapting. post.comp reads the result.
-// runs on the post pass' descriptor set and push constants (pad.x = seconds since the last frame)
+// runs on the post pass' descriptor set and push constants
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -13,18 +13,11 @@ layout(std430, set = 0, binding = 4) buffer Exposure {
 	float pad;
 } state;
 
-layout(push_constant) uniform constants {
-	mat4 invViewProj;
-	vec3 camPos;
-	float compensation; // exposure compensation (2^EV), applied in post.comp, unused here
-	vec3 lightDir;
-	float lightIlluminance;
-	vec2 lightUV;
-	float godrayStrength;
-	float lightOnScreen;
-	float godrayDecay;
-	float godrayLength;
-	vec2 pad; // x = delta time
+layout(push_constant) uniform constants { // PostPushConstants (atmosphere.hpp), shared with post.comp
+	float compensation;	 // exposure compensation (2^EV), applied in post.comp, unused here
+	float deltaTime;	 // seconds since the last frame
+	float bloomStrength; // post.comp's
+	float pad;
 } pc;
 
 // the luminance range the metering may adapt over. below MIN the image just gets darker (nights stay night),
@@ -76,7 +69,7 @@ void main() {
 		if (!(previous > 0.0) || isinf(previous)) exposure = target; // first frame (or garbage)
 		else {
 			float speed = target > previous ? SPEED_BRIGHTEN : SPEED_DARKEN;
-			float t = 1.0 - exp(-max(pc.pad.x, 0.0) * speed);
+			float t = 1.0 - exp(-max(pc.deltaTime, 0.0) * speed);
 			exposure = exp2(mix(log2(previous), log2(target), t)); // eases in EV, not linearly
 		}
 		state.exposure = exposure;

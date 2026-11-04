@@ -5,13 +5,11 @@
  // real pipeline of geniuses
  
 #include "biometools.glsl"
-#include "paths.glsl"
+#include "heightmapscale.glsl"
 
 layout (local_size_x = 16, local_size_y = 16) in;
 
 layout (rgba16, set = 0, binding = 0) uniform writeonly image2D heightmap; // RGBA16 unorm: rgb = climate, a = height, all 0..1
-// rg = signed distance to roads / trails (paths.glsl), ba unused
-layout (rgba16f, set = 0, binding = 1) uniform writeonly image2D pathMap;
 
 layout ( push_constant ) uniform constants {
     ivec2 offset;
@@ -325,8 +323,6 @@ void main() {
 
 	vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset);
 	vec2 p = vec2(worldPos * 4.0) / size;
-	// paths are laid out in texels of a 4096 map (heightmapscale.glsl)
-	vec2 referencePos = worldPos * (HEIGHTMAP_REFERENCE_SIZE / float(size.x));
 
 	vec3 climate = climateAt(p);
 	vec3 base = baseNoise(p);
@@ -337,12 +333,8 @@ void main() {
 	height = flattenLowland(height, weights, valleyFloor(weights, base.x));
 	height = clamp(height, 0.0, 1.0);
 
-	// paths only get a texture, they don't change the height (see paths.glsl)
-	vec2 pathDistance = vec2(contourSignedDistance(referencePos, ROAD_SCALE, 0.0), contourSignedDistance(referencePos, TRAIL_SCALE, 37.0));
-
 	ivec2 physicalCoord = (texelCoord % size + size) % size;
 
 	// rgb = climate (terrain.frag turns it back into biome weights for texturing), a = height
 	imageStore(heightmap, physicalCoord, vec4(climate, height));
-	imageStore(pathMap, physicalCoord, vec4(pathDistance, 0.0, 0.0));
 }
