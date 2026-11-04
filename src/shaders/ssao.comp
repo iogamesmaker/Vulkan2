@@ -3,13 +3,20 @@
 // every frame), denoised by the lighting and the TAA: around each pixel a handful of depth samples in a spiral,
 // every one that sits above the surface (in the normal's hemisphere) and close by darkens it. catches what the
 // heightmap's horizon AO is too coarse for: the foot of trees and rocks, grass roots, creases
-// (the g channel used to hold the light shafts, the volumetric fog's beams replaced them)
+// g = how much of the air between the camera and the surface the sun / moon reaches: the shadow maps at a few points
+// along the view ray. the aerial perspective's sunlight is dimmed by it (composite.glsl), so the haze doesn't glow in
+// front of a mountain the sun is behind. here at half resolution (it used to be 8 lookups per full resolution pixel
+// in lighting.comp), the lighting upsamples and denoises it with the AO
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform sampler2D depthBuffer;	 // full resolution
 layout(set = 0, binding = 1) uniform sampler2D gbufferNormal; // full resolution
-layout(rg8, set = 0, binding = 2) uniform writeonly image2D occlusion; // half resolution, r = AO (1 = open)
+layout(rg8, set = 0, binding = 2) uniform writeonly image2D occlusion; // half resolution, r = AO (1 = open), g = lit air
+
+#define SHADOW_SET 1
+#define SHADOW_PIXEL vec2(gl_GlobalInvocationID.xy)
+#include "shadowsampling.glsl"
 
 layout(push_constant) uniform constants {
 	mat4 invViewProj;
@@ -17,19 +24,30 @@ layout(push_constant) uniform constants {
 	float radius;	   // world units
 	float projScale;   // pixels per world unit at distance 1 (full resolution)
 	float frame;	   // spiral rotation
-	float intensity;
+	float intensity;   // 0 = no AO (SSAO off), the lit air is still measured
 	float pad;
+	vec4 lightDir;	   // xyz = the sun / moon (whichever casts the shadows), w = 1 to measure the lit air
 } pc;
 
-float interleavedGradientNoise(vec2 p) {
-	return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
-}
-
 const int SAMPLES = 8;
+const int AIR_SAMPLES = 8;
 
 vec3 worldPosition(vec2 uv, float depth) {
 	vec4 world = pc.invViewProj * vec4(uv * 2.0 - 1.0, depth, 1.0);
 	return world.xyz / world.w;
+}
+
+// the shadow maps (out to the world's edge: the far cascade has the terrain) at a few jittered points along the
+// view ray, the TAA averages the jitter
+float airSunlit(vec3 position, ivec2 pixel) {
+	if (pc.lightDir.w < 0.5 || pc.lightDir.y <= 0.0) return 1.0;
+	float jitter = interleavedGradientNoise(vec2(pixel) + 7.0 * pc.frame);
+	float lit = 0.0;
+	for (int i = 0; i < AIR_SAMPLES; i++) {
+		vec3 q = mix(pc.campos, position, (float(i) + jitter) / float(AIR_SAMPLES));
+		lit += sampleShadowFast(q, vec3(0.0, 1.0, 0.0), pc.lightDir.xyz, distance(q, pc.campos));
+	}
+	return lit / float(AIR_SAMPLES);
 }
 
 void main() {
@@ -44,6 +62,9 @@ void main() {
 	if (depth <= 0.0) { imageStore(occlusion, p, vec4(1.0)); return; } // sky: nothing
 
 	vec3 position = worldPosition(uv, depth);
+	float lit = airSunlit(position, p);
+	if (pc.intensity <= 0.0) { imageStore(occlusion, p, vec4(1.0, lit, 0.0, 0.0)); return; }
+
 	vec3 normal = normalize(texelFetch(gbufferNormal, full, 0).xyz);
 	float dist = distance(position, pc.campos);
 
@@ -65,5 +86,5 @@ void main() {
 		sum += max(vn - 0.01 * dist * 0.02, 0.0) / (vv + 1e-3) * max(1.0 - vv / (pc.radius * pc.radius), 0.0);
 	}
 	float ao = max(1.0 - sum * pc.radius * 2.0 * pc.intensity / float(SAMPLES), 0.0);
-	imageStore(occlusion, p, vec4(ao, 1.0, 0.0, 0.0));
+	imageStore(occlusion, p, vec4(ao, lit, 0.0, 0.0));
 }

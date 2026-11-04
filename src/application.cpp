@@ -1472,10 +1472,11 @@ void Application::initLighting() {
 	ssaoBuilder.add_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);		   // occlusion
 	m_SSAOLayout = ssaoBuilder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_SSAOSet = g_DescriptorAllocator.allocate(m_Device, m_SSAOLayout);
-	VkPushConstantRange ssaoRange{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4) + sizeof(glm::vec4) * 2 };
+	VkPushConstantRange ssaoRange{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4) + sizeof(glm::vec4) * 3 };
+	VkDescriptorSetLayout ssaoSetLayouts[] = { m_SSAOLayout, m_Shadows.getDescriptorLayout() }; // + the shadow maps (the lit air)
 	VkPipelineLayoutCreateInfo ssaoLayoutCI = vkinit::pipeline_layout_create_info();
-	ssaoLayoutCI.setLayoutCount = 1;
-	ssaoLayoutCI.pSetLayouts = &m_SSAOLayout;
+	ssaoLayoutCI.setLayoutCount = 2;
+	ssaoLayoutCI.pSetLayouts = ssaoSetLayouts;
 	ssaoLayoutCI.pushConstantRangeCount = 1;
 	ssaoLayoutCI.pPushConstantRanges = &ssaoRange;
 	VkPipelineLayout ssaoLayout;
@@ -1799,18 +1800,22 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 		}
 	}
 
-	// SSAO first (half resolution), the lighting reads it
+	// SSAO first (half resolution), the lighting reads it. it runs with SSAO off too: its g channel is how much of
+	// the air in front of each pixel the sun reaches, for the haze (ssao.comp)
 	vkutil::transition_image(cmd, m_SSAOImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-	if(m_SSAO) {
-		struct { glm::mat4 invViewProj; glm::vec3 campos; float radius; float projScale, frame, intensity, pad; } ssao{};
+	{
+		struct { glm::mat4 invViewProj; glm::vec3 campos; float radius; float projScale, frame, intensity, pad; glm::vec4 lightDir; } ssao{};
 		ssao.invViewProj = glm::inverse(m_Projection * m_View);
 		ssao.campos = m_CameraPos;
 		ssao.radius = 0.25f; // world units, ~1.5m
 		ssao.projScale = m_TerrainPC.projScale;
 		ssao.frame = static_cast<float>(m_FrameNumber % 64);
-		ssao.intensity = 1.0f;
+		ssao.intensity = m_SSAO ? 1.0f : 0.0f;
+		glm::vec3 shadowDir = m_SunDir.y > 0.0f ? m_SunDir : -m_SunDir; // the shadow maps follow whichever is up
+		ssao.lightDir = glm::vec4(shadowDir, m_AtmosphereManager.m_AerialPerspective ? 1.0f : 0.0f);
+		VkDescriptorSet sets[] = { m_SSAOSet, m_Shadows.getDescriptor(m_FrameNumber) };
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_SSAOEffect.pipeline);
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_SSAOEffect.layout, 0, 1, &m_SSAOSet, 0, nullptr);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_SSAOEffect.layout, 0, 2, sets, 0, nullptr);
 		vkCmdPushConstants(cmd, m_SSAOEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ssao), &ssao);
 		vkCmdDispatch(cmd, (m_SSAOImage.imageExtent.width + 7) / 8, (m_SSAOImage.imageExtent.height + 7) / 8, 1);
 	}

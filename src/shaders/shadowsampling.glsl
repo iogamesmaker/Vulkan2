@@ -1,16 +1,20 @@
-// cascaded shadow map lookup shared by the terrain, trees and foliage. expects set 2 to be ShadowMaps' descriptor set
+// cascaded shadow map lookup shared by the terrain, trees and foliage. expects set SHADOW_SET (2 unless the includer
+// says otherwise) to be ShadowMaps' descriptor set
 #ifndef SHADOW_SAMPLING_GLSL
 #define SHADOW_SAMPLING_GLSL
 
 #define SHADOW_CASCADES 4
+#ifndef SHADOW_SET
+#define SHADOW_SET 2
+#endif
 
 // the pixel the per pixel noise is keyed on: the fragment's, compute shaders define their own
 #ifndef SHADOW_PIXEL
 #define SHADOW_PIXEL gl_FragCoord.xy
 #endif // the last one is terrain only and covers the whole world
 
-layout(set = 2, binding = 0) uniform sampler2DArrayShadow shadowMap;
-layout(set = 2, binding = 1) uniform ShadowUBO {
+layout(set = SHADOW_SET, binding = 0) uniform sampler2DArrayShadow shadowMap;
+layout(set = SHADOW_SET, binding = 1) uniform ShadowUBO {
 	mat4 lightViewProj[8]; // layer = set * SHADOW_CASCADES + cascade
 	vec4 splits;   // far distance of each cascade (view distance, world units)
 	vec4 widths;   // world size of each cascade
@@ -19,7 +23,7 @@ layout(set = 2, binding = 1) uniform ShadowUBO {
 	vec4 depthRange[2]; // world units covered by the depth of each layer, [set][cascade]
 	vec4 cascadeBlend;  // x = fraction of each cascade's range that crossfades into the next one, y = soft shadows (PCSS) on
 } shadowData;
-layout(set = 2, binding = 2) uniform sampler2DArray shadowDepth; // the same maps, raw depth for the blocker search
+layout(set = SHADOW_SET, binding = 2) uniform sampler2DArray shadowDepth; // the same maps, raw depth for the blocker search
 
 float interleavedGradientNoise(vec2 p) {
 	return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));

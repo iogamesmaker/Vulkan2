@@ -33,7 +33,7 @@ vec3 compositeAtmosphere(vec3 color, inout vec3 direct, AtmosphereView v) {
 	vec3 lutCoord = vec3(v.screenUV, clamp(w * slices - 0.5, 0.5, slices - 0.5) / slices); // slice i stores the end of [i, i + 1]
 	vec4 aerial = ubo.aerialPerspective > 0.5 ? texture(aerialLUT, lutCoord) : vec4(0.0, 0.0, 0.0, 1.0);
 	// the LUT lights all of its air: with the sun just behind a ridge its haze glowed in front of the mountain as if
-	// the sun shone through it. the sun's own single scattering (aerialSunLUT) only where the air is lit (lighting.comp
+	// the sun shone through it. the sun's own single scattering (aerialSunLUT) only where the air is lit (ssao.comp
 	// measures how much of this ray's air is), the multiple scattering everywhere
 	vec3 aerialSun = ubo.aerialPerspective > 0.5 ? texture(aerialSunLUT, lutCoord).rgb : vec3(0.0);
 	aerial.rgb -= aerialSun * (1.0 - v.airLit);

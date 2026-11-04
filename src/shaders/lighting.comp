@@ -162,22 +162,6 @@ vec2 denoiseSSAO(vec2 screenUV, float viewZ) {
 	return ssaoSum / wSum;
 }
 
-// how much of the air between the camera and a surface the light reaches: the shadow maps (out to the world's edge,
-// the far cascade has the terrain) at a few points along the view ray, jittered per pixel (the TAA averages it).
-// the aerial perspective's haze is dimmed by it (composite.glsl): it lit all of its air, so with the sun behind a
-// ridge the haze glowed bright in front of the mountain
-float airSunlit(vec3 position, vec3 campos, vec3 lightDir, ivec2 pixel) {
-	if (lightDir.y <= 0.0) return 1.0;
-	const int SAMPLES = 8;
-	float jitter = interleavedGradientNoise(vec2(pixel) + 7.0 * pc.frame);
-	float lit = 0.0;
-	for (int i = 0; i < SAMPLES; i++) {
-		vec3 q = mix(campos, position, (float(i) + jitter) / float(SAMPLES));
-		lit += sampleShadowFast(q, vec3(0.0, 1.0, 0.0), lightDir, distance(q, campos));
-	}
-	return lit / float(SAMPLES);
-}
-
 // smooth value noise for the weather's patches (snow, puddles)
 float weatherHash(vec2 c) {
 	vec3 p3 = fract(vec3(c.xyx) * 0.1031);
@@ -383,7 +367,7 @@ void main() {
 		view.sunDir = sunDir;
 		view.cloud = cloud;
 		view.clouds = volumetricClouds;
-		view.airLit = airSunlit(position, pc.campos, shadowDir, p);
+		view.airLit = halfRes.g; // ssao.comp measures it
 		color = compositeAtmosphere(color, direct, view);
 	}
 
