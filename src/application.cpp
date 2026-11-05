@@ -915,11 +915,12 @@ void Application::loadTextures() {
 		"sand",	 // BIOME_DESERT
 		"taiga", // BIOME_TAIGA
 		"snow",	 // BIOME_SNOW + snow caps
-		// the cliffs' rock layers (terrainmaterial.glsl rockStrata, TERRAIN_STRATA_FIRST), Poly Haven (CC0):
-		// rock_06, dark_rock_02, rock_boulder_cracked
+		// bare rock's variety (terrainmaterial.glsl rockCover), Poly Haven (CC0): other kinds of rock in patches
+		// (rock_06, dark_rock_02, rock_boulder_cracked), a photographed cliff face (cliff_side)
 		"rock_layer_buff",
 		"rock_layer_dark",
 		"rock_layer_rust",
+		"rock_cliff",
 	};
 	static_assert(std::size(materials) == TERRAIN_MATERIALS);
 	for(const char* name : materials) {
