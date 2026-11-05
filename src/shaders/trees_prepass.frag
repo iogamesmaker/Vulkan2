@@ -13,10 +13,10 @@ layout(location = 5) flat in float inDryness;
 layout(location = 6) flat in float inFade;
 layout(location = 7) flat in float inSeed;
 
-layout(set = 0, binding = 1) uniform sampler2D treeTextures[10];
+layout(set = 0, binding = 1) uniform sampler2D treeTextures[TREE_PACKS * 4]; // per pack: bark, bark normal, leaves, leaf normal
 
 
 void main() {
 	if (treeFaded(inFade, gl_FragCoord.xy, false)) discard; // the same dithered fade as trees.frag
-	if (inMaterial >= 2 && texture(treeTextures[nonuniformEXT(inMaterial)], inUV).a < 0.5) discard;
+	if ((inMaterial & 1) == 1 && texture(treeTextures[nonuniformEXT((inMaterial >> 1) * 4 + 2)], inUV).a < 0.5) discard;
 }

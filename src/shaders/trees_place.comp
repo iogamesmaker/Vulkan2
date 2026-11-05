@@ -33,12 +33,11 @@ void main() {
 	float dist3D = length(vec2(dist, groundY - pc.campos.y));
 	groundY -= meshSag(heightmap, t.uv, terrainSpacing(dist3D, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
 	float slopeWorld = sqrt(t.slope) * pc.factor / 256.0 / (pc.terrainSize / size.x) * 0.5;
-	float footprint = t.height * 0.04;
+	float footprint = trunkRadius(t.mesh, t.height);
 	float y = groundY - slopeWorld * footprint - 0.01 * t.height;
 
-	uint variant = uint(t.rnd2.x * float(VARIANTS)) % VARIANTS;
 	uint slot = atomicAdd(placedCount, 1u);
 	if (slot >= MAX_PLACED_TREES) return;
 	placed[slot].posScale = vec4(t.xz + pc.offsetWorld, y, t.height).xzyw; // world xz
-	placed[slot].params = vec4(t.rnd2.z * 6.2831853, t.dryness, t.rnd2.w * 1000.0, float(t.species * VARIANTS + variant));
+	placed[slot].params = vec4(t.rnd2.z * 6.2831853, t.dryness, t.rnd2.w * 1000.0, float(t.mesh));
 }

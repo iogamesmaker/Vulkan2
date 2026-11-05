@@ -23,6 +23,8 @@ public:
 	// bakes what came into the squares around the camera (at most one whole level a frame, terrain.frag shades
 	// the rest directly meanwhile), then updates the info terrain.frag reads. outside of a render pass
 	void update(VkCommandBuffer cmd, glm::dvec2 cameraWorld, float factor, float macroWeight, VkDescriptorSet terrainSet, VkDescriptorSet atmosphereSet);
+	// while the cache is switched off: tells the readers (the grass, foliage.comp) there's nothing baked, every frame
+	void publishOff(VkCommandBuffer cmd);
 	void invalidate(); // the terrain or its look changed: rebake everything
 	void destroy();
 
@@ -30,6 +32,10 @@ public:
 	VkImageView getAlbedoView() const { return m_AlbedoSampled; }
 	VkImageView getNormalView() const { return m_NormalSampled; }
 	uint32_t getMips() const { return m_Mips; }
+	// for other readers (foliage.comp takes the grass colour from the baked ground): terrain.frag's TerrainCacheInfo
+	// and the sampler the levels are read with (wraps)
+	VkBuffer getInfoBuffer() const { return m_InfoBuffer.buffer; }
+	VkSampler getSampler() const { return m_Sampler; }
 
 
 private:
@@ -53,6 +59,7 @@ private:
 	};
 
 	static float texelSize(uint32_t level);
+	void uploadInfo(VkCommandBuffer cmd, bool on);
 	void bake(VkCommandBuffer cmd, uint32_t level, glm::ivec2 min, const Level* keep, float factor, float macroWeight);
 
 	VkDevice m_Device;

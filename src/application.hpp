@@ -30,7 +30,6 @@
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_vulkan.h>
 
-#include "loader.hpp"
 #include "textures.hpp"
 #include "atmosphere.hpp"
 #include "shadows.hpp"
@@ -130,7 +129,6 @@ public:
 	VmaAllocator getAllocator() const { return m_Allocator; }
 	void destroyBuffer(const AllocatedBuffer& buffer) { vmaDestroyBuffer(m_Allocator, buffer.buffer, buffer.allocation); }
 	
-	GPUMeshBuffers uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices);
 	// vulkan shit
 	// initialising and physical device shit
 	VkInstance m_Instance;// Vulkan library handle
@@ -462,9 +460,8 @@ private:
 	bool m_TerrainCacheEnabled = true; // settings: the far terrain cache is kept up to date and read
 	Trees m_Trees{};
 	ShadowFilter m_ShadowFilter;
-	// bark conifer / broadleaf (ambientCG Bark012 / Bark001), leaf cards baked from LeafSet019 / LeafSet005,
-	// then the barks' normal maps, roughness maps and height maps (parallax)
-	AllocatedImage m_TreeTextures[TREE_TEXTURES];
+	// the logs' bark (ambientCG Bark001): albedo, normal (the trees load their own, Trees::init)
+	AllocatedImage m_LogBark[2];
 	AllocatedImage m_EndGrain[2]{}; // the cut ends of logs + stumps: albedo, normal (optional, see loadTextures)
 	bool m_HasEndGrain = false;
 	AllocatedImage m_MoonTexture; // NASA SVS CGI Moon Kit (LRO colour mosaic), public domain

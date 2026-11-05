@@ -18,6 +18,7 @@ layout(location = 6) flat out float outMoisture;
 layout(location = 5) flat out float outSeed;
 layout(location = 7) out vec3 outPrevPosition; // with last frame's wind (motion vectors)
 layout(location = 8) flat out vec3 outGroundNormal; // the terrain's normal under the clump (foliage.comp)
+layout(location = 9) flat out vec4 outGroundAlbedo; // the terrain's colour under the clump, w = 1 when known (foliage.comp)
 
 invariant gl_Position; // the prepass and the shading pass must produce the exact same depth
 
@@ -46,6 +47,8 @@ void main() {
 	FoliageInstance inst = instances[gl_InstanceIndex];
 	vec2 groundXZ = unpackHalf2x16(floatBitsToUint(inst.params.x));
 	outGroundNormal = vec3(groundXZ.x, sqrt(max(1.0 - dot(groundXZ, groundXZ), 0.0)), groundXZ.y);
+	float moisture;
+	outGroundAlbedo = unpackGround(inst.params.w, moisture);
 	// (the near ring and the shadow casters are drawn with BLADE_SEGMENTS quads per blade, the rest with one)
 	bool segmentLayout = uint(gl_InstanceIndex) >= FOLIAGE_SEGMENTED_FROM;
 	int blade = gl_VertexIndex / (segmentLayout ? 6 * BLADE_SEGMENTS : 6);
@@ -212,7 +215,7 @@ void main() {
 	outHeight = flowerHead ? 1.0 : t;
 	outKind = flowerHead ? 3 : (type == FOLIAGE_WHEAT ? 1 : 0);
 	outSeed = r.w;
-	outMoisture = inst.params.w;
+	outMoisture = moisture;
 
 	gl_Position = pc.viewproj * vec4(pos, 1.0);
 }

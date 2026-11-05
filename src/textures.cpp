@@ -193,6 +193,30 @@ namespace {
 
 	constexpr uint32_t CACHE_MAGIC = 0x31544342; // "BCT1"
 	constexpr uint32_t CACHE_VERSION = 1;
+	// the cutout atlases (BC3) are on 2: their mips keep the full size coverage (preserveCoverage), rebuilt once
+	uint32_t cacheVersion(uint32_t format) { return format == VK_FORMAT_BC3_UNORM_BLOCK ? 2u : CACHE_VERSION; }
+
+	float alphaCoverage(const std::vector<uint8_t>& rgba, float scale) {
+		size_t covered = 0, count = rgba.size() / 4;
+		for(size_t i = 0; i < count; i++) covered += rgba[i * 4 + 3] * scale >= 127.5f;
+		return count ? static_cast<float>(covered) / static_cast<float>(count) : 0.0f;
+	}
+
+	// alpha tested cutouts (leaves, grass, flowers) thin out in the mips: averaged alpha drops under the 0.5 test
+	// where leaves and gaps mix, so a crown 100m away was bare twigs. scales this mip's alpha until the same share of
+	// it passes the test as in the full size image (Castano, "Computing alpha mipmaps"). the chain itself is
+	// downsampled from the unscaled mips
+	std::vector<uint8_t> preserveCoverage(const std::vector<uint8_t>& rgba, float target) {
+		float lo = 0.0f, hi = 8.0f;
+		for(int i = 0; i < 16; i++) {
+			float mid = 0.5f * (lo + hi);
+			if(alphaCoverage(rgba, mid) < target) lo = mid;
+			else hi = mid;
+		}
+		std::vector<uint8_t> out = rgba;
+		for(size_t i = 3; i < out.size(); i += 4) out[i] = static_cast<uint8_t>(std::min(out[i] * hi + 0.5f, 255.0f));
+		return out;
+	}
 
 	VkFormat formatFor(TextureKind kind) {
 		switch(kind) {
@@ -285,7 +309,7 @@ namespace {
 		file.read(reinterpret_cast<char*>(header), sizeof(header));
 		file.read(reinterpret_cast<char*>(&size), sizeof(size));
 		file.read(reinterpret_cast<char*>(&time), sizeof(time));
-		if(!file || header[0] != CACHE_MAGIC || header[1] != CACHE_VERSION || header[2] != format || size != sourceSize || time != sourceTime) return false;
+		if(!file || header[0] != CACHE_MAGIC || header[1] != cacheVersion(format) || header[2] != format || size != sourceSize || time != sourceTime) return false;
 
 		levels.resize(header[3]);
 		for(auto& level : levels) {
@@ -301,7 +325,7 @@ namespace {
 	void writeCache(const std::string& path, uint64_t sourceSize, int64_t sourceTime, uint32_t format, const std::vector<MipLevel>& levels) {
 		std::filesystem::create_directories(std::filesystem::path(path).parent_path());
 		std::ofstream file(path, std::ios::binary);
-		uint32_t header[4] = { CACHE_MAGIC, CACHE_VERSION, format, static_cast<uint32_t>(levels.size()) };
+		uint32_t header[4] = { CACHE_MAGIC, cacheVersion(format), format, static_cast<uint32_t>(levels.size()) };
 		file.write(reinterpret_cast<const char*>(header), sizeof(header));
 		file.write(reinterpret_cast<const char*>(&sourceSize), sizeof(sourceSize));
 		file.write(reinterpret_cast<const char*>(&sourceTime), sizeof(sourceTime));
@@ -333,8 +357,10 @@ AllocatedImage TextureLoader::loadCompressed(std::string path, Application* engi
 
 		uint32_t w = width, h = height;
 		levels.clear();
+		float coverage = kind == TextureKind::Atlas ? alphaCoverage(mip, 1.0f) : 0.0f;
 		while(true) {
-			levels.push_back(compress(mip, w, h, channels, kind));
+			bool scaled = kind == TextureKind::Atlas && !levels.empty() && coverage > 0.0f;
+			levels.push_back(compress(scaled ? preserveCoverage(mip, coverage) : mip, w, h, channels, kind));
 			if(w == 1 && h == 1) break;
 			mip = downsample(mip, w, h, channels, kind == TextureKind::Normal);
 			w = std::max(w / 2, 1u); h = std::max(h / 2, 1u);

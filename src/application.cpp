@@ -6,6 +6,7 @@
 #include "application.hpp"
 #include <glm/gtc/packing.hpp>
 #include <sstream>
+#include <filesystem>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
@@ -758,47 +759,6 @@ AllocatedBuffer Application::createBuffer(size_t size, VkBufferUsageFlags usage,
 	return newBuffer;
 }
 
-GPUMeshBuffers Application::uploadMesh(std::span<uint32_t> indices, std::span<Vertex> vertices) {
-	const size_t vertexBufferSize = vertices.size() * sizeof(Vertex);
-	const size_t indexBufferSize = indices.size() * sizeof(uint32_t);
-	
-	GPUMeshBuffers newSurface;
-		
-	newSurface.vertexBuffer = createBuffer(vertexBufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VMA_MEMORY_USAGE_GPU_ONLY );
-	
-	VkBufferDeviceAddressInfo deviceAddressInfo {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = newSurface.vertexBuffer.buffer };
-	newSurface.vertexBufferAddress = vkGetBufferDeviceAddress(m_Device, &deviceAddressInfo);
-	
-	newSurface.indexBuffer = createBuffer(indexBufferSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-	
-	AllocatedBuffer staging = createBuffer(vertexBufferSize + indexBufferSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_CPU_ONLY);
-	
-	void* data = staging.allocation->GetMappedData();
-	
-	memcpy(data, vertices.data(), vertexBufferSize);
-	
-	memcpy((char*)data + vertexBufferSize, indices.data(), indexBufferSize);
-	
-	immediateSubmit([&](VkCommandBuffer cmd) {
-		VkBufferCopy vertexCopy { 0 };
-		vertexCopy.dstOffset = 0;
-		vertexCopy.srcOffset = 0;
-		vertexCopy.size = vertexBufferSize;
-		
-		vkCmdCopyBuffer(cmd, staging.buffer, newSurface.vertexBuffer.buffer, 1, &vertexCopy);
-		
-		VkBufferCopy indexCopy { 0 };
-		indexCopy.dstOffset = 0;
-		indexCopy.srcOffset = vertexBufferSize;
-		indexCopy.size = indexBufferSize;
-		
-		vkCmdCopyBuffer(cmd, staging.buffer, newSurface.indexBuffer.buffer, 1, &indexCopy);
-	});
-	
-	destroyBuffer(staging);
-	
-	return newSurface;
-}
 
 void Application::initDefaultData() {
 	m_TextureLoader.pass(m_Device, m_Allocator);
@@ -813,14 +773,15 @@ void Application::initDefaultData() {
 	m_PlayerTrail.init(this);
 	m_Foliage.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Shadows.getFormat(), m_BladeAtlas, m_FlowerAtlas, m_WheatAtlas, m_Sampler,
 				   m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_PlayerTrail.buffer());
-	m_Trees.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_TreeTextures, m_Sampler,
+	m_Foliage.setTerrainCache(m_TerrainCache.getInfoBuffer(), m_TerrainCache.getAlbedoView(), m_TerrainCache.getSampler());
+	m_Trees.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Sampler,
 				 m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_Shadows.getFormat(), m_PlayerTrail.buffer());
 	// rocks get the terrain's rock texture, logs the broadleaf bark, moss is the grass
 	// and the cut ends the end grain photo (the bark stands in for it when it's missing, unused then)
 	VkImageView propTextures[PROP_TEXTURES] = { m_AlbedoMaps[BIOME_ROCK_INDEX].imageView, m_NormalMaps[BIOME_ROCK_INDEX].imageView,
-												m_TreeTextures[1].imageView, m_TreeTextures[5].imageView, m_AlbedoMaps[0].imageView,
-												m_HasEndGrain ? m_EndGrain[0].imageView : m_TreeTextures[1].imageView,
-												m_HasEndGrain ? m_EndGrain[1].imageView : m_TreeTextures[5].imageView };
+												m_LogBark[0].imageView, m_LogBark[1].imageView, m_AlbedoMaps[0].imageView,
+												m_HasEndGrain ? m_EndGrain[0].imageView : m_LogBark[0].imageView,
+												m_HasEndGrain ? m_EndGrain[1].imageView : m_LogBark[1].imageView };
 	m_Props.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, propTextures, m_HasEndGrain, m_Sampler, m_Shadows.getFormat());
 	m_GroundCover.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Sampler, m_Shadows.getFormat());
 	m_Trees.setOcclusionSource(m_HiZ.getView(), m_HiZ.getSampler());
@@ -951,16 +912,8 @@ void Application::loadTextures() {
 		m_CirrusNoise = m_TextureLoader.createTexture(lattice.data(), this, { size, size, 1 }, VK_FORMAT_R16_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
 		m_AtmosphereManager.setCirrusNoise(m_CirrusNoise.imageView, m_CloudNoiseSampler); // linear, repeating
 	}
-	m_TreeTextures[0] = m_TextureLoader.loadCompressed("assets\\bark_conifer.jpg", this, TextureKind::Albedo);
-	m_TreeTextures[1] = m_TextureLoader.loadCompressed("assets\\bark_broadleaf.jpg", this, TextureKind::Albedo);
-	m_TreeTextures[2] = m_TextureLoader.loadCompressed("assets\\leaves_conifer.png", this, TextureKind::Atlas);
-	m_TreeTextures[3] = m_TextureLoader.loadCompressed("assets\\leaves_broadleaf.png", this, TextureKind::Atlas);
-	m_TreeTextures[4] = m_TextureLoader.loadCompressed("assets\\bark_conifer_normal.jpg", this, TextureKind::Normal);
-	m_TreeTextures[5] = m_TextureLoader.loadCompressed("assets\\bark_broadleaf_normal.jpg", this, TextureKind::Normal);
-	m_TreeTextures[6] = m_TextureLoader.loadCompressed("assets\\bark_conifer_rough.jpg", this, TextureKind::Height);
-	m_TreeTextures[7] = m_TextureLoader.loadCompressed("assets\\bark_broadleaf_rough.jpg", this, TextureKind::Height);
-	m_TreeTextures[8] = m_TextureLoader.loadCompressed("assets\\bark_conifer_pom.jpg", this, TextureKind::Height);
-	m_TreeTextures[9] = m_TextureLoader.loadCompressed("assets\\bark_broadleaf_pom.jpg", this, TextureKind::Height);
+	m_LogBark[0] = m_TextureLoader.loadCompressed("assets\\bark_broadleaf.jpg", this, TextureKind::Albedo);
+	m_LogBark[1] = m_TextureLoader.loadCompressed("assets\\bark_broadleaf_normal.jpg", this, TextureKind::Normal);
 	// the cut ends of logs and stumps: a photographed cross section (CC0, TextureCan "Wood 0065") if it's there,
 	// props.frag's procedural rings otherwise
 	m_HasEndGrain = std::filesystem::exists(util::getpath("assets\\wood_endgrain.jpg")) && std::filesystem::exists(util::getpath("assets\\wood_endgrain_normal.jpg"));
@@ -1017,7 +970,7 @@ void Application::loadTextures() {
 		m_TextureLoader.destroyImage(m_CirrusNoise);
 		m_TextureLoader.destroyImage(m_FlowerAtlas);
 		m_TextureLoader.destroyImage(m_WheatAtlas);
-		for(auto& image : m_TreeTextures) m_TextureLoader.destroyImage(image);
+		for(auto& image : m_LogBark) m_TextureLoader.destroyImage(image);
 		if(m_HasEndGrain) for(auto& image : m_EndGrain) m_TextureLoader.destroyImage(image);
 	});
 }
@@ -2243,7 +2196,7 @@ void Application::draw() {
 		glm::dvec2 offsetWorld = glm::dvec2(m_MapOffset) * (static_cast<double>(m_TerrainScale) / m_CoordinateMultiplier);
 		glm::dvec2 cameraWorld = glm::dvec2(m_CameraPos.x, m_CameraPos.z) + offsetWorld;
 		m_TerrainCache.update(cmd, cameraWorld, m_TerrainPC.factor, m_AtmosphereManager.m_AtmosphereData.terrainMacro, m_TerrainDescriptors, m_AtmosphereManager.getRenderDescriptor());
-	}
+	} else m_TerrainCache.publishOff(cmd); // (the grass falls back to its own colour)
 
 	timestamp(cmd, 2);
 	// shadow maps for whichever of the sun / moon is up
@@ -2783,7 +2736,7 @@ std::vector<DebugTexture> Application::debugTextures() {
 	add("moon", m_MoonTexture.imageView, read, DebugTexHint::Color, m_MoonTexture.imageExtent);
 
 	// vegetation
-	add("tree impostors albedo (column per mesh, row per elevation)", m_Trees.impostorAlbedo().imageView, read, DebugTexHint::Color, m_Trees.impostorAlbedo().imageExtent);
+	add("tree impostors albedo (16 meshes across, 3 elevations each)", m_Trees.impostorAlbedo().imageView, read, DebugTexHint::Color, m_Trees.impostorAlbedo().imageExtent);
 	add("tree impostors normal", m_Trees.impostorNormal().imageView, read, DebugTexHint::Normal, m_Trees.impostorNormal().imageExtent);
 
 	// terrain

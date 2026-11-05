@@ -61,7 +61,7 @@ void main() {
 		TreePlacement t;
 		vec4 tree = vec4(0.0);
 		if (placeTree(heightmap, climateMap, cell, pc.offsetWorld, pc.offset, pc.terrainSize, pc.density, t))
-			tree = vec4(t.xz + pc.offsetWorld, trunkRadius(t.species, t.height), 1.0);
+			tree = vec4(t.xz + pc.offsetWorld, trunkRadius(t.mesh, t.height), 1.0);
 		results[pc.slot].trees[id] = tree;
 	}
 

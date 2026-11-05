@@ -3,266 +3,43 @@
 #include "application.hpp"
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <random>
+#include <fstream>
 #include <functional>
 
-// ------------------------------------------------------------------ procedural meshes
+// ------------------------------------------------------------------ meshes
 
-namespace {
-	enum Material { BarkConifer = 0, BarkBroadleaf = 1, LeavesConifer = 2,LeavesBroadleaf = 3 };
-
-	struct MeshBuilder {
-		std::vector<TreeVertex>& vertices;
-		std::vector<uint32_t>& indices;
-		std::mt19937 rng;
-		// the leaf atlases hold two branch photos side by side (tools/make_leaf_atlas.py): 0 = left, 1 = right
-		int leafTile = 0;
-		// the tree type's colouring (treecommon.glsl, treeTint): 1 spruce, 2 pine, 3 oak, 5 birch
-		float tint = 0.0f;
-		// how much of the sky a bark vertex sees through the crown around it (1 = open), set by each species: the
-		// trunk and the branches inside a crown are as hidden as the leaves at its core, not lit like a bare pole
-		std::function<float(glm::vec3)> crownShade = [](glm::vec3) { return 1.0f; };
-
-		float random(float a, float b) { return std::uniform_real_distribution<float>(a, b)(rng); }
-
-		uint32_t vertex(glm::vec3 p, float wind, glm::vec3 n, Material m, glm::vec2 uv, float ao) {
-			if(m == LeavesConifer || m == LeavesBroadleaf) uv.x = (uv.x + static_cast<float>(leafTile)) * 0.5f;
-			vertices.push_back({ glm::vec4(p, wind), glm::vec4(glm::normalize(n), static_cast<float>(m)), glm::vec4(uv, ao, tint) });
-			return static_cast<uint32_t>(vertices.size() - 1);
-		}
-
-		// a card from `start` along `along` (full length), `side` is half the width. normals bent towards `normal`
-		void card(glm::vec3 start, glm::vec3 along, glm::vec3 side, glm::vec3 normal, Material m, float windStart, float windEnd, float aoStart, float aoEnd) {
-			uint32_t a = vertex(start - side, windStart, normal, m, {0.0f, 1.0f}, aoStart);
-			uint32_t b = vertex(start + side, windStart, normal, m, {0.0f, 0.0f}, aoStart);
-			uint32_t c = vertex(start + along + side, windEnd, normal, m, {1.0f, 0.0f}, aoEnd);
-			uint32_t d = vertex(start + along - side, windEnd, normal, m, {1.0f, 1.0f}, aoEnd);
-			indices.insert(indices.end(), { a, b, c, a, c, d });
-		}
-
-		// a centred card for leaf clusters (uv 0..1 over the whole cluster texture)
-		void cluster(glm::vec3 center, glm::vec3 right, glm::vec3 up, glm::vec3 normal, Material m, float wind, float ao) {
-			uint32_t a = vertex(center - right - up, wind, normal, m, {0.0f, 1.0f}, ao);
-			uint32_t b = vertex(center + right - up, wind, normal, m, {1.0f, 1.0f}, ao);
-			uint32_t c = vertex(center + right + up, wind, normal, m, {1.0f, 0.0f}, ao);
-			uint32_t d = vertex(center - right + up, wind, normal, m, {0.0f, 0.0f}, ao);
-			indices.insert(indices.end(), { a, b, c, a, c, d });
-		}
-
-		// tapered tube, bark uv wraps around once and repeats along the length
-		void tube(glm::vec3 base, glm::vec3 top, float r0, float r1, int sides, int segments, Material m, float wind0, float wind1) {
-			glm::vec3 axis = glm::normalize(top - base);
-			glm::vec3 tangent = glm::normalize(glm::cross(axis, std::abs(axis.y) < 0.99f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0)));
-			glm::vec3 bitangent = glm::cross(axis, tangent);
-			float length = glm::length(top - base);
-			uint32_t first = static_cast<uint32_t>(vertices.size());
-			for(int s = 0; s <= segments; s++) {
-				float t = static_cast<float>(s) / segments;
-				glm::vec3 center = glm::mix(base, top, t);
-				float r = glm::mix(r0, r1, t);
-				for(int i = 0; i <= sides; i++) {
-					float a = glm::two_pi<float>() * i / sides;
-					glm::vec3 n = tangent * std::cos(a) + bitangent * std::sin(a);
-					glm::vec3 p = center + n * r;
-					vertex(p, glm::mix(wind0, wind1, t), n, m, { static_cast<float>(i) / sides, t * length / (r0 * 6.0f) }, glm::mix(0.6f, 1.0f, t) * crownShade(p));
-				}
-			}
-			for(int s = 0; s < segments; s++) {
-				for(int i = 0; i < sides; i++) {
-					uint32_t a = first + s * (sides + 1) + i, b = a + 1, c = a + sides + 1, d = c + 1;
-					indices.insert(indices.end(), { a, c, b, b, c, d });
-				}
-			}
-		}
-
-		glm::vec3 randomDirection() {
-			float z = random(-1.0f, 1.0f), a = random(0.0f, glm::two_pi<float>());
-			float r = std::sqrt(1.0f - z * z);
-			return { r * std::cos(a), z, r * std::sin(a) };
-		}
-
-		// ------------------------------------------------------------------ species
-
-		// spruce: a trunk with whorls of branches, longest at the bottom, each a photo of a whole spruce branch (side
-		// twigs and all) sagging a little, twice: flat and rolled around the branch so it has volume from the side.
-		// an inner ring of shorter branches half a step around fills the crown
-		void conifer(bool lod) {
-			leafTile = 0;
-			// the branches start just above the ground and close over the trunk all the way up, the top opens a little
-			crownShade = [](glm::vec3 p) { return glm::mix(1.0f, glm::mix(0.3f, 0.6f, glm::clamp(p.y, 0.0f, 1.0f)), glm::smoothstep(0.05f, 0.15f, p.y)); };
-			tube({0, 0, 0}, {0, 0.97f, 0}, 0.022f, 0.003f, lod ? 4 : 7, lod ? 1 : 3, BarkConifer, 0.0f, 0.4f);
-			int whorls = lod ? 10 : 16;
-			for(int w = 0; w < whorls; w++) {
-				float t = static_cast<float>(w) / (whorls - 1);
-				float h = 0.11f + 0.8f * std::pow(t, 0.9f) + random(-0.012f, 0.012f);
-				float length = (0.38f * std::pow(1.0f - (h - 0.1f) / 0.9f, 0.85f) + 0.06f) * random(0.88f, 1.12f) * (lod ? 1.1f : 1.0f);
-				int branches = lod ? 5 : 6;
-				float offset = random(0.0f, glm::two_pi<float>());
-				for(int ring = 0; ring < 2; ring++) {
-					if(lod && ring == 1) break; // the far version keeps the outer silhouette only
-					float ringLength = length * (ring == 0 ? 1.0f : 0.6f);
-					float ringOffset = offset + (ring == 0 ? 0.0f : glm::pi<float>() / branches);
-					for(int b = 0; b < branches; b++) {
-						float angle = ringOffset + glm::two_pi<float>() * b / branches + random(-0.25f, 0.25f);
-						glm::vec3 out(std::cos(angle), 0.0f, std::sin(angle));
-						glm::vec3 start(0.0f, h + (ring == 1 ? 0.02f : 0.0f), 0.0f);
-						float ao = glm::mix(0.45f, 1.0f, h) * (ring == 1 ? 0.75f : 1.0f); // the inside is darker
-						glm::vec3 along = glm::normalize(out + glm::vec3(0.0f, -random(0.15f, 0.35f), 0.0f)) * ringLength;
-						glm::vec3 side = glm::normalize(glm::cross(along, glm::vec3(0, 1, 0))) * ringLength * 0.42f;
-						glm::vec3 normal = glm::normalize(out * 0.6f + glm::vec3(0, 0.8f, 0));
-						card(start, along, side, normal, LeavesConifer, h * 0.5f, h * 0.6f + 0.4f, ao * 0.6f, ao);
-						glm::vec3 rolled = glm::normalize(glm::cross(along, side)) * glm::length(side) * 0.8f;
-						card(start, along, side * 0.4f + rolled, normal, LeavesConifer, h * 0.5f, h * 0.6f + 0.4f, ao * 0.6f, ao);
-					}
-				}
-			}
-			// the tip
-			for(int i = 0; i < 2; i++) {
-				glm::vec3 side = glm::vec3(i == 0 ? 0.05f : 0.0f, 0.0f, i == 0 ? 0.0f : 0.05f);
-				card({0.0f, 0.82f, 0.0f}, {0.0f, 0.18f, 0.0f}, side, {side.x, 0.5f, side.z}, LeavesConifer, 0.9f, 1.0f, 0.9f, 1.0f);
-			}
-		}
-
-		// pine: a tall bare trunk, the crown only in the top third, branches curving up with the pine branch photo on
-		// them, a few dead stubs lower down
-		void pine(bool lod) {
-			leafTile = 1;
-			crownShade = [](glm::vec3 p) { return glm::mix(1.0f, 0.45f, glm::smoothstep(0.55f, 0.7f, p.y)); }; // the crown is the top third
-			glm::vec3 lean(random(-0.03f, 0.03f), 0.0f, random(-0.03f, 0.03f));
-			glm::vec3 mid = glm::vec3(0.0f, 0.62f, 0.0f) + lean, top = glm::vec3(0.0f, 0.98f, 0.0f) + lean * 1.5f;
-			tube({0, 0, 0}, mid, 0.026f, 0.016f, lod ? 4 : 7, lod ? 1 : 2, BarkConifer, 0.0f, 0.3f);
-			tube(mid, top, 0.016f, 0.004f, lod ? 3 : 6, 1, BarkConifer, 0.3f, 0.6f);
-			if(!lod) for(int i = 0; i < 6; i++) { // dead stubs
-				float h = random(0.25f, 0.55f), a = random(0.0f, glm::two_pi<float>());
-				glm::vec3 base = glm::mix(glm::vec3(0.0f), mid, h / 0.62f);
-				tube(base, base + glm::vec3(std::cos(a), random(-0.1f, 0.2f), std::sin(a)) * random(0.04f, 0.08f), 0.004f, 0.001f, 3, 1, BarkConifer, 0.0f, 0.1f);
-			}
-			int whorls = lod ? 5 : 8;
-			for(int w = 0; w < whorls; w++) {
-				float k = static_cast<float>(w) / (whorls - 1);
-				float h = 0.6f + 0.34f * k + random(-0.02f, 0.02f);
-				glm::vec3 centre = glm::mix(mid, top, (h - 0.62f) / 0.36f);
-				int branches = lod ? 3 : 5;
-				float offset = random(0.0f, glm::two_pi<float>());
-				for(int b = 0; b < branches; b++) {
-					float angle = offset + glm::two_pi<float>() * b / branches + random(-0.35f, 0.35f);
-					glm::vec3 out(std::cos(angle), 0.0f, std::sin(angle));
-					float length = glm::mix(0.26f, 0.12f, k) * random(0.8f, 1.2f);
-					glm::vec3 along = glm::normalize(out + glm::vec3(0.0f, random(0.25f, 0.6f), 0.0f)) * length;
-					if(!lod) tube(centre, centre + along * 0.8f, 0.007f, 0.002f, 3, 1, BarkConifer, h * 0.5f, h * 0.7f);
-					glm::vec3 side = glm::normalize(glm::cross(along, glm::vec3(0, 1, 0))) * length * 0.55f;
-					glm::vec3 normal = glm::normalize(out * 0.5f + glm::vec3(0, 0.9f, 0));
-					float ao = glm::mix(0.7f, 1.0f, k);
-					card(centre, along * 1.15f, side, normal, LeavesConifer, h * 0.5f, h * 0.7f + 0.3f, ao * 0.7f, ao);
-					glm::vec3 rolled = glm::normalize(glm::cross(along, side)) * glm::length(side) * 0.8f;
-					card(centre, along * 1.15f, side * 0.4f + rolled, normal, LeavesConifer, h * 0.5f, h * 0.7f + 0.3f, ao * 0.7f, ao);
-				}
-			}
-		}
-
-		// a branching skeleton: a slightly leaning trunk, primary branches spiralling up out of it, secondary branches
-		// off those, and leafy branch cards growing outwards along the secondaries (each card is a photo of a whole
-		// leafy branch). the crown gets the clumpy silhouette of a real tree. card normals point away from the crown's
-		// centre so it shades as one volume, a few darker cards fill the core. birch: slender, taller, a narrow airy
-		// crown with drooping twigs, white bark (treeTint)
-		void broadleaf(bool lod, bool birch) {
-			leafTile = 0;
-			glm::vec3 lean(random(-0.04f, 0.04f), 0.0f, random(-0.04f, 0.04f));
-			float trunkHeight = birch ? 0.6f : 0.46f;
-			glm::vec3 t1 = glm::vec3(0.0f, trunkHeight * 0.55f, 0.0f) + lean * 0.5f, t2 = glm::vec3(0.0f, trunkHeight, 0.0f) + lean;
-			float r0 = birch ? 0.022f : 0.038f;
-			tube({0, 0, 0}, t1, r0, r0 * 0.8f, lod ? 4 : 8, 1, BarkBroadleaf, 0.0f, 0.1f);
-			tube(t1, t2, r0 * 0.8f, r0 * 0.55f, lod ? 4 : 8, 1, BarkBroadleaf, 0.1f, 0.25f);
-			if(birch) tube(t2, t2 + glm::vec3(lean.x, 0.3f, lean.z), r0 * 0.55f, 0.003f, lod ? 3 : 5, 1, BarkBroadleaf, 0.25f, 0.6f); // the leader
-			glm::vec3 crown = t2 + glm::vec3(random(-0.03f, 0.03f), birch ? 0.14f : 0.2f, random(-0.03f, 0.03f));
-			glm::vec3 radii = birch ? glm::vec3(0.25f, 0.3f, 0.25f) * random(0.85f, 1.15f) : glm::vec3(0.37f * random(0.85f, 1.15f), 0.28f * random(0.85f, 1.15f), 0.37f * random(0.85f, 1.15f));
-
-			auto keepInCrown = [&](glm::vec3 p) {
-				glm::vec3 q = (p - crown) / radii;
-				float l = glm::length(q);
-				return l > 1.0f ? crown + q / l * radii : p;
-			};
-			// like the leaf cards: darker towards the crown's core, open outside it (a little shade just under it)
-			crownShade = [crown, radii](glm::vec3 p) {
-				float r = glm::length((p - crown) / radii);
-				return glm::mix(0.35f, 1.0f, glm::smoothstep(0.3f, 1.25f, r));
-			};
-			auto leafCard = [&](glm::vec3 centre, float size, float shade) {
-				glm::vec3 q = (centre - crown) / radii;
-				float r = glm::clamp(glm::length(q), 0.0f, 1.0f);
-				glm::vec3 radial = glm::length(q) > 1e-4f ? glm::normalize(q) : glm::vec3(0, 1, 0);
-				// the branch photo grows outwards (its base towards the crown's inside), birch twigs hang down
-				glm::vec3 grow = birch ? glm::normalize(radial * 0.6f + glm::vec3(0.0f, -0.7f, 0.0f) + randomDirection() * 0.3f)
-									   : glm::normalize(radial * 0.8f + glm::vec3(0.0f, 0.25f, 0.0f) + randomDirection() * 0.35f);
-				glm::vec3 right = glm::normalize(glm::cross(grow, randomDirection()));
-				float ao = glm::mix(0.45f, 1.0f, r) * glm::mix(0.75f, 1.0f, radial.y * 0.5f + 0.5f) * shade;
-				cluster(centre + grow * size * 0.6f, right * size, grow * size, radial, LeavesBroadleaf, 0.55f + 0.45f * r, ao);
-			};
-
-			int primaries = birch ? (lod ? 5 : 8) : (lod ? 4 : 6);
-			float spiral = random(0.0f, glm::two_pi<float>());
-			for(int b = 0; b < primaries; b++) {
-				float k = (b + random(0.0f, 0.8f)) / primaries;
-				glm::vec3 base = birch ? glm::mix(t2, t2 + glm::vec3(0.0f, 0.26f, 0.0f), k) : glm::mix(t1, t2, 0.35f + 0.65f * k);
-				float angle = spiral + b * 2.39996f + random(-0.3f, 0.3f); // golden angle: no two branches on one side
-				glm::vec3 dir = glm::normalize(glm::vec3(std::cos(angle), birch ? random(0.4f, 0.9f) : random(0.55f, 1.15f), std::sin(angle)));
-				float length = birch ? random(0.16f, 0.24f) : random(0.24f, 0.34f);
-				glm::vec3 mid = keepInCrown(base + dir * length * 0.55f + glm::vec3(0.0f, 0.03f, 0.0f));
-				glm::vec3 end = keepInCrown(base + dir * length + glm::vec3(0.0f, birch ? -0.02f : 0.06f, 0.0f));
-				float br = birch ? 0.006f : 0.014f;
-				tube(base, mid, br, br * 0.65f, lod ? 3 : 5, 1, BarkBroadleaf, 0.25f, 0.45f);
-				tube(mid, end, br * 0.65f, br * 0.3f, lod ? 3 : 4, 1, BarkBroadleaf, 0.45f, 0.7f);
-
-				int secondaries = lod ? 2 : 3;
-				for(int s = 0; s < secondaries; s++) {
-					float along = random(0.35f, 1.0f);
-					glm::vec3 from = along < 0.55f ? glm::mix(base, mid, along / 0.55f) : glm::mix(mid, end, (along - 0.55f) / 0.45f);
-					glm::vec3 sdir = glm::normalize(dir + randomDirection() * 0.75f + glm::vec3(0.0f, birch ? -0.35f : 0.2f, 0.0f));
-					glm::vec3 to = keepInCrown(from + sdir * random(0.1f, 0.17f));
-					if(!lod) tube(from, to, 0.004f, 0.0015f, 3, 1, BarkBroadleaf, 0.6f, 0.85f);
-					for(int c = 0; c < (lod ? 2 : 3); c++)
-						leafCard(glm::mix(from, to, random(0.3f, 1.0f)) + randomDirection() * 0.03f, (birch ? random(0.11f, 0.15f) : random(0.15f, 0.21f)) * (lod ? 1.45f : 1.0f), 1.0f);
-				}
-				leafCard(end, (birch ? 0.14f : random(0.17f, 0.22f)) * (lod ? 1.45f : 1.0f), 1.0f);
-			}
-			// the core: a few darker cards so the crown isn't see-through
-			for(int i = 0; i < (lod ? 4 : (birch ? 5 : 9)); i++) {
-				glm::vec3 centre = crown + randomDirection() * radii * std::sqrt(random(0.0f, 0.45f));
-				leafCard(centre, random(0.16f, 0.22f) * (lod ? 1.4f : 1.0f), 0.8f);
-			}
-		}
-	};
-}
-
-void Trees::buildMeshes(std::vector<TreeVertex>& vertices, std::vector<uint32_t>& indices) {
-	for(uint32_t species = 0; species < SPECIES; species++) {
-		for(uint32_t variant = 0; variant < VARIANTS; variant++) {
-			for(uint32_t lod = 0; lod < 2; lod++) {
-				// same seed for both LODs so they're the same tree
-				// the third variant of each species is a different tree: pines among the spruces, birches among the
-				// broadleaves
-				MeshBuilder builder{ vertices, indices, std::mt19937(1234 + species * 97 + variant * 13) };
-				uint32_t first = static_cast<uint32_t>(indices.size());
-				bool other = variant == VARIANTS - 1;
-				if(species == 0) {
-					builder.tint = other ? 2.0f : 1.0f;
-					if(other) builder.pine(lod == 1);
-					else builder.conifer(lod == 1);
-				} else {
-					builder.tint = other ? 5.0f : 3.0f;
-					builder.broadleaf(lod == 1, other);
-				}
-				m_Meshes[species * VARIANTS + variant][lod] = { first, static_cast<uint32_t>(indices.size()) - first };
-			}
-		}
+// assets/trees/trees.bin (tools/import_trees.py): a header, every mesh's LODs (first index + index count), the
+// vertices (TreeVertex) and the indices. the meshes go in TREE_MESH_FILE_INDEX order (per pack, the young ones first)
+bool Trees::loadMeshes(std::vector<TreeVertex>& vertices, std::vector<uint32_t>& indices) {
+	std::ifstream file(util::getpath("assets\\trees\\trees.bin"), std::ios::binary);
+	struct Header { char magic[4]; uint32_t meshes, lods, vertices, indices; } header{};
+	if(!file.read(reinterpret_cast<char*>(&header), sizeof(header)) || std::string(header.magic, 4) != "TRE1" || header.meshes != MESHES || header.lods != LODS) {
+		fmt::print("trees: assets/trees/trees.bin is missing or doesn't match treemeshes.h (re-run tools/import_trees.py)\n");
+		return false;
 	}
+	std::vector<Mesh> table(size_t(MESHES) * LODS);
+	file.read(reinterpret_cast<char*>(table.data()), table.size() * sizeof(Mesh));
+	vertices.resize(header.vertices);
+	indices.resize(header.indices);
+	file.read(reinterpret_cast<char*>(vertices.data()), vertices.size() * sizeof(TreeVertex));
+	file.read(reinterpret_cast<char*>(indices.data()), indices.size() * sizeof(uint32_t));
+	if(!file) {
+		fmt::print("trees: assets/trees/trees.bin is truncated\n");
+		return false;
+	}
+	for(uint32_t mesh = 0; mesh < MESHES; mesh++)
+		for(uint32_t lod = 0; lod < LODS; lod++) m_Meshes[mesh][lod] = table[size_t(TREE_MESH_FILE_INDEX[mesh]) * LODS + lod];
+	return true;
 }
 
 uint32_t Trees::binOffset(uint32_t bin) {
-	if(bin < MESHES) return bin * CAPACITY_LOD0;
-	if(bin < 2 * MESHES) return MESHES * CAPACITY_LOD0 + (bin - MESHES) * CAPACITY_LOD1;
-	if(bin < 3 * MESHES) return MESHES * (CAPACITY_LOD0 + CAPACITY_LOD1) + (bin - 2 * MESHES) * CAPACITY_SHADOW;
-	return MESHES * (CAPACITY_LOD0 + CAPACITY_LOD1 + CAPACITY_SHADOW); // after those: the impostor pool, shared by all meshes
+	// LOD0, LOD1, LOD2, shadow: MESHES bins each, then the impostor pool (treecommon.glsl binOffset)
+	uint32_t offset = 0;
+	for(uint32_t group = 0; group <= LODS; group++) {
+		if(bin < (group + 1) * MESHES) return offset + (bin - group * MESHES) * CAPACITY[group];
+		offset += MESHES * CAPACITY[group];
+	}
+	return offset;
 }
 
 // ------------------------------------------------------------------ vulkan
@@ -314,16 +91,29 @@ namespace {
 	}
 }
 
-void Trees::init(Application* engine, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler,
-				 const AllocatedImage* textures, VkSampler textureSampler,
-				 VkDescriptorSetLayout atmosphereLayout, VkDescriptorSetLayout shadowLayout, VkFormat shadowFormat, VkBuffer interactionBuffer) {
+void Trees::init(Application* engine, TextureLoader& textures, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler,
+				 VkSampler textureSampler, VkDescriptorSetLayout atmosphereLayout, VkDescriptorSetLayout shadowLayout, VkFormat shadowFormat, VkBuffer interactionBuffer) {
 	m_Device = engine->m_Device;
 	m_Allocator = engine->getAllocator();
+	m_TextureLoader = &textures;
 
 	// meshes
 	std::vector<TreeVertex> vertices;
 	std::vector<uint32_t> indices;
-	buildMeshes(vertices, indices);
+	if(!loadMeshes(vertices, indices)) {
+		// nothing to draw (keep the buffers valid): the bins' index counts stay 0
+		vertices.assign(3, TreeVertex{});
+		indices = { 0, 1, 2 };
+		m_Enabled = false;
+	}
+	// every pack's bark (colour, normal) and leaf atlas (colour + coverage, normal), TREE_TEXTURES in the shaders
+	for(uint32_t pack = 0; pack < TREE_PACKS; pack++) {
+		std::string base = std::string("assets\\trees\\") + TREE_PACK_FOLDERS[pack] + "\\";
+		m_Textures[pack * 4 + 0] = textures.loadCompressed(base + "bark.png", engine, TextureKind::Albedo);
+		m_Textures[pack * 4 + 1] = textures.loadCompressed(base + "bark_normal.png", engine, TextureKind::Normal);
+		m_Textures[pack * 4 + 2] = textures.loadCompressed(base + "leaves.png", engine, TextureKind::Atlas);
+		m_Textures[pack * 4 + 3] = textures.loadCompressed(base + "leaves_normal.png", engine, TextureKind::Normal);
+	}
 
 	size_t vertexBytes = vertices.size() * sizeof(TreeVertex), indexBytes = indices.size() * sizeof(uint32_t);
 	m_VertexBuffer = engine->createBuffer(vertexBytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
@@ -352,10 +142,10 @@ void Trees::init(Application* engine, const AllocatedImage& heightmap, const All
 	m_CommandTemplate.resize(BINS);
 	for(uint32_t bin = 0; bin < BINS; bin++) {
 		uint32_t mesh = bin % MESHES;
-		uint32_t lod = bin < MESHES ? 0 : 1; // shadow casters use LOD1
+		uint32_t lod = std::min(bin / MESHES, LODS - 1); // the shadow casters use the last LOD
 		m_CommandTemplate[bin] = { m_Meshes[mesh][lod].indexCount, 0, m_Meshes[mesh][lod].firstIndex, 0, binOffset(bin) };
 	}
-	m_ImpostorTemplate = { { 6, 0, 0, binOffset(3 * MESHES) } }; // one draw, every mesh's impostors
+	m_ImpostorTemplate = { { 6, 0, 0, binOffset(BINS) } }; // one draw, every mesh's impostors
 
 	// descriptor sets
 	const VkDescriptorType SAMPLER = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, SSBO = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -387,7 +177,7 @@ void Trees::init(Application* engine, const AllocatedImage& heightmap, const All
 	VkDescriptorBufferInfo occlusionInfo{ m_OcclusionBuffer.buffer, 0, VK_WHOLE_SIZE };
 	writeSet(m_Device, m_ComputeSet, 6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &occlusionInfo);
 	VkDescriptorImageInfo textureInfos[TREE_TEXTURES];
-	for(uint32_t i = 0; i < TREE_TEXTURES; i++) textureInfos[i] = { textureSampler, textures[i].imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+	for(uint32_t i = 0; i < TREE_TEXTURES; i++) textureInfos[i] = { textureSampler, m_Textures[i].imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	writeSet(m_Device, m_RenderSet, 0, SSBO, nullptr, &instanceInfo);
 	writeSet(m_Device, m_RenderSet, 1, SAMPLER, textureInfos, nullptr, TREE_TEXTURES);
 	VkDescriptorBufferInfo interactionInfo{ interactionBuffer, 0, VK_WHOLE_SIZE };
@@ -485,10 +275,10 @@ void Trees::setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& 
 
 }
 
-// renders every mesh from 3 elevations (0, 35 and 70 degrees) into an atlas: one column per mesh, one row per
-// elevation. colour + coverage and normals (in the bake view's space) + AO
+// renders every mesh from 3 elevations (0, 35 and 70 degrees) into an atlas: a grid of IMPOSTOR_COLUMNS meshes
+// across, a column of the elevations each. colour + coverage and normals (in the bake view's space) + AO
 void Trees::bakeImpostors(Application* engine, const std::function<PipelineBuilder(VkPipelineLayout, VkShaderModule)>& meshPipeline, VkShaderModule bakeShader) {
-	const uint32_t cell = IMPOSTOR_CELL, width = cell * MESHES, height = cell * IMPOSTOR_ELEVATIONS;
+	const uint32_t cell = IMPOSTOR_CELL, width = cell * IMPOSTOR_COLUMNS, height = cell * IMPOSTOR_ELEVATIONS * IMPOSTOR_GROUPS;
 	VkExtent2D size = { width, height };
 	m_ImpostorAlbedo = createAtlas(engine, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, width, height, VK_IMAGE_ASPECT_COLOR_BIT);
 	m_ImpostorNormal = createAtlas(engine, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, width, height, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -583,8 +373,10 @@ void Trees::bakeImpostors(Application* engine, const std::function<PipelineBuild
 			vkCmdPushConstants(cmd, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &pc);
 
 			for(uint32_t mesh = 0; mesh < MESHES; mesh++) {
-				VkViewport viewport = { static_cast<float>(mesh * cell), static_cast<float>(row * cell), static_cast<float>(cell), static_cast<float>(cell), 0.0f, 1.0f };
-				VkRect2D scissor = { { static_cast<int32_t>(mesh * cell), static_cast<int32_t>(row * cell) }, { cell, cell } };
+				// treecommon.glsl impostorCell: IMPOSTOR_COLUMNS meshes across, each a column of the elevations
+				uint32_t x = (mesh % IMPOSTOR_COLUMNS) * cell, y = ((mesh / IMPOSTOR_COLUMNS) * IMPOSTOR_ELEVATIONS + row) * cell;
+				VkViewport viewport = { static_cast<float>(x), static_cast<float>(y), static_cast<float>(cell), static_cast<float>(cell), 0.0f, 1.0f };
+				VkRect2D scissor = { { static_cast<int32_t>(x), static_cast<int32_t>(y) }, { cell, cell } };
 				vkCmdSetViewport(cmd, 0, 1, &viewport);
 				vkCmdSetScissor(cmd, 0, 1, &scissor);
 				vkCmdDrawIndexed(cmd, m_Meshes[mesh][0].indexCount, 1, m_Meshes[mesh][0].firstIndex, 0, MAX_INSTANCES);
@@ -612,6 +404,7 @@ void Trees::destroy() {
 		vkDestroyDescriptorSetLayout(m_Device, layout, nullptr);
 	for(AllocatedBuffer* buffer : { &m_VertexBuffer, &m_IndexBuffer, &m_Instances, &m_Commands, &m_ImpostorCommands, &m_Placed, &m_PlacedCount, &m_OcclusionBuffer })
 		vmaDestroyBuffer(m_Allocator, buffer->buffer, buffer->allocation);
+	for(const AllocatedImage& image : m_Textures) m_TextureLoader->destroyImage(image);
 	for(AllocatedImage* image : { &m_ImpostorAlbedo, &m_ImpostorNormal }) {
 		vkDestroyImageView(m_Device, image->imageView, nullptr);
 		vmaDestroyImage(m_Allocator, image->image, image->allocation);
@@ -681,8 +474,7 @@ void Trees::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescripto
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PrepassPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
-	for(uint32_t bin = 0; bin < 2 * MESHES; bin++)
-		vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, bin * sizeof(VkDrawIndexedIndirectCommand), 1, sizeof(VkDrawIndexedIndirectCommand));
+	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, 0, LODS * MESHES, sizeof(VkDrawIndexedIndirectCommand)); // every LOD's bins (multiDrawIndirect)
 	if(split) split();
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipeline);
@@ -692,8 +484,7 @@ void Trees::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescripto
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &offset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-	for(uint32_t bin = 0; bin < 2 * MESHES; bin++)
-		vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, bin * sizeof(VkDrawIndexedIndirectCommand), 1, sizeof(VkDrawIndexedIndirectCommand));
+	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, 0, LODS * MESHES, sizeof(VkDrawIndexedIndirectCommand));
 	if(split) split();
 
 	// far trees as impostors
@@ -714,8 +505,7 @@ void Trees::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &offset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-	for(uint32_t bin = 2 * MESHES; bin < BINS; bin++)
-		vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, bin * sizeof(VkDrawIndexedIndirectCommand), 1, sizeof(VkDrawIndexedIndirectCommand));
+	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, LODS * MESHES * sizeof(VkDrawIndexedIndirectCommand), MESHES, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 void Trees::drawImGui() {

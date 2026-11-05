@@ -13,6 +13,7 @@ layout(location = 1) in vec2 inUV;
 layout(location = 2) in vec3 inNormal;
 layout(location = 7) in vec3 inPrevPosition; // with last frame's wind
 layout(location = 8) flat in vec3 inGroundNormal; // the terrain's normal under the clump
+layout(location = 9) flat in vec4 inGroundAlbedo; // the terrain's colour under the clump, w = 1 when known
 layout(location = 3) in float inHeight;
 layout(location = 4) flat in int inKind;
 layout(location = 5) flat in float inSeed;
@@ -32,6 +33,11 @@ layout(set = 1, binding = 2) uniform sampler2D skyviewLUT;
 #include "foliagealpha.glsl"
 
 const vec3 WHEAT_GOLD = vec3(0.46, 0.33, 0.11); // linear, ripe wheat (terrain.frag's canopy uses the same)
+// about the average of the procedural grass colour below (root to tip, every species and patch): what it's measured against
+const vec3 GRASS_MEAN = vec3(0.088, 0.142, 0.03);
+// blades a little lighter than the ground photo they stand on: its texels are averaged with the shade between the
+// blades, the blades get their own (the ao below, the shadows)
+const float GRASS_OVER_GROUND = 1.15;
 
 
 void main() {
@@ -85,9 +91,20 @@ void main() {
 		albedo = mix(albedo, vec3(0.15, 0.115, 0.06) * (0.8 + 0.4 * fract(inSeed * 3.7)), step(0.93, fract(inSeed * 7.13)));
 		float grey = dot(albedo, vec3(0.3, 0.59, 0.11));
 		albedo = mix(vec3(grey), albedo, 0.85);
-		float dry = smoothstep(0.3, 0.15, inMoisture); // only the driest, the ground under it stays lush green otherwise
-		float luma = dot(albedo, vec3(0.3, 0.59, 0.11));
-		albedo = mix(albedo, luma * vec3(1.55, 1.2, 0.55), dry * 0.6); // golden tan straw (a paler one went cream white in the sun)
+		if (inGroundAlbedo.w > 0.5) {
+			// the colour of the ground it grows on (the terrain cache's baked albedo under the clump): a meadow is the
+			// green its ground texture is, the dry patches and the biome tints come along. the procedural colour only
+			// adds its variation around that (dark roots, light tips, species, patches, per blade, dead blades),
+			// relative to its own average: its brightness fully, half of its hue
+			// (with a fixed green of its own the grass was straw yellow over a saturated green ground)
+			vec3 relative = albedo / GRASS_MEAN;
+			float relativeLuma = dot(relative, vec3(0.3, 0.59, 0.11));
+			albedo = inGroundAlbedo.rgb * GRASS_OVER_GROUND * mix(vec3(relativeLuma), relative, 0.5);
+		} else {
+			float dry = smoothstep(0.3, 0.15, inMoisture); // only the driest, the ground under it stays lush green otherwise
+			float luma = dot(albedo, vec3(0.3, 0.59, 0.11));
+			albedo = mix(albedo, luma * vec3(1.55, 1.2, 0.55), dry * 0.6); // golden tan straw (a paler one went cream white in the sun)
+		}
 	}
 
 	// darker near the roots, the clump shadows itself

@@ -174,12 +174,18 @@ void TerrainCache::update(VkCommandBuffer cmd, glm::dvec2 cameraWorld, float fac
 		level.valid = true;
 	}
 
-	// what terrain.frag reads (last frame's draw is done with the buffer by the time this runs: the barrier)
+	uploadInfo(cmd, true);
+}
+
+void TerrainCache::publishOff(VkCommandBuffer cmd) { uploadInfo(cmd, false); }
+
+void TerrainCache::uploadInfo(VkCommandBuffer cmd, bool on) {
+	// what terrain.frag and foliage.comp read (last frame's reads are done with the buffer by the time this runs: the barrier)
 	Info info{};
-	for(uint32_t k = 0; k < LEVELS; k++) info.levels[k] = glm::vec4(glm::vec2(m_Levels[k].min), texelSize(k), m_Levels[k].valid ? 1.0f : 0.0f);
-	info.params = glm::vec4(START_DISTANCE, 1.0f, static_cast<float>(SIZE), 0.0f);
+	for(uint32_t k = 0; k < LEVELS; k++) info.levels[k] = glm::vec4(glm::vec2(m_Levels[k].min), texelSize(k), on && m_Levels[k].valid ? 1.0f : 0.0f);
+	info.params = glm::vec4(START_DISTANCE, on ? 1.0f : 0.0f, static_cast<float>(SIZE), 0.0f);
 	VkMemoryBarrier2 barrier{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-	barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+	barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 	barrier.srcAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
 	barrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
 	barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -190,7 +196,7 @@ void TerrainCache::update(VkCommandBuffer cmd, glm::dvec2 cameraWorld, float fac
 	vkCmdUpdateBuffer(cmd, m_InfoBuffer.buffer, 0, sizeof(Info), &info);
 	barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
 	barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-	barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
+	barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 	barrier.dstAccessMask = VK_ACCESS_2_UNIFORM_READ_BIT;
 	vkCmdPipelineBarrier2(cmd, &dependency);
 }
@@ -218,7 +224,7 @@ void TerrainCache::bake(VkCommandBuffer cmd, uint32_t k, glm::ivec2 min, const L
 
 	// the top mip keeps what it has (only the new strips are baked), last frame's terrain may still be reading it
 	transition(0, 1, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
-			   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT);
+			   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT);
 	BakePushConstants pc{};
 	pc.bakeMin = min;
 	pc.keepMin = keep ? keep->min : glm::ivec2(0);
@@ -236,7 +242,7 @@ void TerrainCache::bake(VkCommandBuffer cmd, uint32_t k, glm::ivec2 min, const L
 	transition(0, 1, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 			   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 	transition(1, m_Mips - 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+			   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 	for(uint32_t mip = 1; mip < m_Mips; mip++) {
 		int32_t from = static_cast<int32_t>(SIZE >> (mip - 1)), to = static_cast<int32_t>(SIZE >> mip);
 		for(AllocatedImage* image : images) {
@@ -259,7 +265,7 @@ void TerrainCache::bake(VkCommandBuffer cmd, uint32_t k, glm::ivec2 min, const L
 				   VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 	}
 	transition(0, m_Mips, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			   VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+			   VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
 }
 
 void TerrainCache::destroy() {

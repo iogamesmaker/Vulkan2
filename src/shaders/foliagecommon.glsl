@@ -12,8 +12,25 @@
 
 struct FoliageInstance {
 	vec4 posScale;	// xyz = position in terrain space (the same space as the terrain's fragPos), w = size
-	vec4 params;	// x = yaw, y = type + 8 * ring (0 near, 1 far), z = random seed, w = moisture (dry grass is yellower)
+	vec4 params;	// x = ground normal xz (packHalf2x16), y = type + 8 * ring (0 near, 1 far), z = random seed,
+					// w = the ground's colour + moisture (packGround)
 };
+
+// the ground's linear albedo under a clump (the terrain cache, 0 = not known) and the moisture in one float's bits:
+// rgb as sqrt (dark greens keep their precision in 8 bits), the moisture in the top byte as 1..126 so the bits are
+// never a NaN / inf / denormal (some drivers flush or canonicalise those, the colour would come back wrong)
+float packGround(vec3 albedo, float moisture) {
+	uvec3 c = uvec3(round(sqrt(clamp(albedo, 0.0, 1.0)) * 255.0));
+	uint m = 1u + uint(round(clamp(moisture, 0.0, 1.0) * 125.0));
+	return uintBitsToFloat(c.r | (c.g << 8) | (c.b << 16) | (m << 24));
+}
+// returns the albedo (w = 1 when known), moisture out
+vec4 unpackGround(float packed, out float moisture) {
+	uint bits = floatBitsToUint(packed);
+	moisture = float((bits >> 24) - 1u) / 125.0;
+	vec3 c = vec3(uvec3(bits, bits >> 8, bits >> 16) & 255u) / 255.0;
+	return vec4(c * c, dot(c, vec3(1.0)) > 0.0 ? 1.0 : 0.0);
+}
 
 layout(push_constant) uniform constants {
 	mat4 viewproj;

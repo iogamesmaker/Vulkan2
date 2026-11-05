@@ -17,7 +17,7 @@ layout(location = 5) flat out float outFade;
 layout(location = 6) flat out float outSeed;
 
 const vec2 CORNERS[6] = vec2[](vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(0.5, 0.5), vec2(-0.5, -0.5), vec2(0.5, 0.5), vec2(-0.5, 0.5));
-const float ELEVATIONS = 3.0;		 // Trees::IMPOSTOR_ELEVATIONS
+const float ELEVATIONS = float(IMPOSTOR_ELEVATIONS);
 const float ELEVATION_STEP = 0.6109; // 35 degrees
 
 void main() {
@@ -40,9 +40,9 @@ void main() {
 	float elevation = clamp(asin(clamp(toCamera.y, -1.0, 1.0)) / ELEVATION_STEP, 0.0, ELEVATIONS - 1.0);
 	float row0 = min(floor(elevation), ELEVATIONS - 2.0);
 	vec2 local = vec2(corner.x + 0.5, 0.5 - corner.y);
-	vec2 atlas = vec2(float(TREE_MESHES), ELEVATIONS); // one column per tree mesh
-	outUV = (vec2(mesh, row0) + local) / atlas;
-	outUV2 = (vec2(mesh, row0 + 1.0) + local) / atlas;
+	vec2 atlas = vec2(float(IMPOSTOR_COLUMNS), float(IMPOSTOR_GROUPS * IMPOSTOR_ELEVATIONS)); // treecommon.glsl impostorCell
+	outUV = (impostorCell(mesh, row0) + local) / atlas;
+	outUV2 = (impostorCell(mesh, row0 + 1.0) + local) / atlas;
 	outBlend = elevation - row0;
 	outUp = up;
 

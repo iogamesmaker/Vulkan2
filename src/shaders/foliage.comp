@@ -17,6 +17,29 @@ struct DrawCommand { uint vertexCount; uint instanceCount; uint firstVertex; uin
 // the first, [2] = what the camera sees in the near ring (curved blades, foliagecommon.glsl), after those
 layout(std430, set = 0, binding = 2) buffer Indirect { DrawCommand commands[3]; };
 
+// the far terrain cache (terraincache.hpp, terrain.frag): the finished ground colour, the grass takes its colour from it
+#define TERRAIN_CACHE_LEVELS 5
+layout(set = 0, binding = 4) uniform TerrainCacheInfo {
+	vec4 levels[TERRAIN_CACHE_LEVELS]; // xy = the baked square's first texel, z = texel size (world units), w = 1 when baked
+	vec4 params;					   // y = 1 when on, z = texels per side
+} cache;
+layout(set = 0, binding = 5) uniform sampler2DArray cacheAlbedo; // sRGB (linear when read), wraps
+
+// the ground's albedo at this world position from the finest baked level that holds it, a ~1.5m average (mip 1: the
+// per texel detail of the ground photo isn't the grass' colour, and the blades shouldn't flicker from it).
+// vec3(0) when nothing is baked here (cache off, or still baking): foliage.frag keeps its own colours
+vec3 groundAlbedo(vec2 worldXZ) {
+	if (cache.params.y < 0.5) return vec3(0.0);
+	for (int level = 0; level < TERRAIN_CACHE_LEVELS; level++) {
+		vec4 info = cache.levels[level];
+		vec2 inside = worldXZ / info.z - info.xy;
+		if (info.w < 0.5 || any(lessThan(inside, vec2(4.0))) || any(greaterThan(inside, vec2(cache.params.z - 4.0)))) continue;
+		vec3 uv = vec3(worldXZ / (info.z * cache.params.z), float(level));
+		return max(textureLod(cacheAlbedo, uv, level == 0 ? 1.0 : 0.0).rgb, vec3(1e-3));
+	}
+	return vec3(0.0);
+}
+
 const float SHADOW_CASTER_DISTANCE = 7.0; // ~40m, grass shadows further away aren't visible anyway
 
 // the capacities must hold everything the rings can produce: once a list is full, which clumps get dropped depends
@@ -141,7 +164,7 @@ void main() {
 	// on), the card yaw comes from the seed
 	float heightPerTexel = pc.factor / (2.0 * pc.terrainSize / size.x); // as terrain.frag
 	vec3 groundNormal = normalize(cross(vec3(0.0, (hT - hB) * heightPerTexel, 1.0), vec3(1.0, (hR - hL) * heightPerTexel, 0.0)));
-	instance.params = vec4(uintBitsToFloat(packHalf2x16(groundNormal.xz)), type + 8.0 * float(ring), seed, data.g);
+	instance.params = vec4(uintBitsToFloat(packHalf2x16(groundNormal.xz)), type + 8.0 * float(ring), seed, packGround(groundAlbedo(world), data.g));
 
 	if (dist < SHADOW_CASTER_DISTANCE) append(1u, MAX_FOLIAGE_SHADOW_INSTANCES, instance);
 

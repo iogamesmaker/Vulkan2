@@ -1,5 +1,5 @@
 #version 450
-// procedural tree meshes (see Trees::buildMeshes), instanced from the scatter pass, swaying in the wind
+// the imported tree meshes (tools/import_trees.py, Trees::loadMeshes), instanced from the scatter pass, swaying in the wind
 
 #include "treecommon.glsl"
 #define INTERACTION_SET 0
@@ -7,7 +7,7 @@
 #include "interaction.glsl"
 
 layout(location = 0) in vec4 inPositionWind; // xyz in tree space (height 1), w = how much it sways
-layout(location = 1) in vec4 inNormalMaterial; // xyz normal, w = material (0/1 bark, 2/3 leaves)
+layout(location = 1) in vec4 inNormalMaterial; // xyz normal, w = material: pack * 2 + 1 for the leaves
 layout(location = 2) in vec4 inUVAO;			 // xy uv, z = ambient occlusion
 
 layout(std430, set = 0, binding = 0) readonly buffer Instances { TreeInstance instances[]; };
@@ -23,7 +23,7 @@ layout(location = 5) flat out float outDryness;
 layout(location = 6) flat out float outFade;
 layout(location = 7) flat out float outSeed;
 layout(location = 8) out vec3 outPrevPosition; // with last frame's wind (motion vectors)
-layout(location = 9) flat out float outTint;	// the tree type's colouring (treeTint)
+layout(location = 9) flat out float outTint;	// unused (was the procedural trees' colouring)
 
 void main() {
 	TreeInstance inst = instances[gl_InstanceIndex];
@@ -52,7 +52,8 @@ void main() {
 	// walking into a bush or low branches pushes the leaves aside (and they swing back after you, see
 	// interaction.glsl), the loose tips (more wind weight) the most
 	float disturbed = 0.0;
-	if (inNormalMaterial.w > 1.5 && interaction.trailInfo.x > 0.5) {
+	bool leaves = (int(inNormalMaterial.w + 0.5) & 1) == 1;
+	if (leaves && interaction.trailInfo.x > 0.5) {
 		const float reach = 0.17; // ~1m
 		vec4 touch = interactionPush(pos, reach, interaction.trailInfo.y + 0.06);
 		float give = 0.3 + 0.7 * inPositionWind.w;
@@ -60,7 +61,7 @@ void main() {
 		pos += push;
 		disturbed = touch.w * give;
 	}
-	if (inNormalMaterial.w > 1.5) {
+	if (leaves) {
 		// leaf flutter, the phase from the position before it so last frame's is the same function. brushing past
 		// shakes them harder for a moment
 		float flutterScale = inPositionWind.w * treeHeight * 0.003 + disturbed * 0.012;

@@ -73,7 +73,6 @@ target_precompile_headers(vkguide_shared PUBLIC
 
 add_executable(${PROJECT_NAME} 
     src/main.cpp
-	src/loader.cpp
     src/application.cpp	
 	src/textures.cpp
     src/atmosphere.cpp
