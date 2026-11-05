@@ -261,12 +261,12 @@ RockDetail rockStrata(float h, vec2 worldXZ, vec2 gradient, vec3 dPdx, vec3 dPdy
 
 	// big layers: their ledges come and go along the face (blocky, broken, not contour lines)
 	float f;
-	vec2 big = strataStep(layer, layerGrad, 0.5, f);
+	vec2 big = strataStep(layer, layerGrad, 0.3, f); // wide, rounded risers (narrow ones read as knife cuts)
 	float ledge = smoothstep(0.3, 0.6, detailValueNoise(worldXZ * vec2(0.35, 0.35) + id * 3.7));
-	r.slope = big * ledge * 0.55; // part way: full treads lay flat and the faces read as rice terraces
+	r.slope = big * ledge * 0.4; // part way: full treads lay flat and the faces read as rice terraces
 	// thin layering inside them (shale), weaker
 	float fFine;
-	vec2 thin = strataStep(layer * 3.3 + 0.37, layerGrad, 0.6, fFine) * 0.3 * fine;
+	vec2 thin = strataStep(layer * 3.3 + 0.37, layerGrad, 0.3, fFine) * 0.08 * fine; // a hint, many sharp lines looked like wood grain
 	r.slope += thin;
 
 	// the flutes: ridged noise across the fall line, stretched down it, only on real faces
@@ -284,11 +284,11 @@ RockDetail rockStrata(float h, vec2 worldXZ, vec2 gradient, vec3 dPdx, vec3 dPdy
 	// colour: every big layer its own shade of grey / buff (sediment), dark in the crease where a tread meets the
 	// riser above it (where the ledge is), light along the weathered edges, darker down the runnels
 	float band = fract(sin(id * 12.9898) * 43758.5453);
-	float crease = smoothstep(0.38, 0.5, f) * (1.0 - smoothstep(0.5, 0.66, f)) * ledge;
-	float edge = (smoothstep(0.92, 1.0, f) + 1.0 - smoothstep(0.0, 0.05, f)) * ledge;
-	float thinLine = smoothstep(0.55, 0.65, fFine) * (1.0 - smoothstep(0.65, 0.8, fFine)) * fine;
-	r.tint = mix(vec3(0.94, 0.93, 0.92), vec3(1.04, 1.03, 1.0), band) * (1.0 - crease * 0.35) * (1.0 + edge * 0.15)
-		   * (1.0 - thinLine * 0.12) * (1.0 - (1.0 - ridged) * 0.25 * faces);
+	float crease = smoothstep(0.15, 0.3, f) * (1.0 - smoothstep(0.3, 0.55, f)) * ledge;
+	float edge = (smoothstep(0.85, 1.0, f) + 1.0 - smoothstep(0.0, 0.1, f)) * ledge;
+	float thinLine = smoothstep(0.3, 0.5, fFine) * (1.0 - smoothstep(0.5, 0.8, fFine)) * fine;
+	r.tint = mix(vec3(0.94, 0.93, 0.92), vec3(1.04, 1.03, 1.0), band) * (1.0 - crease * 0.22) * (1.0 + edge * 0.08)
+		   * (1.0 - thinLine * 0.04) * (1.0 - (1.0 - ridged) * 0.25 * faces);
 	return r;
 }
 
