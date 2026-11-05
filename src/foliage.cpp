@@ -12,7 +12,7 @@ void Foliage::init(Application* engine, const AllocatedImage& heightmap, const A
 	// buffers: instances written by the compute pass and read by the vertex shader, the indirect draw arguments
 	// get their instance count from the compute pass too
 	m_Instances = engine->createBuffer((MAX_INSTANCES + MAX_SHADOW_INSTANCES + MAX_NEAR_INSTANCES) * sizeof(glm::vec4) * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-	m_Indirect = engine->createBuffer(sizeof(VkDrawIndirectCommand) * 3,  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_Indirect = engine->createBuffer(sizeof(VkDrawIndirectCommand) * 3,  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 
 	// compute set
 	DescriptorLayoutBuilder computeBuilder;

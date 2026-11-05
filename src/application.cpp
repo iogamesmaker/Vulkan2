@@ -2070,9 +2070,11 @@ void Application::run() {
 				ImGui::Separator();
 				ImGui::Checkbox("Walking (F)", &m_Camera.walking);
 				ImGui::Checkbox("debug textures", &m_DebugView.m_Open);
+				ImGui::Checkbox("GPU draw counts", &m_ShowDrawStats);
 			}
 			ImGui::End();
 			m_DebugView.drawImGui(debugTextures());
+			if(m_ShowDrawStats) drawDrawStatsWindow();
 
 			if (ImGui::Begin("atmosphere")) {
 				m_AtmosphereManager.drawImGui();
@@ -2093,12 +2095,22 @@ void Application::run() {
 }
 
 void Application::draw() {
+	// VULKAN2_DEBUGTEX_CYCLE=1: the debug texture viewer open on a different source every frame and the draw counts on,
+	// so a capture run samples every source once (validation catches a wrong layout / view type)
+	static const bool debugCycle = std::getenv("VULKAN2_DEBUGTEX_CYCLE") != nullptr;
+	if(debugCycle) {
+		m_DebugView.m_Open = true;
+		m_DebugView.select(static_cast<int>(m_FrameNumber % debugTextures().size()));
+		m_ShowDrawStats = true;
+	}
 	if(m_Resized) resizeSwapchain(m_Vsync);
 	
 	// Wait for the GPU to finish, reset the fence
 	VK_CHECK(vkWaitForFences(m_Device, 1, &getCurrentFrame().renderFence, true, 1000000000));
 	
 	getCurrentFrame().deletionQueue.flush();
+
+	readDrawStats(); // this slot's copies from FRAME_OVERLAP frames ago have finished too
 
 	// this slot's probe from FRAME_OVERLAP frames ago has finished, feed it to the walking camera
 	uint32_t probeSlot = m_FrameNumber % FRAME_OVERLAP;
@@ -2297,6 +2309,7 @@ void Application::draw() {
 
 	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
+	recordDrawStats(cmd);
 	if(!m_Mouselock) {
 		m_DebugView.record(cmd, debugTextures(), m_FrameNumber); // the picked texture into what the window shows
 		drawImGui(cmd, m_SwapchainImageViews[swapchainImageIndex]);
@@ -2434,6 +2447,11 @@ void Application::writeCapture() {
 	GpuMemory memory = gpuMemory();
 	const double MB = 1024.0 * 1024.0;
 	fmt::print(" memory {:.0f} / {:.0f} MB, ours {:.0f} MB\n", memory.used / MB, memory.available / MB, memory.ours / MB);
+	if(m_ShowDrawStats) { // (VULKAN2_DEBUGTEX_CYCLE turns them on)
+		fmt::print("  draws:");
+		for(const DrawStat& s : m_DrawStats) fmt::print(" {} {} ({:.2f}M tris) |", s.name, s.instances, s.triangles / 1e6);
+		fmt::print("\n");
+	}
 	std::fflush(stdout);
 	m_ShotIndex++;
 	m_ShotFrames = 0;
@@ -2735,10 +2753,23 @@ std::vector<DebugTexture> Application::debugTextures() {
 	DebugTexture& scene = add("hdr scene (before TAA / post)", m_DrawImage.imageView, read, DebugTexHint::Hdr, m_DrawImage.imageExtent);
 	scene.image = m_DrawImage.image;
 	scene.transitionFrom = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	add("ssao (r = AO)", m_SSAOImage.imageView, read, DebugTexHint::Data, m_SSAOImage.imageExtent);
+	add("shadow term, horizontal blur pass", m_ShadowFilter.getTempView(), VK_IMAGE_LAYOUT_GENERAL, DebugTexHint::Data, m_ShadowFilter.getTempExtent());
+	add("ssao (r = AO, g = lit air for the haze)", m_SSAOImage.imageView, read, DebugTexHint::Data, m_SSAOImage.imageExtent);
+	for(int i = 0; i < 2; i++)
+		add(i ? "TAA history B" : "TAA history A", m_History[i].imageView, read, DebugTexHint::Hdr, m_History[i].imageExtent);
+	// volumetric fog (volfog.cpp): the froxel grid, always in GENERAL
+	for(int i = 0; i < 2; i++)
+		add(i ? "fog froxels B (rgb in-scattering, a = extinction)" : "fog froxels A (rgb in-scattering, a = extinction)", m_FogFroxels[i].imageView,
+			VK_IMAGE_LAYOUT_GENERAL, DebugTexHint::Hdr, m_FogFroxels[i].imageExtent).kind = DebugTexKind::Tex3D;
+	add("fog integrated (rgb towards the camera, a = transmittance)", m_FogIntegrated.imageView, VK_IMAGE_LAYOUT_GENERAL, DebugTexHint::Hdr,
+		m_FogIntegrated.imageExtent).kind = DebugTexKind::Tex3D;
+	// clouds
+	add("clouds raw (this frame's march, before the reprojection)", m_CloudRaw.imageView, read, DebugTexHint::Hdr, m_CloudRaw.imageExtent);
+	add("clouds history", m_CloudHistory.imageView, read, DebugTexHint::Hdr, m_CloudHistory.imageExtent);
 	add("clouds (rgb = light, a = transmittance)", m_CloudImage.imageView, read, DebugTexHint::Hdr, m_CloudImage.imageExtent);
 	add("cloud coverage map", m_CloudMap.imageView, VK_IMAGE_LAYOUT_GENERAL, DebugTexHint::Data, m_CloudMap.imageExtent);
 	add("cloud noise", m_CloudNoise.imageView, read, DebugTexHint::Data, m_CloudNoise.imageExtent).kind = DebugTexKind::Tex3D;
+	add("cirrus noise lattice", m_CirrusNoise.imageView, read, DebugTexHint::Data, m_CirrusNoise.imageExtent);
 	DebugTexture& bloom = add("bloom chain", m_Bloom.getView(), VK_IMAGE_LAYOUT_GENERAL, DebugTexHint::Hdr, m_OutputImage.imageExtent);
 	bloom.mips = Bloom::MIPS;
 
@@ -2747,6 +2778,13 @@ std::vector<DebugTexture> Application::debugTextures() {
 	add("multiscattering LUT", m_AtmosphereManager.multiscattering.imageView, read, DebugTexHint::Hdr, m_AtmosphereManager.multiscattering.imageExtent);
 	add("sky view LUT", m_AtmosphereManager.skyview.imageView, read, DebugTexHint::Hdr, m_AtmosphereManager.skyview.imageExtent);
 	add("aerial perspective LUT", m_AtmosphereManager.aerial.imageView, read, DebugTexHint::Hdr, m_AtmosphereManager.aerial.imageExtent).kind = DebugTexKind::Tex3D;
+	add("aerial perspective LUT, sun / moon single scattering", m_AtmosphereManager.aerialSun.imageView, read, DebugTexHint::Hdr,
+		m_AtmosphereManager.aerialSun.imageExtent).kind = DebugTexKind::Tex3D;
+	add("moon", m_MoonTexture.imageView, read, DebugTexHint::Color, m_MoonTexture.imageExtent);
+
+	// vegetation
+	add("tree impostors albedo (column per mesh, row per elevation)", m_Trees.impostorAlbedo().imageView, read, DebugTexHint::Color, m_Trees.impostorAlbedo().imageExtent);
+	add("tree impostors normal", m_Trees.impostorNormal().imageView, read, DebugTexHint::Normal, m_Trees.impostorNormal().imageExtent);
 
 	// terrain
 	add("heightmap (a = height)", m_Heightmap.imageView, read, DebugTexHint::Data, m_Heightmap.imageExtent);
@@ -2765,4 +2803,83 @@ std::vector<DebugTexture> Application::debugTextures() {
 		};
 	}
 	return textures;
+}
+
+// ------------------------------------------------------------------ GPU draw counts
+
+std::vector<DrawStatBuffer> Application::drawStatBuffers() const {
+	std::vector<DrawStatBuffer> buffers;
+	for(const auto& list : { m_Foliage.drawStatBuffers(), m_Trees.drawStatBuffers(), m_Props.drawStatBuffers(), m_GroundCover.drawStatBuffers() })
+		buffers.insert(buffers.end(), list.begin(), list.end());
+	return buffers;
+}
+
+// at the end of the frame (every draw that reads them is recorded): the indirect buffers into this frame's slot
+void Application::recordDrawStats(VkCommandBuffer cmd) {
+	uint32_t slot = m_FrameNumber % FRAME_OVERLAP;
+	m_DrawStatsWritten[slot] = false;
+	if(!m_ShowDrawStats) return;
+	std::vector<DrawStatBuffer> buffers = drawStatBuffers();
+	if(!m_DrawStatsReadback.buffer) {
+		for(const DrawStatBuffer& b : buffers) m_DrawStatsSlotBytes += b.bytes;
+		m_DrawStatsReadback = createBuffer(m_DrawStatsSlotBytes * FRAME_OVERLAP, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_TO_CPU);
+		m_DeletionQueue.push([this]() { destroyBuffer(m_DrawStatsReadback); });
+	}
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+						  VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+	VkDeviceSize offset = slot * m_DrawStatsSlotBytes;
+	for(const DrawStatBuffer& b : buffers) {
+		VkBufferCopy copy{ 0, offset, b.bytes };
+		vkCmdCopyBuffer(cmd, b.buffer, m_DrawStatsReadback.buffer, 1, &copy);
+		offset += b.bytes;
+	}
+	// next frame's resets (vkCmdUpdateBuffer) and scatters write these buffers again: not before the copies read them
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_NONE);
+	m_DrawStatsWritten[slot] = true;
+}
+
+// after this slot's fence: its copies are done, turn them into the window's rows
+void Application::readDrawStats() {
+	uint32_t slot = m_FrameNumber % FRAME_OVERLAP;
+	if(!m_DrawStatsWritten[slot] || !m_DrawStatsReadback.buffer) return;
+	vmaInvalidateAllocation(m_Allocator, m_DrawStatsReadback.allocation, 0, VK_WHOLE_SIZE);
+	const uint8_t* data = static_cast<const uint8_t*>(m_DrawStatsReadback.info.pMappedData) + slot * m_DrawStatsSlotBytes;
+	m_DrawStats.clear();
+	auto take = [&](const std::vector<DrawStatBuffer>& buffers) {
+		std::vector<const uint8_t*> pointers;
+		for(const DrawStatBuffer& b : buffers) { pointers.push_back(data); data += b.bytes; }
+		return pointers;
+	};
+	m_Foliage.drawStats(take(m_Foliage.drawStatBuffers()), m_DrawStats);
+	m_Trees.drawStats(take(m_Trees.drawStatBuffers()), m_DrawStats);
+	m_Props.drawStats(take(m_Props.drawStatBuffers()), m_DrawStats);
+	m_GroundCover.drawStats(take(m_GroundCover.drawStatBuffers()), m_DrawStats);
+}
+
+void Application::drawDrawStatsWindow() {
+	if(ImGui::Begin("GPU draw counts", &m_ShowDrawStats)) {
+		ImGui::TextDisabled("what the GPU driven passes drew last frame (indirect draw buffers, read back)");
+		if(ImGui::BeginTable("draws", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
+			ImGui::TableSetupColumn("pass");
+			ImGui::TableSetupColumn("instances");
+			ImGui::TableSetupColumn("triangles");
+			ImGui::TableHeadersRow();
+			uint64_t instances = 0, triangles = 0;
+			for(const DrawStat& s : m_DrawStats) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn(); ImGui::TextUnformatted(s.name);
+				ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(s.instances));
+				ImGui::TableNextColumn(); ImGui::Text("%.2fM", s.triangles / 1e6);
+				instances += s.instances;
+				triangles += s.triangles;
+			}
+			ImGui::TableNextRow();
+			ImGui::TableNextColumn(); ImGui::TextUnformatted("total");
+			ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(instances));
+			ImGui::TableNextColumn(); ImGui::Text("%.2fM", triangles / 1e6);
+			ImGui::EndTable();
+		}
+		ImGui::TextDisabled("(shadow casters are drawn once per cascade they're in)");
+	}
+	ImGui::End();
 }

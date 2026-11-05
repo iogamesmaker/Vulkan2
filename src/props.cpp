@@ -196,7 +196,7 @@ void Props::init(Application* engine, const AllocatedImage& heightmap, const All
 
 	// bins: mesh * 2 + lod for the camera, then the shadow casters (cheap LOD)
 	m_Instances = engine->createBuffer(BINS * CAPACITY * sizeof(glm::vec4) * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-	m_Commands = engine->createBuffer(BINS * sizeof(VkDrawIndexedIndirectCommand), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_Commands = engine->createBuffer(BINS * sizeof(VkDrawIndexedIndirectCommand), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_CommandTemplate.resize(BINS);
 	for(uint32_t bin = 0; bin < BINS; bin++) {
 		const Mesh& m = bin < MESHES * 2 ? m_Meshes[bin / 2][bin % 2] : m_Meshes[bin - MESHES * 2][1];

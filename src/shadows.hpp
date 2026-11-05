@@ -166,6 +166,8 @@ public:
 
 	VkImage getDirectImage() const { return m_Direct.image; }
 	VkImageView getDirectView() const { return m_Direct.imageView; }
+	VkImageView getTempView() const { return m_Temp.imageView; } // the horizontal blur pass's output (GENERAL), for the debug viewer
+	VkExtent3D getTempExtent() const { return m_Temp.imageExtent; }
 
 	int m_Radius = 3; // pixels, 0 = no blur
 private:

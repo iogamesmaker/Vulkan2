@@ -35,12 +35,25 @@ public:
 	// split (optional) is called after the depth prepass and after the full trees, for the GPU timers
 	void draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet, const std::function<void()>& split = {});
 	void drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj);
+	// the "GPU draw counts" window (drawstats.hpp)
+	std::vector<DrawStatBuffer> drawStatBuffers() const {
+		return { { m_Commands.buffer, BINS * sizeof(VkDrawIndexedIndirectCommand) }, { m_ImpostorCommands.buffer, sizeof(VkDrawIndirectCommand) } };
+	}
+	void drawStats(const std::vector<const uint8_t*>& data, std::vector<DrawStat>& out) const {
+		out.push_back(sumIndexed("trees, full crowns (LOD0)", data[0], 0, MESHES));
+		out.push_back(sumIndexed("trees, LOD1", data[0], MESHES, MESHES));
+		out.push_back(sumNonIndexed("trees, impostors", data[1], 0, 1));
+		out.push_back(sumIndexed("trees, shadow casters", data[0], 2 * MESHES, MESHES));
+	}
 
 	void drawImGui();
 	// occlusion culling against last frame's depth pyramid (hiz.hpp)
 	struct OcclusionData { glm::mat4 viewProj; glm::vec4 size; }; // size: pyramid mip 0, mips, w = on
 	void setOcclusionSource(VkImageView pyramid, VkSampler sampler);
 	OcclusionData m_Occlusion{};
+	// the baked impostor atlases (one column per mesh, one row per elevation), for the debug texture viewer
+	const AllocatedImage& impostorAlbedo() const { return m_ImpostorAlbedo; }
+	const AllocatedImage& impostorNormal() const { return m_ImpostorNormal; }
 
 
 	bool m_Enabled = true;

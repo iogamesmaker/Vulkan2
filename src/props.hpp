@@ -22,6 +22,12 @@ public:
 	void update(VkCommandBuffer cmd, const FoliagePushConstants& pc); // outside rendering, before the shadow pass
 	void draw(VkCommandBuffer cmd);									  // inside the G-buffer pass
 	void drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj);
+	// the "GPU draw counts" window (drawstats.hpp)
+	std::vector<DrawStatBuffer> drawStatBuffers() const { return { { m_Commands.buffer, BINS * sizeof(VkDrawIndexedIndirectCommand) } }; }
+	void drawStats(const std::vector<const uint8_t*>& data, std::vector<DrawStat>& out) const {
+		out.push_back(sumIndexed("rocks, logs, stumps", data[0], 0, MESHES * 2));
+		out.push_back(sumIndexed("rocks, logs, stumps, shadow casters", data[0], MESHES * 2, MESHES));
+	}
 
 	bool m_Enabled = true;
 
