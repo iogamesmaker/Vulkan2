@@ -6,20 +6,28 @@
 
 #define PROP_CELL 0.9 // world units (~5m) per placement cell
 
-// mesh space collision shapes (times the scale), see Props::buildRock / buildLog
-#define ROCK_RADII vec3(0.55, 0.36, 0.47) // an ellipsoid around the lumpy rock
-#define ROCK_SINK 0.15					  // rocks sit this far (times the scale) into the ground
-#define LOG_RADIUS 0.055 // ~0.6m thick at the average scale
-#define LOG_SINK 0.05
-#define STUMP_RADIUS 0.06 // Props::buildStump, before the root flare
+#include "propmeshes.glsl" // rocks, then logs, then stumps
+
+// mesh space collision shapes (times the scale), measured from the scans in the space Props::loadMesh puts them in.
+// rocks: an ellipsoid per rock, x / z half extents and the height above their base (they stand on y = 0, the
+// ellipsoid's centre is the base, its lower half underground)
+const vec3 ROCK_RADII[PROP_ROCKS] = vec3[](vec3(0.382, 0.603, 0.55), vec3(0.29, 0.494, 0.55), vec3(0.281, 0.25, 0.55),
+										   vec3(0.55, 0.384, 0.387), vec3(0.55, 0.513, 0.503), vec3(0.55, 0.412, 0.342));
+#define ROCK_SINK 0.06 // rocks sit this far (times the scale) into the ground, over uneven ground too
+// logs (along x, -0.5 .. 0.5): the trunk's radius and the height of its axis above the ground
+const float LOG_RADII[PROP_LOGS] = float[](0.033, 0.051);
+const float LOG_AXIS[PROP_LOGS] = float[](0.039, 0.169);
+#define LOG_SINK 0.01
+// stumps: the trunk's radius (before the roots flare out) and their height
+const float STUMP_RADII[PROP_STUMPS] = float[](0.08, 0.089);
 #define STUMP_HEIGHT 0.1
 
 struct PropPlacement {
 	vec2 xz;	 // terrain space
 	vec2 uv;	 // heightmap uv
-	uint mesh;	 // 0..3 rocks, 4..5 logs, 6..7 stumps
+	uint mesh;	 // rocks, logs, stumps (PROP_FIRST_LOG / PROP_FIRST_STUMP)
 	float scale; // world units
-	float yaw, tilt, seed, moss;
+	float yaw, tilt, seed, moss; // moss: how wet / shaded it is, negative = snow lying on it (they never come together)
 	float height; // raw heightmap height (0..1), a rough idea of the altitude
 };
 
@@ -54,24 +62,29 @@ bool placeProp(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld
 	float fallenLog = forest * 0.05 * (1.0 - rocky);
 	float stump = forest * 0.035 * (1.0 - rocky);
 	float roll = rnd.z;
-	if (roll < boulder) { p.mesh = uint(rnd.w * 4.0); p.scale = mix(0.5, 1.4, rnd2.x); }					 // ~3-8m
-	else if (roll < boulder + fallenLog) { p.mesh = 4u + uint(rnd.w * 2.0); p.scale = mix(0.9, 1.6, rnd2.x); } // logs, ~5-10m
-	else if (roll < boulder + fallenLog + rock) { p.mesh = uint(rnd.w * 4.0); p.scale = mix(0.06, 0.32, rnd2.x * rnd2.x); } // ~0.4-2m
-	else if (roll < boulder + fallenLog + rock + stump) { p.mesh = 6u + uint(rnd.w * 2.0); p.scale = mix(0.8, 1.6, rnd2.x); } // ~0.6-1m tall
+	if (roll < boulder) { p.mesh = min(uint(rnd.w * float(PROP_ROCKS)), uint(PROP_ROCKS - 1)); p.scale = mix(0.5, 1.4, rnd2.x); } // ~3-8m
+	else if (roll < boulder + fallenLog) { p.mesh = PROP_FIRST_LOG + min(uint(rnd.w * float(PROP_LOGS)), uint(PROP_LOGS - 1)); p.scale = mix(0.6, 1.1, rnd2.x); } // logs, ~3.5-6.5m
+	else if (roll < boulder + fallenLog + rock) { p.mesh = min(uint(rnd.w * float(PROP_ROCKS)), uint(PROP_ROCKS - 1)); p.scale = mix(0.06, 0.32, rnd2.x * rnd2.x); } // ~0.4-2m
+	else if (roll < boulder + fallenLog + rock + stump) { p.mesh = PROP_FIRST_STUMP + min(uint(rnd.w * float(PROP_STUMPS)), uint(PROP_STUMPS - 1)); p.scale = mix(0.5, 0.9, rnd2.x); } // ~0.3-0.55m tall
 	else return false;
-	if (p.mesh < 4u && slope > 1.5 && p.scale > 0.4) return false; // nothing big sits on a cliff face
+	if (p.mesh < PROP_FIRST_LOG && slope > 1.5 && p.scale > 0.4) return false; // nothing big sits on a cliff face
 	// small rocks don't show on snow fields (buried): scattered dark pebbles all over the snow looked like pepper
 	float snowline = mix(0.44, 0.68, data.r); // terrain.frag's, without its noise
 	float snowy = smoothstep(snowline - 0.03, snowline + 0.06, data.a) * mountains * (1.0 - smoothstep(0.5, 1.0, slope));
-	if (p.mesh < 4u && p.scale < 0.4 && snowy > 0.35) return false;
+	if (p.mesh < PROP_FIRST_LOG && p.scale < 0.4 && snowy > 0.35) return false;
 
 	p.yaw = rnd2.z * 6.2831853;
 	// logs lie along the slope under their own axis (the yaw turns the mesh's x axis to (cos, -sin) in xz)
 	vec2 gradient = vec2(hR - hL, hT - hB) * factor / (2.0 * terrainSize / size.x); // height per world unit
 	float along = dot(gradient, vec2(cos(p.yaw), -sin(p.yaw)));
-	p.tilt = p.mesh >= 6u ? 0.0 : (p.mesh >= 4u ? atan(along) : (rnd2.y - 0.5) * 0.4); // stumps stand upright
+	p.tilt = p.mesh >= PROP_FIRST_STUMP ? 0.0 : (p.mesh >= PROP_FIRST_LOG ? atan(along) : (rnd2.y - 0.5) * 0.4); // stumps stand upright
 	p.seed = rnd2.w;
 	p.moss = clamp(data.g * 1.3 - 0.3 + weights[BIOME_TAIGA] * 0.3, 0.0, 1.0) * (1.0 - weights[BIOME_DESERT]) * (1.0 - weights[BIOME_SNOW]);
+	// snow on them where the ground is snowy: the snow biome and above the snowline (the same lines as the terrain's
+	// snow cap, treecommon.glsl placeTree), stored as negative moss
+	float snowCap = smoothstep(0.3, 0.7, smoothstep(snowline - 0.03, snowline + 0.06, data.a)) * mountains;
+	float snow = max(smoothstep(0.3, 0.7, weights[BIOME_SNOW]), snowCap);
+	if (snow > 0.05) p.moss = -snow;
 	p.height = data.a;
 	return true;
 }

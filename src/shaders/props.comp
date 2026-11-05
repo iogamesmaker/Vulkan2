@@ -49,8 +49,8 @@ void main() {
 	float groundY = terrainHeight(heightmap, placement.uv, distXZ, terrainSpacing(distXZ, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
 	groundY -= meshSag(heightmap, placement.uv, terrainSpacing(dist, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize); // (foliage.comp)
 	PropInstance instance;
-	// rocks sink in a bit (the bottom of the mesh is flat at -0.3), logs lie on the ground
-	instance.posScale = vec4(xz.x, groundY - (mesh < 4u ? ROCK_SINK : (mesh < 6u ? LOG_SINK : 0.01)) * scale, xz.y, scale);
+	// rocks sink in a bit (over uneven ground their base would float), logs lie on the ground
+	instance.posScale = vec4(xz.x, groundY - (mesh < PROP_FIRST_LOG ? ROCK_SINK : (mesh < PROP_FIRST_STUMP ? LOG_SINK : 0.01)) * scale, xz.y, scale);
 	instance.params = vec4(placement.yaw, placement.tilt, placement.seed, placement.moss);
 
 	if (dist < PROP_SHADOW_DISTANCE) append(uint(PROP_MESHES * 2) + mesh, instance);

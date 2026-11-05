@@ -250,6 +250,7 @@ vec3 packColour(vec3 albedo, uint pack, bool leaves) {
 		if (pack == PACK_PINE)	return albedo * vec3(0.6, 0.62, 0.75);
 		if (pack == PACK_MAPLE) return albedo * vec3(1.15, 1.45, 3.0);
 		if (pack == PACK_FIR)	return albedo * vec3(1.05, 1.0, 1.1);
+		if (pack == PACK_BIRCH) return albedo * vec3(0.6, 0.62, 0.58); // (lit through, the light atlas went neon lime)
 		return albedo;
 	}
 	if (pack == PACK_PINE) return albedo * 0.5; // (bright orange photo, ~0.23 / 0.14 / 0.07)

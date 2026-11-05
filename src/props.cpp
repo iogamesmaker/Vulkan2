@@ -1,182 +1,168 @@
 #include "props.hpp"
 #include "application.hpp"
 #include "gbuffer.hpp"
-#include <map>
+#include <filesystem>
+#include <fastgltf/glm_element_traits.hpp>
+#include <fastgltf/core.hpp>
+#include <fastgltf/tools.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <meshoptimizer.h>
 
 // ---------------------------------------------------------------- meshes
 
 namespace {
-	float hash3(int x, int y, int z) {
-		uint32_t h = static_cast<uint32_t>(x) * 374761393u + static_cast<uint32_t>(y) * 668265263u + static_cast<uint32_t>(z) * 2147483647u;
-		h = (h ^ (h >> 13)) * 1274126177u;
-		return static_cast<float>((h ^ (h >> 16)) & 0xffffff) / static_cast<float>(0xffffff);
-	}
+	// photoscans from Poly Haven (CC0, assets/props/README.md), in mesh order (propplacement.glsl: PROP_ROCKS rocks,
+	// then the logs, then the stumps). node: the one mesh of a set file to use (nullptr: the file's only one).
+	// lod0 / lod1: the triangle budgets the simplifier gets (the scans are 12k-100k triangles, thousands of rocks are
+	// scattered around the camera)
+	enum class Kind { Rock, Log, Stump };
+	struct PropFile { const char* folder; const char* node; Kind kind; size_t lod0, lod1; };
+	constexpr PropFile PROP_FILES[] = {
+		{ "boulder_01", nullptr, Kind::Rock, 3000, 400 },
+		{ "rock_07", nullptr, Kind::Rock, 2000, 300 },
+		{ "rock_09", nullptr, Kind::Rock, 2000, 300 },
+		{ "rock_moss_set_02", "rock_moss_set_02_rock10", Kind::Rock, 2000, 300 },
+		{ "rock_moss_set_02", "rock_moss_set_02_rock12", Kind::Rock, 2000, 300 },
+		{ "rock_moss_set_02", "rock_moss_set_02_rock09", Kind::Rock, 2000, 300 },
+		{ "dead_tree_trunk", nullptr, Kind::Log, 5000, 700 },
+		{ "dead_tree_trunk_02", nullptr, Kind::Log, 5000, 700 },
+		{ "tree_stump_01", nullptr, Kind::Stump, 4000, 600 },
+		{ "tree_stump_02", nullptr, Kind::Stump, 4000, 600 },
+	};
 
-	float valueNoise3(glm::vec3 p) {
-		glm::vec3 i = glm::floor(p), f = p - i;
-		glm::vec3 u = f * f * (3.0f - 2.0f * f);
-		int x = static_cast<int>(i.x), y = static_cast<int>(i.y), z = static_cast<int>(i.z);
-		auto lerp = [](float a, float b, float t) { return a + (b - a) * t; };
-		float a = lerp(hash3(x, y, z), hash3(x + 1, y, z), u.x), b = lerp(hash3(x, y + 1, z), hash3(x + 1, y + 1, z), u.x);
-		float c = lerp(hash3(x, y, z + 1), hash3(x + 1, y, z + 1), u.x), d = lerp(hash3(x, y + 1, z + 1), hash3(x + 1, y + 1, z + 1), u.x);
-		return lerp(lerp(a, b, u.y), lerp(c, d, u.y), u.z);
+	glm::mat3 nodeRotationScale(const fastgltf::Node& node) {
+		// the rotation / scale only: the set's rocks are laid out side by side, each one goes to its own origin
+		glm::mat4 m(1.0f);
+		if(const auto* trs = std::get_if<fastgltf::TRS>(&node.transform)) {
+			glm::quat q(trs->rotation[3], trs->rotation[0], trs->rotation[1], trs->rotation[2]); // w, x, y, z
+			m = glm::mat4_cast(q) * glm::scale(glm::mat4(1.0f), glm::vec3(trs->scale[0], trs->scale[1], trs->scale[2]));
+		} else if(const auto* mat = std::get_if<fastgltf::math::fmat4x4>(&node.transform)) {
+			for(int c = 0; c < 3; c++)
+				for(int r = 0; r < 3; r++) m[c][r] = (*mat)[c][r];
+		}
+		return glm::mat3(m);
 	}
 }
 
-// a lumpy, faceted stone: an icosphere pushed in and out by noise, squashed, its bottom flattened (it sits sunk
-// into the ground). the same noise for both LODs so they're the same shape
-void Props::buildRock(uint32_t subdivisions, float seed, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
-	const float t = (1.0f + std::sqrt(5.0f)) * 0.5f;
-	std::vector<glm::vec3> positions = {
-		{-1, t, 0}, {1, t, 0}, {-1, -t, 0}, {1, -t, 0}, {0, -1, t}, {0, 1, t}, {0, -1, -t}, {0, 1, -t}, {t, 0, -1}, {t, 0, 1}, {-t, 0, -1}, {-t, 0, 1},
-	};
-	std::vector<glm::uvec3> faces = {
-		{0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
-		{3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9}, {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1},
-	};
-	for(auto& p : positions) p = glm::normalize(p);
-	for(uint32_t s = 0; s < subdivisions; s++) {
-		std::map<std::pair<uint32_t, uint32_t>, uint32_t> midpoints;
-		auto midpoint = [&](uint32_t a, uint32_t b) {
-			auto key = std::make_pair(std::min(a, b), std::max(a, b));
-			auto found = midpoints.find(key);
-			if(found != midpoints.end()) return found->second;
-			positions.push_back(glm::normalize(positions[a] + positions[b]));
-			return midpoints[key] = static_cast<uint32_t>(positions.size() - 1);
-		};
-		std::vector<glm::uvec3> next;
-		for(auto f : faces) {
-			uint32_t ab = midpoint(f.x, f.y), bc = midpoint(f.y, f.z), ca = midpoint(f.z, f.x);
-			next.push_back({ f.x, ab, ca }); next.push_back({ f.y, bc, ab }); next.push_back({ f.z, ca, bc }); next.push_back({ ab, bc, ca });
-		}
-		faces = next;
+// one scan into mesh space, the space the placement and the collision shapes in propplacement.glsl are measured in:
+//   rocks: centred, the larger horizontal half extent 0.55, standing on y = 0 (ROCK_SINK buries them a little)
+//   logs: along x, -0.5 .. 0.5, lying on y = 0
+//   stumps: the scan's own ground at y = 0, STUMP_HEIGHT (0.1) above it
+// returns the vertices (w = the mesh, props.frag's texture) and indices relative to them
+bool Props::loadMesh(uint32_t mesh, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
+	const PropFile& file = PROP_FILES[mesh];
+	std::filesystem::path path = util::getpath(std::string("assets\\props\\") + file.folder + "\\" + file.folder + "_1k.gltf");
+	auto data = fastgltf::GltfDataBuffer::FromPath(path);
+	if(data.error() != fastgltf::Error::None) {
+		fmt::print("props: couldn't read {}\n", path.string());
+		return false;
+	}
+	fastgltf::Parser parser{};
+	auto asset = parser.loadGltf(data.get(), path.parent_path(), fastgltf::Options::LoadExternalBuffers);
+	if(!asset) {
+		fmt::print("props: couldn't load {}\n", path.string());
+		return false;
+	}
+	fastgltf::Asset& gltf = asset.get();
+	const fastgltf::Node* node = nullptr;
+	for(const fastgltf::Node& n : gltf.nodes)
+		if(n.meshIndex && (!file.node || n.name == file.node)) { node = &n; break; }
+	if(!node) {
+		fmt::print("props: no mesh {} in {}\n", file.node ? file.node : "", path.string());
+		return false;
 	}
 
-	glm::vec3 offset(seed * 17.3f, seed * 5.1f, seed * 11.7f);
-	glm::vec3 squash = glm::vec3(1.0f, 0.62f, 0.85f) * 0.5f;
-	for(auto& p : positions) {
-		float r = 1.0f + (valueNoise3(p * 1.6f + offset) - 0.5f) * 0.7f + (valueNoise3(p * 4.2f + offset * 2.0f) - 0.5f) * 0.18f;
-		p *= r;
-		if(p.y < -0.3f) p.y = -0.3f + (p.y + 0.3f) * 0.15f; // flat bottom
-		p *= squash;
+	glm::mat3 transform = nodeRotationScale(*node);
+	for(const fastgltf::Primitive& p : gltf.meshes[*node->meshIndex].primitives) {
+		if(!p.indicesAccessor || p.findAttribute("POSITION") == p.attributes.end() || p.findAttribute("NORMAL") == p.attributes.end()
+		   || p.findAttribute("TEXCOORD_0") == p.attributes.end()) continue;
+		size_t base = vertices.size();
+		const fastgltf::Accessor& positions = gltf.accessors[p.findAttribute("POSITION")->accessorIndex];
+		vertices.resize(base + positions.count);
+		fastgltf::iterateAccessorWithIndex<glm::vec3>(gltf, positions, [&](glm::vec3 v, size_t i) {
+			vertices[base + i].positionMaterial = glm::vec4(transform * v, static_cast<float>(mesh));
+		});
+		fastgltf::iterateAccessorWithIndex<glm::vec3>(gltf, gltf.accessors[p.findAttribute("NORMAL")->accessorIndex], [&](glm::vec3 v, size_t i) {
+			vertices[base + i].normalAO = glm::vec4(glm::normalize(transform * v), 1.0f);
+		});
+		fastgltf::iterateAccessorWithIndex<glm::vec2>(gltf, gltf.accessors[p.findAttribute("TEXCOORD_0")->accessorIndex], [&](glm::vec2 v, size_t i) {
+			vertices[base + i].uv = glm::vec4(v, 0.0f, 0.0f);
+		});
+		fastgltf::iterateAccessor<uint32_t>(gltf, gltf.accessors[*p.indicesAccessor], [&](uint32_t index) { indices.push_back(index + static_cast<uint32_t>(base)); });
 	}
+	if(vertices.empty()) return false;
 
-	std::vector<glm::vec3> normals(positions.size(), glm::vec3(0.0f));
-	for(auto f : faces) {
-		glm::vec3 n = glm::cross(positions[f.y] - positions[f.x], positions[f.z] - positions[f.x]);
-		normals[f.x] += n; normals[f.y] += n; normals[f.z] += n;
+	glm::vec3 lo(1e9f), hi(-1e9f);
+	for(const Vertex& v : vertices) { lo = glm::min(lo, glm::vec3(v.positionMaterial)); hi = glm::max(hi, glm::vec3(v.positionMaterial)); }
+	glm::vec3 centre = (lo + hi) * 0.5f;
+	glm::vec3 origin;
+	float scale;
+	if(file.kind == Kind::Rock) {
+		origin = { centre.x, lo.y, centre.z };
+		scale = 0.55f / std::max(hi.x - lo.x, hi.z - lo.z) * 2.0f;
+	} else if(file.kind == Kind::Log) {
+		origin = { centre.x, lo.y, centre.z };
+		scale = 1.0f / (hi.x - lo.x);
+	} else {
+		origin = { centre.x, 0.0f, centre.z };
+		scale = 0.1f / hi.y; // STUMP_HEIGHT
 	}
-	for(size_t i = 0; i < positions.size(); i++) {
-		glm::vec3 n = glm::normalize(normals[i]);
-		if(glm::dot(n, positions[i]) < 0.0f) n = -n; // outward, whatever the winding
-		float ao = 0.55f + 0.45f * glm::smoothstep(-0.25f, 0.2f, positions[i].y / squash.y * 0.5f); // darker towards the ground
-		vertices.push_back({ glm::vec4(positions[i], 0.0f), glm::vec4(n, ao), glm::vec4(0.0f) });
+	float height = (hi.y - origin.y) * scale;
+	for(Vertex& v : vertices) {
+		glm::vec3 p = (glm::vec3(v.positionMaterial) - origin) * scale;
+		v.positionMaterial = glm::vec4(p, v.positionMaterial.w);
+		// ambient occlusion: darker towards the ground they sit on, and (logs) on their underside
+		glm::vec3 n(v.normalAO);
+		float ao = 0.5f + 0.5f * glm::smoothstep(0.0f, 0.35f * height, p.y);
+		if(file.kind == Kind::Log) ao = std::min(ao, 0.6f + 0.4f * glm::smoothstep(-1.0f, 0.4f, n.y));
+		v.normalAO.w = ao;
 	}
-	for(auto f : faces) indices.insert(indices.end(), { f.x, f.y, f.z }); // relative to the mesh (its vertexOffset)
-}
-
-// a fallen trunk along x (-0.5 .. 0.5), lying on the ground (bottom at y = 0), slightly crooked, cut ends
-void Props::buildLog(uint32_t segments, uint32_t rings, float seed, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
-	const float radius = 0.055f; // LOG_RADIUS in propplacement.glsl
-	auto centre = [&](float x) { return glm::vec3(x, radius + std::sin(x * 3.1f + seed * 7.0f) * 0.006f, std::sin(x * 4.3f + seed * 3.0f) * 0.012f); };
-	uint32_t start = static_cast<uint32_t>(vertices.size());
-	for(uint32_t r = 0; r <= rings; r++) {
-		float v = static_cast<float>(r) / static_cast<float>(rings);
-		float x = v - 0.5f;
-		float taper = 1.0f - v * 0.25f; // thinner towards the top end
-		for(uint32_t s = 0; s <= segments; s++) {
-			float a = static_cast<float>(s) / static_cast<float>(segments) * 6.2831853f;
-			glm::vec3 n(0.0f, std::cos(a), std::sin(a));
-			glm::vec3 p = centre(x) + n * radius * taper;
-			float ao = 0.6f + 0.4f * glm::smoothstep(-1.0f, 0.4f, n.y); // the underside, against the ground
-			vertices.push_back({ glm::vec4(p, 1.0f), glm::vec4(n, ao), glm::vec4(static_cast<float>(s) / segments * 2.0f, v * 8.0f, 0.0f, 0.0f) });
-		}
-	}
-	uint32_t stride = segments + 1;
-	for(uint32_t r = 0; r < rings; r++) {
-		for(uint32_t s = 0; s < segments; s++) {
-			uint32_t a = r * stride + s, b = a + 1, c = a + stride, d = c + 1;
-			indices.insert(indices.end(), { a, c, b, b, c, d });
-		}
-	}
-	// end caps (growth rings)
-	for(int end = 0; end < 2; end++) {
-		float x = end == 0 ? -0.5f : 0.5f;
-		float taper = end == 0 ? 1.0f : 0.75f;
-		glm::vec3 n(end == 0 ? -1.0f : 1.0f, 0.0f, 0.0f);
-		uint32_t centreIndex = static_cast<uint32_t>(vertices.size()) - start;
-		vertices.push_back({ glm::vec4(centre(x), 2.0f), glm::vec4(n, 0.8f), glm::vec4(0.5f, 0.5f, 0.0f, 0.0f) });
-		for(uint32_t s = 0; s <= segments; s++) {
-			float a = static_cast<float>(s) / static_cast<float>(segments) * 6.2831853f;
-			glm::vec3 p = centre(x) + glm::vec3(0.0f, std::cos(a), std::sin(a)) * radius * taper;
-			vertices.push_back({ glm::vec4(p, 2.0f), glm::vec4(n, 0.8f), glm::vec4(0.5f + 0.5f * std::cos(a), 0.5f + 0.5f * std::sin(a), 0.0f, 0.0f) });
-		}
-		for(uint32_t s = 0; s < segments; s++) indices.insert(indices.end(), { centreIndex, centreIndex + 1 + s, centreIndex + 2 + s });
-	}
-}
-
-// a tree stump: a bark cylinder flaring out into roots at the ground, growth rings on top (cut flat, or broken off
-// in jagged splinters). mesh space: base at y = 0, STUMP_RADIUS / STUMP_HEIGHT in propplacement.glsl
-void Props::buildStump(uint32_t segments, bool broken, float seed, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
-	const float radius = 0.06f, height = 0.1f;
-	const uint32_t rings = 5;
-	auto topAt = [&](float a) { // the height of the top edge around the stump
-		if(!broken) return height + std::sin(a + seed) * 0.004f; // a saw cut, not quite level
-		float splinters = std::abs(std::sin(a * 3.0f + seed * 5.0f)) * 0.05f + std::abs(std::sin(a * 7.0f + seed)) * 0.025f;
-		return height * 0.8f + splinters;
-	};
-	uint32_t start = static_cast<uint32_t>(vertices.size());
-	for(uint32_t r = 0; r <= rings; r++) {
-		float v = static_cast<float>(r) / rings;
-		for(uint32_t s = 0; s <= segments; s++) {
-			float a = static_cast<float>(s) / segments * 6.2831853f;
-			// roots: lobes that swell out towards the ground
-			float roots = std::pow(std::max(std::cos(a * 4.0f + seed * 3.0f), 0.0f), 3.0f);
-			float flare = 1.0f + (1.0f - v) * (1.0f - v) * (0.5f + roots * 0.9f);
-			glm::vec3 n(std::cos(a), (1.0f - v) * 0.6f * flare - 0.3f, std::sin(a));
-			glm::vec3 p(std::cos(a) * radius * flare, glm::mix(-0.01f, topAt(a), v), std::sin(a) * radius * flare);
-			float ao = glm::mix(0.55f, 1.0f, v);
-			vertices.push_back({ glm::vec4(p, 1.0f), glm::vec4(glm::normalize(n), ao), glm::vec4(static_cast<float>(s) / segments * 2.0f, p.y * 8.0f / 0.4f, 0.0f, 0.0f) });
-		}
-	}
-	uint32_t stride = segments + 1;
-	for(uint32_t r = 0; r < rings; r++)
-		for(uint32_t s = 0; s < segments; s++) {
-			uint32_t a = r * stride + s, b = a + 1, c2 = a + stride, d = c2 + 1; // mesh relative (the mesh gets a vertex offset)
-			indices.insert(indices.end(), { a, b, c2, b, d, c2 });
-		}
-	// the top: growth rings, a fan from the middle (raised a little where it's broken)
-	uint32_t centreIndex = static_cast<uint32_t>(vertices.size()) - start;
-	vertices.push_back({ glm::vec4(0.0f, broken ? height * 0.95f : height, 0.0f, 2.0f), glm::vec4(0.0f, 1.0f, 0.0f, 0.85f), glm::vec4(0.5f, 0.5f, 0.0f, 0.0f) });
-	for(uint32_t s = 0; s <= segments; s++) {
-		float a = static_cast<float>(s) / segments * 6.2831853f;
-		glm::vec3 p(std::cos(a) * radius, topAt(a), std::sin(a) * radius);
-		vertices.push_back({ glm::vec4(p, 2.0f), glm::vec4(0.0f, 1.0f, 0.0f, 0.8f), glm::vec4(0.5f + 0.5f * std::cos(a), 0.5f + 0.5f * std::sin(a), 0.0f, 0.0f) });
-	}
-	for(uint32_t s = 0; s < segments; s++) indices.insert(indices.end(), { centreIndex, centreIndex + 2 + s, centreIndex + 1 + s });
+	return true;
 }
 
 // ---------------------------------------------------------------- setup
 
-void Props::init(Application* engine, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler,
-				 const VkImageView* textures, bool endGrainTexture, VkSampler textureSampler, VkFormat shadowFormat) {
+void Props::init(Application* engine, TextureLoader& textures, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler,
+				 VkImageView mossTexture, VkSampler textureSampler, VkFormat shadowFormat) {
 	m_Device = engine->m_Device;
 	m_Allocator = engine->getAllocator();
+	m_TextureLoader = &textures;
+	static_assert(std::size(PROP_FILES) == MESHES);
 
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 	for(uint32_t mesh = 0; mesh < MESHES; mesh++) {
+		const PropFile& file = PROP_FILES[mesh];
+		std::string base = std::string("assets\\props\\") + file.folder + "\\textures\\" + file.folder;
+		m_Textures[mesh * 2] = textures.loadCompressed(base + "_diff_1k.jpg", engine, TextureKind::Albedo);
+		m_Textures[mesh * 2 + 1] = textures.loadCompressed(base + "_nor_gl_1k.jpg", engine, TextureKind::Normal);
+
+		std::vector<Vertex> meshVertices;
+		std::vector<uint32_t> meshIndices;
+		if(!loadMesh(mesh, meshVertices, meshIndices)) {
+			meshVertices.assign(3, Vertex{});
+			meshIndices = { 0, 1, 2 };
+		}
+		// the LODs from the scan: the simplifier keeps the uv seams and the silhouette. LOD0 within a small error
+		// (it stops early on simple shapes), LOD1 down to its budget whatever it costs (it's small on screen)
 		for(uint32_t lod = 0; lod < 2; lod++) {
+			size_t target = std::min(meshIndices.size(), (lod == 0 ? file.lod0 : file.lod1) * 3);
+			std::vector<uint32_t> simplified(meshIndices.size());
+			float error = 0.0f;
+			simplified.resize(meshopt_simplify(simplified.data(), meshIndices.data(), meshIndices.size(), &meshVertices[0].positionMaterial.x,
+											   meshVertices.size(), sizeof(Vertex), target, lod == 0 ? 0.01f : 1.0f, 0, &error));
+			if(simplified.size() > target * 2) // couldn't get anywhere near the budget within the error: drop whatever it takes
+				simplified.resize(meshopt_simplifySloppy(simplified.data(), meshIndices.data(), meshIndices.size(), &meshVertices[0].positionMaterial.x,
+														 meshVertices.size(), sizeof(Vertex), target, 1.0f, &error));
+			meshopt_optimizeVertexCache(simplified.data(), simplified.data(), simplified.size(), meshVertices.size());
 			Mesh& m = m_Meshes[mesh][lod];
 			m.firstIndex = static_cast<uint32_t>(indices.size());
+			m.indexCount = static_cast<uint32_t>(simplified.size());
 			m.vertexOffset = static_cast<int32_t>(vertices.size());
-			std::vector<Vertex> meshVertices;
-			if(mesh < 4) buildRock(lod == 0 ? 3 : 1, static_cast<float>(mesh) + 0.5f, meshVertices, indices);
-			else if(mesh < 6) buildLog(lod == 0 ? 12 : 6, lod == 0 ? 8 : 2, static_cast<float>(mesh), meshVertices, indices);
-			else buildStump(lod == 0 ? 14 : 7, mesh == 7, static_cast<float>(mesh), meshVertices, indices);
-			vertices.insert(vertices.end(), meshVertices.begin(), meshVertices.end());
-			m.indexCount = static_cast<uint32_t>(indices.size()) - m.firstIndex;
+			indices.insert(indices.end(), simplified.begin(), simplified.end());
 		}
+		fmt::print("props: {} {}: {} -> {} / {} triangles\n", file.folder, file.node ? file.node : "", meshIndices.size() / 3, m_Meshes[mesh][0].indexCount / 3, m_Meshes[mesh][1].indexCount / 3);
+		vertices.insert(vertices.end(), meshVertices.begin(), meshVertices.end());
 	}
 
 	size_t vertexBytes = vertices.size() * sizeof(Vertex), indexBytes = indices.size() * sizeof(uint32_t);
@@ -215,14 +201,21 @@ void Props::init(Application* engine, const AllocatedImage& heightmap, const All
 
 	DescriptorLayoutBuilder renderBuilder;
 	renderBuilder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);			// instances
-	renderBuilder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, PROP_TEXTURES); // rock, bark, moss, end grain
+	renderBuilder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, PROP_TEXTURES); // per mesh albedo + normal, then the moss
 	m_RenderLayout = renderBuilder.build(m_Device, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 	m_RenderSet = engine->g_DescriptorAllocator.allocate(m_Device, m_RenderLayout);
 
 	VkDescriptorBufferInfo instanceInfo{ m_Instances.buffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo commandInfo{ m_Commands.buffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorImageInfo textureInfos[PROP_TEXTURES];
-	for(uint32_t i = 0; i < PROP_TEXTURES; i++) textureInfos[i] = { textureSampler, textures[i], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+	for(uint32_t i = 0; i < MESHES * 2; i++) textureInfos[i] = { textureSampler, m_Textures[i].imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+	textureInfos[MESHES * 2] = { textureSampler, mossTexture, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+	// the stone the set's rocks get instead of their share of the set's one 1k texture (that was a smear on them)
+	const char* stones[4] = { "rock030.jpg", "rock030_normal.jpg", "rock062.jpg", "rock062_normal.jpg" };
+	for(uint32_t i = 0; i < 4; i++) {
+		m_Stone[i] = textures.loadCompressed(std::string("assets\\props\\stone\\") + stones[i], engine, i % 2 ? TextureKind::Normal : TextureKind::Albedo);
+		textureInfos[MESHES * 2 + 1 + i] = { textureSampler, m_Stone[i].imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+	}
 	VkWriteDescriptorSet writes[4] = {};
 	for(auto& write : writes) { write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write.descriptorCount = 1; }
 	writes[0].dstSet = m_ComputeSet; writes[0].dstBinding = 2; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[0].pBufferInfo = &instanceInfo;
@@ -264,15 +257,10 @@ void Props::init(Application* engine, const AllocatedImage& heightmap, const All
 	PipelineBuilder builder;
 	builder._pipelineLayout = m_RenderPipelineLayout;
 	builder.set_shaders(vertexShader.shader, fragmentShader.shader);
-	// props.frag's END_GRAIN_TEXTURE: the photographed cross section, or the procedural rings without it
-	VkBool32 endGrain = endGrainTexture ? VK_TRUE : VK_FALSE;
-	VkSpecializationMapEntry endGrainEntry{ 0, 0, sizeof(VkBool32) };
-	VkSpecializationInfo endGrainInfo{ 1, &endGrainEntry, sizeof(VkBool32), &endGrain };
-	builder._shaderStages[1].pSpecializationInfo = &endGrainInfo; // [0] vertex, [1] fragment
 	builder.set_vertex_input({ binding }, attributes);
 	builder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 	builder.set_polygon_mode(VK_POLYGON_MODE_FILL);
-	builder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE); // the procedural winding isn't consistent, cheap meshes anyway
+	builder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE); // (the stumps' and logs' scans are open at the bottom)
 	builder.set_multisampling_none();
 	builder.disable_blending();
 	builder.enable_depthtest(true, VK_COMPARE_OP_GREATER); // reversed z
@@ -327,6 +315,8 @@ void Props::destroy() {
 	vkDestroyDescriptorSetLayout(m_Device, m_RenderLayout, nullptr);
 	for(AllocatedBuffer* buffer : { &m_VertexBuffer, &m_IndexBuffer, &m_Instances, &m_Commands })
 		vmaDestroyBuffer(m_Allocator, buffer->buffer, buffer->allocation);
+	for(const AllocatedImage& image : m_Textures) m_TextureLoader->destroyImage(image);
+	for(const AllocatedImage& image : m_Stone) m_TextureLoader->destroyImage(image);
 }
 
 // ---------------------------------------------------------------- per frame
@@ -358,8 +348,7 @@ void Props::draw(VkCommandBuffer cmd) {
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &offset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-	for(uint32_t bin = 0; bin < MESHES * 2; bin++)
-		vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, bin * sizeof(VkDrawIndexedIndirectCommand), 1, sizeof(VkDrawIndexedIndirectCommand));
+	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, 0, MESHES * 2, sizeof(VkDrawIndexedIndirectCommand)); // every mesh and LOD (multiDrawIndirect)
 }
 
 void Props::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {
@@ -372,6 +361,5 @@ void Props::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &offset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-	for(uint32_t bin = MESHES * 2; bin < BINS; bin++)
-		vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, bin * sizeof(VkDrawIndexedIndirectCommand), 1, sizeof(VkDrawIndexedIndirectCommand));
+	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, MESHES * 2 * sizeof(VkDrawIndexedIndirectCommand), MESHES, sizeof(VkDrawIndexedIndirectCommand));
 }

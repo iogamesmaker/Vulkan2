@@ -460,10 +460,6 @@ private:
 	bool m_TerrainCacheEnabled = true; // settings: the far terrain cache is kept up to date and read
 	Trees m_Trees{};
 	ShadowFilter m_ShadowFilter;
-	// the logs' bark (ambientCG Bark001): albedo, normal (the trees load their own, Trees::init)
-	AllocatedImage m_LogBark[2];
-	AllocatedImage m_EndGrain[2]{}; // the cut ends of logs + stumps: albedo, normal (optional, see loadTextures)
-	bool m_HasEndGrain = false;
 	AllocatedImage m_MoonTexture; // NASA SVS CGI Moon Kit (LRO colour mosaic), public domain
 	AllocatedImage m_CirrusNoise; // the cirrus' value noise lattice (volclouds.glsl), hashes baked so the sky doesn't compute them
 	AllocatedImage m_BladeAtlas;  // grass blades (ambientCG Foliage001), colour + opacity

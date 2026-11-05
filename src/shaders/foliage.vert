@@ -122,7 +122,7 @@ void main() {
 	} else {
 		height = 0.09 * (0.55 + 0.9 * r.z) * size; // ~30-80cm, the same in every ring (taller far grass showed as a step)
 		rect = BLADES[r.x > 0.96 ? 8 : int(r.x * 8.0)];
-		width = height * mix(0.025, 0.05, r.w); // one procedural blade per card (foliagealpha.glsl), ~1-2cm (wider read as ribbons)
+		width = height * (rect.z - rect.x) / (rect.w - rect.y) * mix(0.8, 1.1, r.w); // the photographed blade's own proportions (~1-2cm)
 		height *= bladeLOD;
 	}
 	// thin blades disappear at a distance, fatter cards keep the coverage (whole plant cards are wide already)
@@ -208,9 +208,8 @@ void main() {
 	outPosition = pos;
 	// the same point with last frame's bend (the tip moves the most, the root not at all)
 	outPrevPosition = pos - (tipOffset - tipBefore) * (flowerHead ? 1.0 : t * t);
-	// grass blades are procedural (foliagealpha.glsl): uv across the card / along the blade instead of an atlas rect
-	bool proceduralBlade = !flowerHead && type != FOLIAGE_WHEAT;
-	outUV = proceduralBlade ? vec2(corner.x + 0.5, t) : vec2(mix(rect.x, rect.z, corner.x + 0.5), mix(rect.w, rect.y, t));
+	// every card shows its rect of the atlas (the blade, the oat plant, the flower head), root at the rect's bottom
+	outUV = vec2(mix(rect.x, rect.z, corner.x + 0.5), mix(rect.w, rect.y, t));
 	outNormal = normal;
 	outHeight = flowerHead ? 1.0 : t;
 	outKind = flowerHead ? 3 : (type == FOLIAGE_WHEAT ? 1 : 0);

@@ -1,11 +1,11 @@
 #version 450
-// rocks, boulders and logs (Props::buildMeshes), instanced from props.comp's bins
+// rocks, boulders, logs and stumps (the photoscans, Props::loadMesh), instanced from props.comp's bins
 
 #include "propscommon.glsl"
 
-layout(location = 0) in vec4 inPositionMaterial; // xyz mesh space (~unit size), w = 0 rock, 1 bark, 2 log end
-layout(location = 1) in vec4 inNormalAO;		 // xyz normal, w = ambient occlusion baked into the mesh
-layout(location = 2) in vec4 inUV;				 // xy uv (logs)
+layout(location = 0) in vec4 inPositionMaterial; // xyz mesh space (~unit size), w = the mesh (its textures)
+layout(location = 1) in vec4 inNormalAO;		 // xyz normal, w = ambient occlusion (Props::loadMesh)
+layout(location = 2) in vec4 inUV;				 // xy the scan's uv
 
 layout(std430, set = 0, binding = 0) readonly buffer Instances { PropInstance instances[]; };
 

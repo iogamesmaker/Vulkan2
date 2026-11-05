@@ -776,13 +776,8 @@ void Application::initDefaultData() {
 	m_Foliage.setTerrainCache(m_TerrainCache.getInfoBuffer(), m_TerrainCache.getAlbedoView(), m_TerrainCache.getSampler());
 	m_Trees.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Sampler,
 				 m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_Shadows.getFormat(), m_PlayerTrail.buffer());
-	// rocks get the terrain's rock texture, logs the broadleaf bark, moss is the grass
-	// and the cut ends the end grain photo (the bark stands in for it when it's missing, unused then)
-	VkImageView propTextures[PROP_TEXTURES] = { m_AlbedoMaps[BIOME_ROCK_INDEX].imageView, m_NormalMaps[BIOME_ROCK_INDEX].imageView,
-												m_LogBark[0].imageView, m_LogBark[1].imageView, m_AlbedoMaps[0].imageView,
-												m_HasEndGrain ? m_EndGrain[0].imageView : m_LogBark[0].imageView,
-												m_HasEndGrain ? m_EndGrain[1].imageView : m_LogBark[1].imageView };
-	m_Props.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, propTextures, m_HasEndGrain, m_Sampler, m_Shadows.getFormat());
+	// the props bring their own scanned textures, the moss on them is the grass
+	m_Props.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_AlbedoMaps[0].imageView, m_Sampler, m_Shadows.getFormat());
 	m_GroundCover.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Sampler, m_Shadows.getFormat());
 	m_Trees.setOcclusionSource(m_HiZ.getView(), m_HiZ.getSampler());
 	m_Precipitation.init(this, m_OutputImage.imageFormat, m_AtmosphereManager.getRenderDescriptorLayout());
@@ -912,15 +907,6 @@ void Application::loadTextures() {
 		m_CirrusNoise = m_TextureLoader.createTexture(lattice.data(), this, { size, size, 1 }, VK_FORMAT_R16_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT);
 		m_AtmosphereManager.setCirrusNoise(m_CirrusNoise.imageView, m_CloudNoiseSampler); // linear, repeating
 	}
-	m_LogBark[0] = m_TextureLoader.loadCompressed("assets\\bark_broadleaf.jpg", this, TextureKind::Albedo);
-	m_LogBark[1] = m_TextureLoader.loadCompressed("assets\\bark_broadleaf_normal.jpg", this, TextureKind::Normal);
-	// the cut ends of logs and stumps: a photographed cross section (CC0, TextureCan "Wood 0065") if it's there,
-	// props.frag's procedural rings otherwise
-	m_HasEndGrain = std::filesystem::exists(util::getpath("assets\\wood_endgrain.jpg")) && std::filesystem::exists(util::getpath("assets\\wood_endgrain_normal.jpg"));
-	if(m_HasEndGrain) {
-		m_EndGrain[0] = m_TextureLoader.loadCompressed("assets\\wood_endgrain.jpg", this, TextureKind::Albedo);
-		m_EndGrain[1] = m_TextureLoader.loadCompressed("assets\\wood_endgrain_normal.jpg", this, TextureKind::Normal);
-	}
 
 	int textureNumber = m_AlbedoMaps.size();
 	std::vector<VkDescriptorImageInfo> albedoInfo(textureNumber);
@@ -970,8 +956,6 @@ void Application::loadTextures() {
 		m_TextureLoader.destroyImage(m_CirrusNoise);
 		m_TextureLoader.destroyImage(m_FlowerAtlas);
 		m_TextureLoader.destroyImage(m_WheatAtlas);
-		for(auto& image : m_LogBark) m_TextureLoader.destroyImage(image);
-		if(m_HasEndGrain) for(auto& image : m_EndGrain) m_TextureLoader.destroyImage(image);
 	});
 }
 

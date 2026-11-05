@@ -8,6 +8,7 @@
     "vulkan-utility-libraries",
 	"fmt",
 	"fastgltf",
+	"meshoptimizer",
 	"stb",
 	{
 	  "name": "imgui",

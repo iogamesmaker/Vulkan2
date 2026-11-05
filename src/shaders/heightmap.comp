@@ -307,17 +307,29 @@ float valleyFloor(float weights[BIOME_COUNT], float baseHeight) {
 	return lowlandMix(weights, baseHeight, baseHeight, 0.0) / (1.0 - weights[BIOME_MOUNTAINS] + 1e-4);
 }
 
-// the lowlands pulled towards a few metres above the valley floor: their flat look. (it used to come out of the old
-// river code by accident: its bank cut and levees reached every texel. this is that math on its own)
+// the integral of smoothstep(0, w, t) from 0 to d (d >= 0): (u^3 - u^4 / 2) w inside the ramp, linear after it
+float smoothstepIntegral(float d, float w) {
+	float u = clamp(d / w, 0.0, 1.0);
+	return w * (u * u * u - 0.5 * u * u * u * u) + max(d - w, 0.0);
+}
+
+// the lowlands pulled towards a few metres above the valley floor: their flat look, wide flat floors the hills rise
+// out of. the height above the flat level goes through a curve whose slope runs smoothly from FLOOR_SLOPE (on the
+// floor) to 1 (from FLOOR_BAND above it): every slope is kept between those, so nothing gets steeper than it was.
+// (the old version clipped the band 0.03-0.06 above the valley down to the flat level with a steep fade: every hill
+// got a cliff at that height, rings of black scarps along the contours, and a hard threshold filling the pits added
+// steps of its own)
 float flattenLowland(float height, float weights[BIOME_COUNT], float valley) {
-	const float x = 8.0 / 2.2;
+	const float FLOOR_SLOPE = 0.2;	// how much of the relief the floors keep
+	const float FLOOR_BAND = 0.07;	// heights above the flat level the curve eases back to the full slope over
 	float lowland = 1.0 - weights[BIOME_MOUNTAINS];
-	float strength = lowland * lowland * (1.0 - weights[BIOME_DESERT] * 0.7) * (1.0 - smoothstep(0.03, 0.06, height - valley));
-	float surface = valley - 0.004;
-	float flatLevel = surface + (8.0 - 2.2) * 0.0012;
-	height = mix(height, min(height, flatLevel), strength * (1.0 - smoothstep(3.0, 5.0, x)));
-	float raise = smoothstep(1.0, 1.4, x) * (1.0 - smoothstep(3.5, 5.0, x)) * smoothstep(0.2, 0.25, strength);
-	return mix(height, max(height, max(flatLevel, surface + 0.0008)), raise);
+	float strength = lowland * lowland * (1.0 - weights[BIOME_DESERT] * 0.7);
+	float flatLevel = valley + 0.003;
+	float d = height - flatLevel;
+	// above: from the floor's slope back to the full one (high ground ends up FLOOR_BAND * 0.4 lower, the same
+	// everywhere, so its shape is untouched). below (hollows): the floor's slope, so they mostly fill in
+	float flattened = flatLevel + (d >= 0.0 ? FLOOR_SLOPE * d + (1.0 - FLOOR_SLOPE) * smoothstepIntegral(d, FLOOR_BAND) : FLOOR_SLOPE * d);
+	return mix(height, flattened, strength);
 }
 
 void main() {

@@ -23,6 +23,7 @@ find_package(glm CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 find_package(fastgltf CONFIG REQUIRED)
+find_package(meshoptimizer CONFIG REQUIRED)
 find_package(vk-bootstrap CONFIG REQUIRED)
 find_package(Stb REQUIRED)
 find_package(imgui CONFIG REQUIRED)
@@ -58,6 +59,7 @@ target_link_libraries(vkguide_shared PUBLIC
     GPUOpen::VulkanMemoryAllocator
     vk-bootstrap::vk-bootstrap
 	fastgltf::fastgltf
+	meshoptimizer::meshoptimizer # the props' LODs (props.cpp)
 )
 
 target_precompile_headers(vkguide_shared PUBLIC 
