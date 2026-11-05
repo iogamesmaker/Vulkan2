@@ -24,7 +24,6 @@ void main() {
 	if (!placeTree(heightmap, climateMap, cellIndex, pc.offsetWorld, pc.offset, pc.terrainSize, pc.density, t)) return;
 	float dist = distance(t.xz, pc.campos.xz);
 	if (dist > PLACE_RADIUS) return;
-	if (t.species == SPECIES_BUSH && dist > BUSH_RADIUS) return; // too small to see that far
 
 	// the terrain mesh's surface, then sunk by how much the ground drops across the trunk so the downhill side
 	// never floats (the slope here is in heightmap texels, 1.5 world units each)
@@ -34,7 +33,7 @@ void main() {
 	float dist3D = length(vec2(dist, groundY - pc.campos.y));
 	groundY -= meshSag(heightmap, t.uv, terrainSpacing(dist3D, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
 	float slopeWorld = sqrt(t.slope) * pc.factor / 256.0 / (pc.terrainSize / size.x) * 0.5;
-	float footprint = t.height * (t.species == SPECIES_BUSH ? 0.35 : 0.04);
+	float footprint = t.height * 0.04;
 	float y = groundY - slopeWorld * footprint - 0.01 * t.height;
 
 	uint variant = uint(t.rnd2.x * float(VARIANTS)) % VARIANTS;

@@ -22,7 +22,6 @@ layout(location = 6) flat in float inMoisture;
 layout(set = 0, binding = 1) uniform sampler2D bladeAtlas;
 layout(set = 0, binding = 2) uniform sampler2D flowerAtlas;
 layout(set = 0, binding = 3) uniform sampler2D wheatAtlas;
-layout(set = 0, binding = 4) uniform sampler2D undergrowthAtlas;
 
 layout(set = 1, binding = 0) uniform sampler2D transmittanceLUT;
 layout(set = 1, binding = 2) uniform sampler2D skyviewLUT;
@@ -50,10 +49,6 @@ void main() {
 		float ripeness = fract(sin(dot(floor(fieldXZ), vec2(12.9898, 78.233))) * 43758.5453) * 0.5 + inMoisture * 0.5;
 		vec3 gold = mix(WHEAT_GOLD, WHEAT_GOLD * vec3(0.85, 1.05, 0.8), smoothstep(0.55, 0.9, ripeness)); // a little greener where it's wetter
 		albedo = mix(photo, gold * detail, 0.85) * mix(0.88, 1.1, inSeed);
-	} else if (inKind == 4) {
-		// undergrowth: the broadleaf leaf clusters, darker and a bit varied (it lives in the shade)
-		// the oak branch photo is dark (leaf photos are), on the ground it read as near black blobs in the meadows
-		albedo = pow(texel.rgb, vec3(2.2)) * mix(vec3(1.4, 1.6, 1.15), vec3(1.8, 1.9, 1.3), inSeed);
 	} else if (inKind == 3) {
 		// mostly white daisies, some tinted petals for a bit of colour in the meadow
 		vec3 tint = inSeed < 0.6 ? vec3(1.0) : (inSeed < 0.75 ? vec3(1.0, 0.85, 0.35) : (inSeed < 0.9 ? vec3(0.75, 0.55, 1.0) : vec3(1.0, 0.55, 0.6)));

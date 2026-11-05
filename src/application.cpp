@@ -153,7 +153,7 @@ void Application::initVulkan() {
 	features10.tessellationShader = VK_TRUE;
 	features10.multiDrawIndirect = VK_TRUE; // the ground cover draws all its meshes with one indirect call
 	features10.textureCompressionBC = VK_TRUE; // block compressed textures, see TextureLoader::loadCompressed
-	features10.shaderStorageImageExtendedFormats = VK_TRUE; // rg16f storage image for the path map
+	features10.shaderStorageImageExtendedFormats = VK_TRUE; // rg16f storage image for the sky visibility (horizon AO + canopy) map
 	features10.samplerAnisotropy = VK_TRUE; // the material sampler (see initSamplers): grazing ground otherwise smears into streaks
 	
 	
@@ -529,7 +529,7 @@ CompiledShader Application::loadShader(std::string path, VkShaderStageFlagBits s
 }
 
 void Application::initTessellationPipeline() {
-	const uint32_t MAX_TEXTURES = 6; // one material per biome, see biometools.glsl / terrain.frag
+	const uint32_t MAX_TEXTURES = TERRAIN_MATERIALS; // one per biome + the rock strata, see loadTextures / terrainmaterial.glsl
 	
 	CompiledShader   vertexShader = loadShader("src/shaders/bin/terrain.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
 	CompiledShader fragmentShader = loadShader("src/shaders/bin/terrain.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -811,7 +811,7 @@ void Application::initDefaultData() {
 	parseShots();
 
 	m_PlayerTrail.init(this);
-	m_Foliage.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Shadows.getFormat(), m_BladeAtlas, m_FlowerAtlas, m_WheatAtlas, m_TreeTextures[3], m_Sampler,
+	m_Foliage.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Shadows.getFormat(), m_BladeAtlas, m_FlowerAtlas, m_WheatAtlas, m_Sampler,
 				   m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_PlayerTrail.buffer());
 	m_Trees.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_TreeTextures, m_Sampler,
 				 m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_Shadows.getFormat(), m_PlayerTrail.buffer());
@@ -915,7 +915,13 @@ void Application::loadTextures() {
 		"sand",	 // BIOME_DESERT
 		"taiga", // BIOME_TAIGA
 		"snow",	 // BIOME_SNOW + snow caps
+		// the cliffs' rock layers (terrainmaterial.glsl rockStrata, TERRAIN_STRATA_FIRST), Poly Haven (CC0):
+		// rock_06, dark_rock_02, rock_boulder_cracked
+		"rock_layer_buff",
+		"rock_layer_dark",
+		"rock_layer_rust",
 	};
+	static_assert(std::size(materials) == TERRAIN_MATERIALS);
 	for(const char* name : materials) {
 		std::string base = std::string("assets\\") + name;
 		m_AlbedoMaps.push_back(m_TextureLoader.loadCompressed(base + ".jpg", this, TextureKind::Albedo));

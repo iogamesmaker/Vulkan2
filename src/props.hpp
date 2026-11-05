@@ -26,7 +26,7 @@ public:
 	bool m_Enabled = true;
 
 private:
-	// init's writes of the heightmap + path map into the sets that sample them
+	// init's writes of the heightmap + climate map into the sets that sample them
 	void setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler);
 	struct Vertex {
 		glm::vec4 positionMaterial; // xyz, w = 0 rock, 1 bark, 2 log end

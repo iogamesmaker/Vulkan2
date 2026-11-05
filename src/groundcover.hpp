@@ -33,10 +33,9 @@ private:
 	struct Species { glm::uvec4 meshes; glm::vec4 size; }; // groundcovercommon.glsl
 
 	// must match groundcovercommon.glsl
-	static constexpr uint32_t SPECIES = 9, MAX_MESHES = 64, BINS = MAX_MESHES * 2, CAPACITY = 4096;
-	static constexpr float CELL_BIG = 0.15f, RADIUS_BIG = 14.0f, CELL_SMALL = 0.05f, RADIUS_SMALL = 3.5f;
-	static constexpr uint32_t SIDE_BIG = static_cast<uint32_t>(2.0f * RADIUS_BIG / CELL_BIG);
-	static constexpr uint32_t SIDE_SMALL = static_cast<uint32_t>(2.0f * RADIUS_SMALL / CELL_SMALL);
+	static constexpr uint32_t SPECIES = 14, MAX_MESHES = 96, BINS = MAX_MESHES * 2, CAPACITY = 4096;
+	static constexpr uint32_t SIDE[3] = { 140, 133, 166 }; // the small / medium / far grids, 2 * radius / cell
+	static constexpr uint32_t THREADS = SIDE[0] * SIDE[0] + SIDE[1] * SIDE[1] + SIDE[2] * SIDE[2];
 
 	VkDevice m_Device;
 	VmaAllocator m_Allocator;

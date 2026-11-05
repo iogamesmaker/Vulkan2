@@ -5,7 +5,7 @@
 #define FOLIAGE_GRASS	0
 #define FOLIAGE_WHEAT	1
 #define FOLIAGE_FLOWERS 2 // a few grass blades as stems with daisies on top
-#define FOLIAGE_UNDERGROWTH 3 // low ferny bushes on forest floors: leaf cluster cards in a star
+// (3 was the undergrowth, leaf cards on forest floors: the ground cover has real ferns and bushes now)
 
 #define BLADES_PER_CLUMP 10 // BLADE_SEGMENTS quads each, the draw is BLADES_PER_CLUMP * BLADE_SEGMENTS * 6 vertices per instance
 #define BLADE_SEGMENTS 3   // the near ring's grass blades bend through these, everything else is one card (the rest clipped)

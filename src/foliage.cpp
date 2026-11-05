@@ -4,7 +4,7 @@
 
 void Foliage::init(Application* engine, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler, VkFormat shadowFormat,
 				   const AllocatedImage& bladeAtlas, const AllocatedImage& flowerAtlas, const AllocatedImage& wheatAtlas,
-				   const AllocatedImage& undergrowthAtlas, VkSampler atlasSampler,
+				   VkSampler atlasSampler,
 				   VkDescriptorSetLayout atmosphereLayout, VkDescriptorSetLayout shadowLayout, VkBuffer interactionBuffer) {
 	m_Device = engine->m_Device;
 	m_Allocator = engine->getAllocator();
@@ -30,7 +30,6 @@ void Foliage::init(Application* engine, const AllocatedImage& heightmap, const A
 	renderBuilder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // blade atlas
 	renderBuilder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // flower atlas
 	renderBuilder.add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // wheat (oat) atlas
-	renderBuilder.add_binding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // undergrowth (the broadleaf leaf cluster card)
 	renderBuilder.add_binding(5, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);		 // the player's trail (interaction.glsl)
 	m_RenderLayout = renderBuilder.build(m_Device, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 	m_RenderSet = engine->g_DescriptorAllocator.allocate(m_Device, m_RenderLayout);
@@ -38,13 +37,12 @@ void Foliage::init(Application* engine, const AllocatedImage& heightmap, const A
 	VkDescriptorImageInfo atlasInfo{ atlasSampler, bladeAtlas.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	VkDescriptorImageInfo flowerInfo{ atlasSampler, flowerAtlas.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	VkDescriptorImageInfo wheatInfo{ atlasSampler, wheatAtlas.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-	VkDescriptorImageInfo undergrowthInfo{ atlasSampler, undergrowthAtlas.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	VkDescriptorBufferInfo instanceInfo{ m_Instances.buffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo indirectInfo{ m_Indirect.buffer, 0, VK_WHOLE_SIZE };
 
 	VkDescriptorBufferInfo interactionInfo{ interactionBuffer, 0, VK_WHOLE_SIZE };
 
-	VkWriteDescriptorSet writes[8] = {};
+	VkWriteDescriptorSet writes[7] = {};
 	for(auto& write : writes) {
 		write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		write.descriptorCount = 1;
@@ -55,9 +53,8 @@ void Foliage::init(Application* engine, const AllocatedImage& heightmap, const A
 	writes[3].dstSet = m_RenderSet;	 writes[3].dstBinding = 1; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[3].pImageInfo = &atlasInfo;
 	writes[4].dstSet = m_RenderSet;	 writes[4].dstBinding = 2; writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[4].pImageInfo = &flowerInfo;
 	writes[5].dstSet = m_RenderSet;	 writes[5].dstBinding = 3; writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[5].pImageInfo = &wheatInfo;
-	writes[6].dstSet = m_RenderSet;	 writes[6].dstBinding = 4; writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[6].pImageInfo = &undergrowthInfo;
-	writes[7].dstSet = m_RenderSet;	 writes[7].dstBinding = 5; writes[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[7].pBufferInfo = &interactionInfo;
-	vkUpdateDescriptorSets(m_Device, 8, writes, 0, nullptr);
+	writes[6].dstSet = m_RenderSet;	 writes[6].dstBinding = 5; writes[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[6].pBufferInfo = &interactionInfo;
+	vkUpdateDescriptorSets(m_Device, 7, writes, 0, nullptr);
 	setHeightmap(heightmap, climateMap, heightmapSampler); // compute set bindings 0 and 3
 
 	// scatter pipeline
@@ -170,25 +167,12 @@ void Foliage::destroy() {
 	vmaDestroyBuffer(m_Allocator, m_Indirect.buffer, m_Indirect.allocation);
 }
 
-static void memoryBarrier(VkCommandBuffer cmd, VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
-	VkMemoryBarrier2 barrier{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-	barrier.srcStageMask = srcStage;
-	barrier.srcAccessMask = srcAccess;
-	barrier.dstStageMask = dstStage;
-	barrier.dstAccessMask = dstAccess;
-
-	VkDependencyInfo dependency{ .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-	dependency.memoryBarrierCount = 1;
-	dependency.pMemoryBarriers = &barrier;
-	vkCmdPipelineBarrier2(cmd, &dependency);
-}
-
 void Foliage::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 	m_PushConstants = pc;
 	if(!m_Enabled) return;
 
 	// the previous frame might still be drawing from these buffers
-	memoryBarrier(cmd, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
 				  VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
 	// (outer rings, shadow casters, near ring: see foliagecommon.glsl for the instance ranges)
@@ -196,7 +180,7 @@ void Foliage::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 									   { SEGMENTED_VERTICES_PER_INSTANCE, 0, 0, MAX_INSTANCES + MAX_SHADOW_INSTANCES } };
 	vkCmdUpdateBuffer(cmd, m_Indirect.buffer, 0, sizeof(reset), reset);
 
-	memoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
 				  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Scatter.pipeline);
@@ -209,7 +193,7 @@ void Foliage::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 	if(m_Rings > 3) cells += RING_SIDE_WHEAT * RING_SIDE_WHEAT;
 	vkCmdDispatch(cmd, (cells + 63) / 64, 1, 1);
 
-	memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 				  VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 }
 

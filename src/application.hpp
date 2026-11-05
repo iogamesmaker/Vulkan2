@@ -109,6 +109,7 @@ constexpr unsigned int FRAME_OVERLAP = 2;
 constexpr float TERRAIN_HEIGHT_SCALE = 0.12f;
 
 constexpr int BIOME_ROCK_INDEX = 2; // BIOME_MOUNTAINS, the rock material (biometools.glsl / loadTextures)
+constexpr uint32_t TERRAIN_MATERIALS = 9; // 6 biomes + 3 rock strata (terrainmaterial.glsl TERRAIN_STRATA_FIRST)
 
 class Application {
 public:
@@ -352,7 +353,7 @@ private:
 	void dispatchHorizonAO(VkCommandBuffer cmd, glm::ivec2 heightmapStart, glm::ivec2 heightmapSize);
 	void initHorizonAO();
 	void updateHeightmap(); // the strips the camera moved into
-	void createHeightmapImages(); // heightmap, path map and sky visibility
+	void createHeightmapImages(); // heightmap, climate map and sky visibility
 	void destroyHeightmapImages();
 	void regenerateHeightmap(); // the whole map in strips, a few submits (a 6144 map in one took seconds)
 
@@ -378,7 +379,7 @@ private:
 	static constexpr uint32_t GPU_TIMESTAMPS = 18;
 	static constexpr const char* GPU_PASS_NAMES[GPU_TIMESTAMPS - 1] = {
 		"atmosphere LUTs", "foliage, trees, terrain cache", "shadow maps",
-		"terrain", "tree depth prepass", "trees", "tree impostors", "grass, rocks, logs", "sky", "volumetric fog", "SSAO", "volumetric clouds",
+		"terrain", "tree depth prepass", "trees", "tree impostors", "grass, ground cover, rocks", "sky", "volumetric fog", "SSAO", "volumetric clouds",
 		"deferred lighting", "shadow filter", "TAA / upscale", "bloom + post", "blit + ui"
 	};
 	static constexpr uint32_t GPU_OPAQUE_FIRST = 3, GPU_OPAQUE_LAST = 13; // intervals that make up the opaque pass

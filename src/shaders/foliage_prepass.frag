@@ -14,7 +14,6 @@ layout(location = 6) flat in float inMoisture;
 layout(set = 0, binding = 1) uniform sampler2D bladeAtlas;
 layout(set = 0, binding = 2) uniform sampler2D flowerAtlas;
 layout(set = 0, binding = 3) uniform sampler2D wheatAtlas;
-layout(set = 0, binding = 4) uniform sampler2D undergrowthAtlas;
 
 #include "foliagealpha.glsl"
 

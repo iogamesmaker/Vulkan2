@@ -17,7 +17,7 @@ namespace {
 		std::mt19937 rng;
 		// the leaf atlases hold two branch photos side by side (tools/make_leaf_atlas.py): 0 = left, 1 = right
 		int leafTile = 0;
-		// the tree type's colouring (treecommon.glsl, treeTint): 1 spruce, 2 pine, 3 oak, 4 autumn bush, 5 birch, 6 bush
+		// the tree type's colouring (treecommon.glsl, treeTint): 1 spruce, 2 pine, 3 oak, 5 birch
 		float tint = 0.0f;
 		// how much of the sky a bark vertex sees through the crown around it (1 = open), set by each species: the
 		// trunk and the branches inside a crown are as hidden as the leaves at its core, not lit like a bare pole
@@ -231,25 +231,6 @@ namespace {
 				leafCard(centre, random(0.16f, 0.22f) * (lod ? 1.4f : 1.0f), 0.8f);
 			}
 		}
-
-		// no trunk, a squashed ball of leaf clusters sitting on the ground
-		void bush(bool lod) {
-			glm::vec3 center(0.0f, 0.42f, 0.0f);
-			glm::vec3 radii(0.5f * random(0.8f, 1.2f), 0.42f, 0.5f * random(0.8f, 1.2f));
-			int clusters = lod ? 10 : 28;
-			for(int i = 0; i < clusters; i++) {
-				glm::vec3 dir = randomDirection();
-				if(dir.y < -0.3f) dir.y = -dir.y; // nothing underground
-				float r = std::sqrt(random(0.35f, 1.0f));
-				glm::vec3 c = center + dir * radii * r;
-				// the branch photo grows outwards from the middle of the bush
-				glm::vec3 grow = glm::normalize(dir + glm::vec3(0.0f, 0.4f, 0.0f) + randomDirection() * 0.3f);
-				glm::vec3 right = glm::normalize(glm::cross(grow, randomDirection()));
-				float size = random(0.32f, 0.42f) * (lod ? 1.45f : 1.0f);
-				float ao = glm::mix(0.4f, 1.0f, c.y / 0.85f);
-				cluster(c, right * size, grow * size, dir, LeavesBroadleaf, 0.4f + 0.4f * r, ao);
-			}
-		}
 	};
 }
 
@@ -259,7 +240,7 @@ void Trees::buildMeshes(std::vector<TreeVertex>& vertices, std::vector<uint32_t>
 			for(uint32_t lod = 0; lod < 2; lod++) {
 				// same seed for both LODs so they're the same tree
 				// the third variant of each species is a different tree: pines among the spruces, birches among the
-				// broadleaves, an autumn coloured bush
+				// broadleaves
 				MeshBuilder builder{ vertices, indices, std::mt19937(1234 + species * 97 + variant * 13) };
 				uint32_t first = static_cast<uint32_t>(indices.size());
 				bool other = variant == VARIANTS - 1;
@@ -267,13 +248,9 @@ void Trees::buildMeshes(std::vector<TreeVertex>& vertices, std::vector<uint32_t>
 					builder.tint = other ? 2.0f : 1.0f;
 					if(other) builder.pine(lod == 1);
 					else builder.conifer(lod == 1);
-				} else if(species == 1) {
+				} else {
 					builder.tint = other ? 5.0f : 3.0f;
 					builder.broadleaf(lod == 1, other);
-				} else {
-					builder.tint = other ? 4.0f : 6.0f;
-					builder.leafTile = other ? 1 : 0;
-					builder.bush(lod == 1);
 				}
 				m_Meshes[species * VARIANTS + variant][lod] = { first, static_cast<uint32_t>(indices.size()) - first };
 			}
@@ -282,10 +259,10 @@ void Trees::buildMeshes(std::vector<TreeVertex>& vertices, std::vector<uint32_t>
 }
 
 uint32_t Trees::binOffset(uint32_t bin) {
-	if(bin < 9) return bin * CAPACITY_LOD0;
-	if(bin < 18) return 9 * CAPACITY_LOD0 + (bin - 9) * CAPACITY_LOD1;
-	if(bin < 27) return 9 * (CAPACITY_LOD0 + CAPACITY_LOD1) + (bin - 18) * CAPACITY_SHADOW;
-	return 9 * (CAPACITY_LOD0 + CAPACITY_LOD1 + CAPACITY_SHADOW); // bin 27: the impostor pool, shared by all meshes
+	if(bin < MESHES) return bin * CAPACITY_LOD0;
+	if(bin < 2 * MESHES) return MESHES * CAPACITY_LOD0 + (bin - MESHES) * CAPACITY_LOD1;
+	if(bin < 3 * MESHES) return MESHES * (CAPACITY_LOD0 + CAPACITY_LOD1) + (bin - 2 * MESHES) * CAPACITY_SHADOW;
+	return MESHES * (CAPACITY_LOD0 + CAPACITY_LOD1 + CAPACITY_SHADOW); // after those: the impostor pool, shared by all meshes
 }
 
 // ------------------------------------------------------------------ vulkan
@@ -375,10 +352,10 @@ void Trees::init(Application* engine, const AllocatedImage& heightmap, const All
 	m_CommandTemplate.resize(BINS);
 	for(uint32_t bin = 0; bin < BINS; bin++) {
 		uint32_t mesh = bin % MESHES;
-		uint32_t lod = bin < 9 ? 0 : 1; // shadow casters use LOD1
+		uint32_t lod = bin < MESHES ? 0 : 1; // shadow casters use LOD1
 		m_CommandTemplate[bin] = { m_Meshes[mesh][lod].indexCount, 0, m_Meshes[mesh][lod].firstIndex, 0, binOffset(bin) };
 	}
-	m_ImpostorTemplate = { { 6, 0, 0, binOffset(27) } }; // one draw, every mesh's impostors
+	m_ImpostorTemplate = { { 6, 0, 0, binOffset(3 * MESHES) } }; // one draw, every mesh's impostors
 
 	// descriptor sets
 	const VkDescriptorType SAMPLER = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, SSBO = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -641,18 +618,6 @@ void Trees::destroy() {
 	}
 }
 
-static void treeBarrier(VkCommandBuffer cmd, VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
-	VkMemoryBarrier2 barrier{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-	barrier.srcStageMask = srcStage;
-	barrier.srcAccessMask = srcAccess;
-	barrier.dstStageMask = dstStage;
-	barrier.dstAccessMask = dstAccess;
-	VkDependencyInfo dependency{ .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-	dependency.memoryBarrierCount = 1;
-	dependency.pMemoryBarriers = &barrier;
-	vkCmdPipelineBarrier2(cmd, &dependency);
-}
-
 void Trees::setOcclusionSource(VkImageView pyramid, VkSampler sampler) {
 	VkDescriptorImageInfo info{ sampler, pyramid, VK_IMAGE_LAYOUT_GENERAL };
 	writeSet(m_Device, m_ComputeSet, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &info, nullptr);
@@ -668,7 +633,7 @@ void Trees::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 	const VkAccessFlags2 computeAccess = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
 
 	// last frame may still be drawing from these
-	treeBarrier(cmd, drawStages | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, drawReads | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+	vkutil::memoryBarrier(cmd, drawStages | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, drawReads | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
 				VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | computeAccess);
 
 	// re-place once the camera moved far enough (placement covers a much bigger area than what's needed)
@@ -685,14 +650,14 @@ void Trees::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 	vkCmdUpdateBuffer(cmd, m_Commands.buffer, 0, m_CommandTemplate.size() * sizeof(VkDrawIndexedIndirectCommand), m_CommandTemplate.data());
 	vkCmdUpdateBuffer(cmd, m_ImpostorCommands.buffer, 0, m_ImpostorTemplate.size() * sizeof(VkDrawIndirectCommand), m_ImpostorTemplate.data());
 	vkCmdUpdateBuffer(cmd, m_OcclusionBuffer.buffer, 0, sizeof(OcclusionData), &m_Occlusion);
-treeBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | drawStages, computeAccess | drawReads);
+vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | drawStages, computeAccess | drawReads);
 
 	if(replace) {
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Place.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Place.layout, 0, 1, &m_PlaceSet, 0, nullptr);
 		vkCmdPushConstants(cmd, m_Place.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
 		vkCmdDispatch(cmd, (PLACE_GRID_SIDE * PLACE_GRID_SIDE + 63) / 64, 1, 1);
-		treeBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+		vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 	}
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Scatter.pipeline);
@@ -700,7 +665,7 @@ treeBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BI
 	vkCmdPushConstants(cmd, m_Scatter.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
 	vkCmdDispatch(cmd, (MAX_PLACED + 63) / 64, 1, 1); // threads past the placed count exit straight away
 
-	treeBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, drawStages, drawReads);
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, drawStages, drawReads);
 }
 
 void Trees::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet, const std::function<void()>& split) {
@@ -716,7 +681,7 @@ void Trees::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescripto
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PrepassPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
-	for(uint32_t bin = 0; bin < 18; bin++)
+	for(uint32_t bin = 0; bin < 2 * MESHES; bin++)
 		vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, bin * sizeof(VkDrawIndexedIndirectCommand), 1, sizeof(VkDrawIndexedIndirectCommand));
 	if(split) split();
 
@@ -727,7 +692,7 @@ void Trees::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescripto
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &offset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-	for(uint32_t bin = 0; bin < 18; bin++)
+	for(uint32_t bin = 0; bin < 2 * MESHES; bin++)
 		vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, bin * sizeof(VkDrawIndexedIndirectCommand), 1, sizeof(VkDrawIndexedIndirectCommand));
 	if(split) split();
 
@@ -749,7 +714,7 @@ void Trees::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &offset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-	for(uint32_t bin = 18; bin < BINS; bin++)
+	for(uint32_t bin = 2 * MESHES; bin < BINS; bin++)
 		vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, bin * sizeof(VkDrawIndexedIndirectCommand), 1, sizeof(VkDrawIndexedIndirectCommand));
 }
 

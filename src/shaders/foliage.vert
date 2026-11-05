@@ -97,43 +97,6 @@ void main() {
 		return;
 	}
 
-	// undergrowth: leaf cluster cards in a star around the clump, leaning outwards (a low fern / bush)
-	if (type == FOLIAGE_UNDERGROWTH) {
-		vec4 u = hash42(vec2(seed, float(blade) * 3.71));
-		float spoke = float(blade) / float(BLADES_PER_CLUMP) * 6.2831853 + seed;
-		vec3 outward = vec3(cos(spoke), 0.0, sin(spoke));
-		vec3 side = vec3(-outward.z, 0.0, outward.x);
-		float h = 0.13 * (0.6 + 0.8 * u.x) * size * (ring > 0.5 ? 1.3 : 1.0); // ~0.5-1.2m
-		vec3 up = normalize(vec3(0.0, 1.0, 0.0) + outward * mix(0.5, 1.2, u.y)); // leans out
-		// a little sway in the wind
-		vec2 windDir = normalize(vec2(0.8, 0.35));
-		float swayPhase = dot(inst.posScale.xz + pc.offsetWorld, windDir) * 2.0 + u.z * 6.0;
-		float sway = sin(pc.time * 1.1 + swayPhase) * 0.06;
-		float swayBefore = sin(pc.sundir.x * 1.1 + swayPhase) * 0.06; // last frame
-		vec3 upRest = up;
-		up = normalize(upRest + vec3(windDir.x, 0.0, windDir.y) * sway * corner.y);
-		vec3 upBefore = normalize(upRest + vec3(windDir.x, 0.0, windDir.y) * swayBefore * corner.y);
-		vec3 base = inst.posScale.xyz + outward * h * 0.1 * u.w;
-		// walking through the bush parts the fronds (they swing back after you), the tips the most
-		vec4 touch = interactionPush(inst.posScale.xyz, 0.2 + h * 0.5, 0.3);
-		vec3 parted = (vec3(touch.x, 0.0, touch.z) * 1.1 - vec3(0.0, 0.45 * touch.y, 0.0)) * h * corner.y;
-		parted += vec3(sin(pc.time * 13.0 + u.z * 30.0), 0.0, cos(pc.time * 11.0 + u.w * 30.0)) * 0.08 * h * touch.w * corner.y; // shaking
-		vec3 pos = base + side * corner.x * h * 0.9 + up * corner.y * h + parted;
-		outPosition = pos;
-		outPrevPosition = base + side * corner.x * h * 0.9 + upBefore * corner.y * h + parted;
-		outUV = vec2((corner.x + 0.5) * 0.5, 1.0 - corner.y); // the left (green oak) tile of the broadleaf atlas
-		// the side of the card facing up. (this used to take the sign of dot(cross(side, up), up), which is always
-		// ~0: the normal flipped at random as the leaves swayed and whole cards blinked between two brightnesses)
-		vec3 cardNormal = cross(side, up);
-		if (cardNormal.y < 0.0) cardNormal = -cardNormal;
-		outNormal = normalize(cardNormal + vec3(0.0, 0.6, 0.0));
-		outHeight = mix(0.3, 1.0, corner.y);
-		outKind = 4;
-		outSeed = u.z;
-		outMoisture = inst.params.w;
-		gl_Position = pc.viewproj * vec4(pos, 1.0);
-		return;
-	}
 	int stalk = flowerHead ? blade - 3 : blade;
 	vec4 r = hash42(vec2(seed, float(stalk) * 7.31));
 

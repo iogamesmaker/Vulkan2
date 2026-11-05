@@ -31,7 +31,7 @@ public:
 	// the blade atlas is owned (loaded / destroyed) by the application
 	void init(Application* engine, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler, VkFormat shadowFormat,
 			  const AllocatedImage& bladeAtlas, const AllocatedImage& flowerAtlas, const AllocatedImage& wheatAtlas,
-			  const AllocatedImage& undergrowthAtlas, VkSampler atlasSampler,
+			  VkSampler atlasSampler,
 			  VkDescriptorSetLayout atmosphereLayout, VkDescriptorSetLayout shadowLayout, VkBuffer interactionBuffer);
 	void destroy();
 
@@ -48,7 +48,7 @@ public:
 	uint32_t m_Rings = 4;	   // how far the grass reaches: 1 near (~27m), 2 + mid (~110m), 3 + far (~215m), 4 + wheat fields (~420m)
 	bool m_CastShadows = true;
 private:
-	// init's writes of the heightmap + path map into the sets that sample them
+	// init's writes of the heightmap + climate map into the sets that sample them
 	void setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler);
 	VkDevice m_Device;
 	VmaAllocator m_Allocator;

@@ -40,7 +40,7 @@ void main() {
 	float elevation = clamp(asin(clamp(toCamera.y, -1.0, 1.0)) / ELEVATION_STEP, 0.0, ELEVATIONS - 1.0);
 	float row0 = min(floor(elevation), ELEVATIONS - 2.0);
 	vec2 local = vec2(corner.x + 0.5, 0.5 - corner.y);
-	vec2 atlas = vec2(9.0, ELEVATIONS);
+	vec2 atlas = vec2(float(TREE_MESHES), ELEVATIONS); // one column per tree mesh
 	outUV = (vec2(mesh, row0) + local) / atlas;
 	outUV2 = (vec2(mesh, row0 + 1.0) + local) / atlas;
 	outBlend = elevation - row0;
