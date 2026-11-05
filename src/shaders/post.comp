@@ -13,7 +13,7 @@ layout(push_constant) uniform constants { // PostPushConstants (atmosphere.hpp),
 	float exposure;		 // compensation (2^EV) on top of the automatic exposure
 	float deltaTime;	 // exposure.comp's
 	float bloomStrength; // the mix of the bloom chain, energy conserving
-	float freeze;		 // exposure.comp's
+	float pad;
 } pc;
 
 // ACES fitted to the RRT + ODT (Stephen Hill, BakingLab). unlike the single curve approximation it works in the

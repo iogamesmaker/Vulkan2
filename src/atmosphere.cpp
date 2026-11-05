@@ -181,7 +181,6 @@ void Atmosphere::init(VkDevice device, VmaAllocator allocator, Application* engi
 	skybuilder.add_binding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // cirrus noise lattice (setCirrusNoise)
 	skybuilder.add_binding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // integrated volumetric fog (setVolumetricFog)
 	skybuilder.add_binding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // read aerial sun (lighting.comp shadows it)
-	skybuilder.add_binding(9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // TEMPORARY: the comparison fog (setVolumetricFogCompare)
 	m_SkyDescriptorLayout = skybuilder.build(m_Device, VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT); // compute: lighting.comp
 
 	m_SkyDescriptor = engine->g_DescriptorAllocator.allocate(m_Device, m_SkyDescriptorLayout);
@@ -587,17 +586,6 @@ void Atmosphere::setVolumetricFog(VkImageView view, VkSampler sampler) {
 	vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
 }
 
-void Atmosphere::setVolumetricFogCompare(VkImageView view, VkSampler sampler) {
-	VkDescriptorImageInfo info{ sampler, view, VK_IMAGE_LAYOUT_GENERAL };
-	VkWriteDescriptorSet write{ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-	write.dstSet = m_SkyDescriptor;
-	write.dstBinding = 9;
-	write.descriptorCount = 1;
-	write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	write.pImageInfo = &info;
-	vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
-}
-
 void Atmosphere::setCirrusNoise(VkImageView view, VkSampler sampler) {
 	VkDescriptorImageInfo info{ sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
 	VkWriteDescriptorSet write{ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
@@ -642,11 +630,7 @@ void Atmosphere::update(VkCommandBuffer cmd, const glm::mat4& view, const glm::m
 	// post: the exposure itself is automatic (exposure.comp), this is the compensation on top
 	m_PostPushConstants.exposure = std::exp2(m_ExposureEV);
 	m_PostPushConstants.deltaTime = m_Deltatime;
-	// TEMPORARY fog slices comparison: the difference image goes through the tonemapping only (no bloom, the exposure
-	// stays what the normal frame had)
-	bool compare = m_AtmosphereData.fogCompare.x > 0.5f;
-	m_PostPushConstants.bloomStrength = compare ? 0.0f : m_BloomStrength;
-	m_PostPushConstants.freeze = compare ? 1.0f : 0.0f;
+	m_PostPushConstants.bloomStrength = m_BloomStrength;
 
 	// sky view
 	vkutil::transition_image(cmd, skyview.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);

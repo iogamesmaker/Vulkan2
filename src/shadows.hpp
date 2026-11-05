@@ -170,7 +170,6 @@ public:
 	VkExtent3D getTempExtent() const { return m_Temp.imageExtent; }
 
 	int m_Radius = 3; // pixels, 0 = no blur
-	bool m_AbsoluteResult = false; // TEMPORARY: the frame is the fog slices comparison's signed difference
 private:
 	void destroyTargets();
 

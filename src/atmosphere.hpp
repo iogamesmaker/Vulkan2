@@ -60,9 +60,8 @@ struct AtmosphereUBO {
 	// the weather (weather.cpp), every frame
 	glm::vec4 weather{ 0.0f };	// x = overcast, y = wetness, z = lightning flash, w = snow cover
 	glm::vec4 weather2{ 0.0f }; // x = rain, y = snowfall, z = sand, w = wind (0 calm .. 1 storm)
-	glm::vec4 fogCompare{ 0.0f }; // TEMPORARY: x = 1 lighting.comp shows only the difference between the two fog volumes
 };
-static_assert(sizeof(AtmosphereUBO) == 240, "AtmosphereUBO doesn't match the std140 layout");
+static_assert(sizeof(AtmosphereUBO) == 224, "AtmosphereUBO doesn't match the std140 layout");
 
 // per frame data for the sky view / aerial LUTs and the sky shader
 struct AtmospherePushConstants {
@@ -83,7 +82,7 @@ struct PostPushConstants {
 	float exposure;		 // compensation (2^EV) on top of the automatic exposure
 	float deltaTime;	 // seconds since the last frame (the exposure adapts over time)
 	float bloomStrength; // the mix of the bloom chain
-	float freeze = 0.0f; // TEMPORARY: exposure.comp keeps the exposure (the fog slices comparison)
+	float pad;
 };
 static_assert(sizeof(PostPushConstants) <= 128, "push constants are only guaranteed to have 128 bytes");
 
@@ -117,7 +116,6 @@ public:
 	void setMoonTexture(VkImageView view, VkSampler sampler); // equirectangular colour map, owned by the application
 	void setCirrusNoise(VkImageView view, VkSampler sampler); // the cirrus' noise lattice (linear, repeating), owned by the application
 	void setVolumetricFog(VkImageView view, VkSampler sampler); // the integrated froxel fog (GENERAL), owned by the application
-	void setVolumetricFogCompare(VkImageView view, VkSampler sampler); // TEMPORARY: the comparison fog (binding 9)
 	void setWeather(const WeatherState& weather); // every frame (weather.hpp)
 	// tells the fog where the terrain ends
 	void setTerrainSize(float worldSize, float renderDistance, float textureRepeatNear, float textureRepeatFar);

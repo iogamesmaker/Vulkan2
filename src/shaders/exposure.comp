@@ -17,7 +17,7 @@ layout(push_constant) uniform constants { // PostPushConstants (atmosphere.hpp),
 	float compensation;	 // exposure compensation (2^EV), applied in post.comp, unused here
 	float deltaTime;	 // seconds since the last frame
 	float bloomStrength; // post.comp's
-	float freeze;		 // TEMPORARY: 1 = keep the exposure (the fog slices comparison's difference image is on screen)
+	float pad;
 } pc;
 
 // the luminance range the metering may adapt over. below MIN the image just gets darker (nights stay night),
@@ -36,7 +36,6 @@ shared float sumLog[256];
 shared float sumWeight[256];
 
 void main() {
-	if (pc.freeze > 0.5) return; // (uniform: the whole dispatch)
 	ivec2 size = imageSize(image);
 	uint index = gl_LocalInvocationIndex;
 

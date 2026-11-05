@@ -331,7 +331,6 @@ struct ShadowFilterPushConstants {
 	glm::ivec2 size;
 	int pass;
 	int radius;
-	int absolute;
 };
 
 void ShadowFilter::init(Application* engine) {
@@ -424,7 +423,7 @@ void ShadowFilter::resolve(VkCommandBuffer cmd, VkExtent2D extent, VkImage drawI
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Pipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout, 0, 1, &m_Set, 0, nullptr);
-	ShadowFilterPushConstants pc{ glm::ivec2(extent.width, extent.height), 0, std::max(m_Radius, 0), m_AbsoluteResult ? 1 : 0 };
+	ShadowFilterPushConstants pc{ glm::ivec2(extent.width, extent.height), 0, std::max(m_Radius, 0) };
 	uint32_t groupsX = (extent.width + 7) / 8, groupsY = (extent.height + 7) / 8;
 	vkCmdPushConstants(cmd, m_PipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 	vkCmdDispatch(cmd, groupsX, groupsY, 1);
