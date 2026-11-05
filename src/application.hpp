@@ -255,10 +255,8 @@ private:
 	bool m_BounceLight = true;
 	// full instead of half resolution (Ultra): the images are recreated with the swapchain when these change
 	bool m_FullResSSAO = false, m_FullResClouds = false;
-	bool m_FullResSkyVisibility = false; // the horizon AO at the heightmap's resolution (else half)
 	float m_BounceStrength = 1.0f;
 	bool m_DenoiseEffects = true;
-	void recreateSkyVisibility(); // after m_FullResSkyVisibility changed: new image, descriptors, a full re-bake
 	// SSAO (ssao.comp), half resolution, recreated with the swapchain
 	AllocatedImage m_SSAOImage;
 	// volumetric cumulus (clouds.comp), half resolution like the SSAO, plus their noise lookup table (cloudnoise.comp)

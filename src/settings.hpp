@@ -45,7 +45,6 @@ struct GraphicsSettings {
 	bool bounceLight = true;
 	float bounceStrength = 1.0f; // the far field bounce (sunlit ground lighting what faces down / sideways)
 	bool denoiseEffects = true; // the SSAO filtered (depth aware 3x3) as the lighting reads them
-	bool fullResSkyVisibility = false; // the heightmap's horizon AO at the heightmap's resolution instead of half
 	// full instead of half resolution: sharper AO in grass / under trees, no halo around thin things. each roughly
 	// 4x its half resolution cost (the clouds are the expensive one, ~1-3ms more at 1080p on an RTX 4060)
 	bool fullResSSAO = false;
@@ -63,14 +62,10 @@ struct GraphicsSettings {
 	float fogDensity = 1.0f;  // everything
 	float valleyMist = 1.0f;  // the ground mist on top of the haze
 	// TEMPORARY fog playground (the "Volumetric fog playground" section): the volfog_inject.comp constants
-	int fogCustomWidth = 320, fogCustomSlices = 128;
+	int fogCustomWidth = 320, fogCustomSlices = 64;
 	float fogReach = 2.4f;		  // km the froxel grid reaches (the aerial perspective takes over past it)
 	float fogHaze = 1.0f;		  // the thin haze everywhere, times its default
 	float fogHazeHeight = 300.0f; // metres it fades out over above the ground
-	float fogMistHeight = 1.0f;	  // the valley mist's layer thickness, times its default (5-40m)
-	float fogMistSize = 100.0f;	  // metres, the size of the mist's banks
-	float fogMistBreakup = 1.0f;  // 0 = an even layer, 1 = banks and wisps
-	bool fogMistAllDay = false;	  // the mist doesn't burn off after sunrise
 	float fogForward = 0.55f;	  // forward scattering (Henyey-Greenstein g): the glow towards the sun, the beams
 	float fogLight = 1.0f;		  // how much light the fog scatters (direct + sky), times its default
 	float fogTemporal = 0.1f;	  // this frame's share of every froxel (lower = smoother, slower to follow)
@@ -95,11 +90,12 @@ inline constexpr ShadowRange SHADOW_RANGES[] = {
 // the volumetric fog's froxel grids (x across, y up, z slices along the view ray), the last entry is the custom one
 struct FogGrid { const char* name; uint32_t x, y, z; };
 inline constexpr FogGrid FOG_GRIDS[] = {
-	{ "160x90x64", 160, 90, 64 },
-	{ "240x135x128 (ultra)", 240, 135, 128 },
-	{ "320x180x128 (~120MB)", 320, 180, 128 },
-	{ "480x270x192 (~400MB)", 480, 270, 192 },
-	{ "640x360x256 (~1.4GB)", 640, 360, 256 },
+	// (half the slices they had: the difference didn't show, the cost did)
+	{ "160x90x32", 160, 90, 32 },
+	{ "240x135x64 (ultra)", 240, 135, 64 },
+	{ "320x180x64 (~60MB)", 320, 180, 64 },
+	{ "480x270x96 (~200MB)", 480, 270, 96 },
+	{ "640x360x128 (~700MB)", 640, 360, 128 },
 	{ "Custom", 0, 0, 0 },
 };
 inline constexpr int FOG_GRID_COUNT = sizeof(FOG_GRIDS) / sizeof(FOG_GRIDS[0]);
@@ -149,7 +145,7 @@ inline GraphicsSettings qualityPreset(Quality q) {
 		s.shadowSmoothing = 4;
 		s.shadowResolution = 2; // 4096: ~4cm texels around the player
 		s.treeDensity = 1.3f;
-		s.fullResSSAO = true; s.fullResClouds = true; s.fullResSkyVisibility = true;
+		s.fullResSSAO = true; s.fullResClouds = true;
 		s.fogQuality = 1;
 		break;
 	default: break;

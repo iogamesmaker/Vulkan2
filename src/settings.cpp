@@ -200,9 +200,6 @@ void Application::drawSettings() {
 	ImGui::SameLine();
 	check("Clouds##full", &s.fullResClouds);
 	ImGui::SetItemTooltip("Rendered at full instead of half resolution: sharper, no halos around thin objects, ~4x the cost each");
-	ImGui::SameLine();
-	check("Sky visibility##full", &s.fullResSkyVisibility);
-	ImGui::SetItemTooltip("The terrain's horizon AO (how much sky each spot sees) at the heightmap's full resolution: sharper in gullies and at cliff feet. 4x the memory (~75MB) and bake time, free per frame");
 	slider("Bloom", &s.bloom, 0.0f, 0.2f, "%.3f");
 
 	ImGui::SeparatorText("Sky");
@@ -226,7 +223,7 @@ void Application::drawSettings() {
 		ImGui::BeginDisabled(!s.volumetricFog);
 		if(s.fogQuality == FOG_GRID_COUNT - 1) {
 			changed |= ImGui::SliderInt("Custom froxels across", &s.fogCustomWidth, 32, 960);
-			changed |= ImGui::SliderInt("Custom slices", &s.fogCustomSlices, 16, 512);
+			changed |= ImGui::SliderInt("Custom slices", &s.fogCustomSlices, 8, 256);
 			float mb = s.fogCustomWidth * (s.fogCustomWidth * 9.0f / 16.0f) * s.fogCustomSlices * 8.0f * 3.0f / (1024.0f * 1024.0f);
 			ImGui::TextDisabled("%d x %d x %d, ~%.0f MB", s.fogCustomWidth, s.fogCustomWidth * 9 / 16, s.fogCustomSlices, mb);
 		}
@@ -234,11 +231,6 @@ void Application::drawSettings() {
 		ImGui::SetItemTooltip("How far the froxel grid reaches. The same slices over a longer reach: coarser up close (they're spread quadratically, thin near the camera)");
 		slider("Haze", &s.fogHaze, 0.0f, 20.0f);
 		slider("Haze height (m)", &s.fogHazeHeight, 10.0f, 3000.0f, "%.0f m");
-		slider("Mist layer height", &s.fogMistHeight, 0.1f, 10.0f);
-		slider("Mist bank size (m)", &s.fogMistSize, 5.0f, 1000.0f, "%.0f m");
-		slider("Mist breakup", &s.fogMistBreakup, 0.0f, 1.0f);
-		check("Mist all day", &s.fogMistAllDay);
-		ImGui::SetItemTooltip("Normally the mist is thickest from night through sunrise and burns off as the sun climbs");
 		slider("Forward scattering", &s.fogForward, 0.0f, 0.95f);
 		ImGui::SetItemTooltip("How much the fog glows towards the sun: higher = brighter halo and stronger light shafts looking into the light");
 		slider("Fog light", &s.fogLight, 0.0f, 5.0f);
@@ -247,8 +239,7 @@ void Application::drawSettings() {
 		if(ImGui::Button("Reset fog playground")) {
 			GraphicsSettings d;
 			s.fogCustomWidth = d.fogCustomWidth; s.fogCustomSlices = d.fogCustomSlices; s.fogReach = d.fogReach;
-			s.fogHaze = d.fogHaze; s.fogHazeHeight = d.fogHazeHeight; s.fogMistHeight = d.fogMistHeight;
-			s.fogMistSize = d.fogMistSize; s.fogMistBreakup = d.fogMistBreakup; s.fogMistAllDay = d.fogMistAllDay;
+			s.fogHaze = d.fogHaze; s.fogHazeHeight = d.fogHazeHeight;
 			s.fogForward = d.fogForward; s.fogLight = d.fogLight; s.fogTemporal = d.fogTemporal;
 			changed = true;
 		}
@@ -285,11 +276,6 @@ void Application::applySettings() {
 	if(s.fullResSSAO != m_FullResSSAO || s.fullResClouds != m_FullResClouds) m_Resized = true;
 	m_FullResSSAO = s.fullResSSAO;
 	m_FullResClouds = s.fullResClouds;
-	if(m_Device && m_SkyVisibilityReady && s.fullResSkyVisibility != m_FullResSkyVisibility) {
-		m_FullResSkyVisibility = s.fullResSkyVisibility;
-		recreateSkyVisibility();
-	}
-	m_FullResSkyVisibility = s.fullResSkyVisibility;
 	m_Vsync = s.vsync;
 	m_RenderScale = s.renderScale;
 	m_TAA = s.taa;
@@ -369,9 +355,8 @@ void Application::applySettings() {
 	m_FogMist = s.valleyMist;
 	ubo.volumetricFog = s.volumetricFog ? 1.0f : 0.0f;
 	ubo.fogDistance = s.fogReach * 1000.0f / metersPerUnit;
-	ubo.fogTuning = glm::vec4(s.fogHaze, s.fogHazeHeight, s.fogMistHeight, s.fogMistSize);
-	ubo.fogTuning2 = glm::vec4(s.fogForward, s.fogLight, s.fogTemporal, s.fogMistBreakup);
-	ubo.fogTuning3 = glm::vec4(s.fogMistAllDay ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+	ubo.fogTuning = glm::vec4(s.fogHaze, s.fogHazeHeight, s.fogForward, s.fogLight);
+	ubo.fogTuning2 = glm::vec4(s.fogTemporal, 0.0f, 0.0f, 0.0f);
 	int fogPreset = std::clamp(s.fogQuality, 0, FOG_GRID_COUNT - 1);
 	glm::uvec3 fogGrid = fogPreset == FOG_GRID_COUNT - 1
 		? glm::uvec3(std::max(s.fogCustomWidth, 8), std::max(s.fogCustomWidth * 9 / 16, 8), std::max(s.fogCustomSlices, 8))

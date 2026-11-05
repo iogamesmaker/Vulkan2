@@ -62,11 +62,10 @@ struct AtmosphereUBO {
 	glm::vec4 weather2{ 0.0f }; // x = rain, y = snowfall, z = sand, w = wind (0 calm .. 1 storm)
 
 	// TEMPORARY fog playground (settings.hpp), volfog_inject.comp
-	glm::vec4 fogTuning{ 1.0f, 300.0f, 1.0f, 100.0f };	// haze strength, haze height (m), mist height scale, mist bank size (m)
-	glm::vec4 fogTuning2{ 0.55f, 1.0f, 0.1f, 1.0f };	// forward scattering g, light scale, temporal blend, mist breakup
-	glm::vec4 fogTuning3{ 0.0f };						// x = mist all day
+	glm::vec4 fogTuning{ 1.0f, 300.0f, 0.55f, 1.0f }; // haze strength, haze height (m), forward scattering g, light scale
+	glm::vec4 fogTuning2{ 0.1f, 0.0f, 0.0f, 0.0f };	  // x = temporal blend
 };
-static_assert(sizeof(AtmosphereUBO) == 272, "AtmosphereUBO doesn't match the std140 layout");
+static_assert(sizeof(AtmosphereUBO) == 256, "AtmosphereUBO doesn't match the std140 layout");
 
 // per frame data for the sky view / aerial LUTs and the sky shader
 struct AtmospherePushConstants {

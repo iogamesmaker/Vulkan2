@@ -2432,7 +2432,7 @@ void Application::initHorizonAO() {
 void Application::dispatchHorizonAO(VkCommandBuffer cmd, glm::ivec2 heightmapStart, glm::ivec2 heightmapSize) {
 	// the rays reach ~100 heightmap texels, everything that close to the regenerated strip sees new terrain too
 	const int reach = std::max(4, static_cast<int>(std::ceil(104.0f * m_HeightmapSize / 4096.0f))); // horizonao.comp marches in 4096 texels
-	const int ratio = m_FullResSkyVisibility ? 1 : 2; // heightmap texels per sky visibility texel
+	const int ratio = 2; // heightmap texels per sky visibility texel (half resolution)
 	const int aoSize = m_HeightmapSize / ratio;
 	struct { glm::ivec2 start, size; float factor, texelWorld, density, pad; } pc{};
 	pc.start = (heightmapStart - glm::ivec2(reach)) / ratio;
@@ -2478,40 +2478,7 @@ void Application::createHeightmapImages() {
 	// rgb = climate (temperature, moisture, ruggedness), half resolution: smooth over kilometres
 	create(m_ClimateMap, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, size / 2);
 	// horizon AO, half the resolution (horizonao.comp)
-	create(m_SkyVisibility, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, m_FullResSkyVisibility ? size : size / 2);
-}
-
-// the horizon AO's resolution changed (Settings): a new image, everything that reads or writes it pointed at it, the
-// whole map baked again (~a few hundred ms at full resolution)
-void Application::recreateSkyVisibility() {
-	{
-		std::lock_guard<std::mutex> lock(m_QueueMutex);
-		vkDeviceWaitIdle(m_Device); // frames in flight sample the old one
-	}
-	vkDestroyImageView(m_Device, m_SkyVisibility.imageView, nullptr);
-	vmaDestroyImage(m_Allocator, m_SkyVisibility.image, m_SkyVisibility.allocation);
-	uint32_t size = static_cast<uint32_t>(m_FullResSkyVisibility ? m_HeightmapSize : m_HeightmapSize / 2);
-	m_SkyVisibility.imageFormat = VK_FORMAT_R16G16_SFLOAT;
-	m_SkyVisibility.imageExtent = { size, size, 1 };
-	VmaAllocationCreateInfo allocCI = {};
-	allocCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-	allocCI.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	VkImageCreateInfo imageCI = vkinit::image_create_info(m_SkyVisibility.imageFormat, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, m_SkyVisibility.imageExtent);
-	VK_CHECK(vmaCreateImage(m_Allocator, &imageCI, &allocCI, &m_SkyVisibility.image, &m_SkyVisibility.allocation, nullptr));
-	VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(m_SkyVisibility.imageFormat, m_SkyVisibility.image, VK_IMAGE_ASPECT_COLOR_BIT);
-	VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &m_SkyVisibility.imageView));
-	m_SkyVisibilityReady = false;
-
-	VkDescriptorImageInfo sampled{ m_HeightmapSampler, m_SkyVisibility.imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-	VkDescriptorImageInfo storage{ VK_NULL_HANDLE, m_SkyVisibility.imageView, VK_IMAGE_LAYOUT_GENERAL };
-	VkWriteDescriptorSet writes[2] = {};
-	for(auto& w : writes) { w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w.descriptorCount = 1; }
-	writes[0].dstSet = m_TerrainDescriptors; writes[0].dstBinding = 5; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &sampled;
-	writes[1].dstSet = m_SkyVisibilitySet; writes[1].dstBinding = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[1].pImageInfo = &storage;
-	vkUpdateDescriptorSets(m_Device, 2, writes, 0, nullptr);
-	writeLightingDescriptors();
-
-	immediateSubmit([&](VkCommandBuffer cmd) { dispatchHorizonAO(cmd, glm::ivec2(0), glm::ivec2(m_HeightmapSize)); });
+	create(m_SkyVisibility, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, size / 2);
 }
 
 void Application::destroyHeightmapImages() {
