@@ -53,19 +53,22 @@ bool placeProp(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld
 	groundCover(data.rgb, true, weights);
 	float mountains = mountainWeight(data.rgb);
 	float rocky = max(smoothstep(0.3, 0.8, slope), mountains * smoothstep(0.5, 0.6, data.a));
-	float forest = weights[BIOME_TAIGA] + weights[BIOME_PLAINS] * smoothstep(0.6, 0.78, data.g) * 0.6;
+	// logs and stumps wherever the trees grow (the trees' own chances, mountain forests below the treeline too: a
+	// taiga / wet meadow rule of its own left the forests on the slopes without any)
+	vec3 trees = treeChances(data, 0.0, 1.0);
+	float forest = smoothstep(0.08, 0.45, trees.x + trees.y);
 
 	// boulders on the mountains, rocks (scree on steep ground, a scattering in meadows / forests), logs in the
 	// forests. the chances are per cell
 	float boulder = rocky * 0.035 + mountains * 0.01;
 	float rock = rocky * 0.35 + 0.02 + weights[BIOME_DESERT] * 0.04;
 	float fallenLog = forest * 0.05 * (1.0 - rocky);
-	float stump = forest * 0.035 * (1.0 - rocky);
+	float stump = forest * 0.05 * (1.0 - rocky);
 	float roll = rnd.z;
 	if (roll < boulder) { p.mesh = min(uint(rnd.w * float(PROP_ROCKS)), uint(PROP_ROCKS - 1)); p.scale = mix(0.5, 1.4, rnd2.x); } // ~3-8m
 	else if (roll < boulder + fallenLog) { p.mesh = PROP_FIRST_LOG + min(uint(rnd.w * float(PROP_LOGS)), uint(PROP_LOGS - 1)); p.scale = mix(0.6, 1.1, rnd2.x); } // logs, ~3.5-6.5m
 	else if (roll < boulder + fallenLog + rock) { p.mesh = min(uint(rnd.w * float(PROP_ROCKS)), uint(PROP_ROCKS - 1)); p.scale = mix(0.06, 0.32, rnd2.x * rnd2.x); } // ~0.4-2m
-	else if (roll < boulder + fallenLog + rock + stump) { p.mesh = PROP_FIRST_STUMP + min(uint(rnd.w * float(PROP_STUMPS)), uint(PROP_STUMPS - 1)); p.scale = mix(0.5, 0.9, rnd2.x); } // ~0.3-0.55m tall
+	else if (roll < boulder + fallenLog + rock + stump) { p.mesh = PROP_FIRST_STUMP + min(uint(rnd.w * float(PROP_STUMPS)), uint(PROP_STUMPS - 1)); p.scale = mix(0.9, 1.7, rnd2.x); } // ~0.55-1m tall (shorter ones vanished in the ferns and grass)
 	else return false;
 	if (p.mesh < PROP_FIRST_LOG && slope > 1.5 && p.scale > 0.4) return false; // nothing big sits on a cliff face
 	// small rocks don't show on snow fields (buried): scattered dark pebbles all over the snow looked like pepper
