@@ -325,7 +325,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 
 	// bare rock on cliffs: in the lowlands only where it's really steep (the erosion's small scarps on the grassy hills
 	// were all rock streaks), the mountains from a gentler slope
-	float steepRock = smoothstep(mix(0.6, 0.35, mountains), mix(1.0, 0.75, mountains), slope + (lineNoise - 0.5) * 0.3);
+	float steepRock = smoothstep(mix(0.8, 0.35, mountains), mix(1.25, 0.75, mountains), slope + (lineNoise - 0.5) * 0.3);
 	steepRock *= 1.0 - weights[BIOME_DESERT] * (1.0 - mountains); // dune and wadi walls are sand, not stone
 	float rockline = 0.58 + (lineNoise - 0.5) * 0.12;
 	float highRock = smoothstep(rockline, rockline + 0.06, terrainHeight) * mountains;
