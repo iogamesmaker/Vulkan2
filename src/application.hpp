@@ -109,7 +109,7 @@ constexpr unsigned int FRAME_OVERLAP = 2;
 constexpr float TERRAIN_HEIGHT_SCALE = 0.12f;
 
 constexpr int BIOME_ROCK_INDEX = 2; // BIOME_MOUNTAINS, the rock material (biometools.glsl / loadTextures)
-constexpr uint32_t TERRAIN_MATERIALS = 9; // 6 biomes + 3 rock strata (terrainmaterial.glsl TERRAIN_STRATA_FIRST)
+constexpr uint32_t TERRAIN_MATERIALS = 10; // 6 biomes, 3 rock kinds, the cliff photo (terrainmaterial.glsl rockCover)
 
 class Application {
 public:

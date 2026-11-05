@@ -199,109 +199,56 @@ struct TerrainSurface {
 	float pomShadow; // the parallax self shadow
 };
 
-// rock detail below the mesh's resolution, as a height field on top of the terrain's: its slope (height per world
-// unit, for the normal), a colour factor and how much of it shows
-struct RockDetail {
-	vec2 slope;
-	vec3 tint;
-	float weight;		// the relief (slope, tint)
-	int material;		// this layer's rock (TERRAIN_STRATA_FIRST + 0..2), sampled over the base rock
-	float materialMix;	// how much of it shows (the layers' colours carry further than their relief)
+// bare rock: a photographed cliff face (Poly Haven CC0 cliff_side) at its real size over the base
+// rock texture, the real structure of a cliff (blocks, joints, ledges) where a texture tiling every 7m and the
+// smooth 9m heightmap made a plastered slope. and in big slow patches other kinds of rock (buff, dark slate, rust
+// stained), so a mountainside isn't all one stone. no procedural relief: generated ledges / bands looked fake
+#define TERRAIN_ROCK_KINDS_FIRST 6 // buff, dark, rust (Application::loadTextures)
+#define TERRAIN_CLIFF 9	   // cliff_side
+#define CLIFF_SIZE 3.05	   // world units the photo covers (18.3m)
+
+struct RockCover {
+	float cliffMix; // how much of the cliff photo over the base rock
+	int kind;		// which other rock
+	float kindMix;
 };
 
-#define TERRAIN_STRATA_FIRST 6 // the strata rocks after the biome materials, Application::loadTextures
-
-#define STRATA_THICKNESS 0.45 // world units (~2.7m) per big rock layer, a finer layering inside them
-#define FLUTE_WIDTH 0.5		  // the erosion runnels down the faces, ~3m apart
-#define FLUTE_DEPTH 0.16
-
-// one set of layers: a flat tread then a steep riser up to the next layer, the surface becomes
-// thickness * smoothfloor(layer) - its own height, a staircase cut into the slope. returns the slope that adds
-// (height per world unit), f = where in its layer this is (0 tread start .. 1 riser top)
-vec2 strataStep(float layer, vec2 layerGrad, float riserStart, out float f) {
-	f = fract(layer);
-	float t = clamp((f - riserStart) / (1.0 - riserStart), 0.0, 1.0);
-	float riser = 6.0 * t * (1.0 - t) / (1.0 - riserStart); // d smoothstep(riserStart, 1, f) / df
-	return (riser - 1.0) * layerGrad;
-}
-
-// h = the surface's height, gradient = the terrain's height per world unit, mask = how much bare steep rock this is.
-// the pixel footprint (dPdx / dPdy) fades it out before the layers get thinner than a few pixels (and in the
-// terrain cache, whose texels are far bigger than a layer)
-RockDetail rockStrata(float h, vec2 worldXZ, vec2 gradient, vec3 dPdx, vec3 dPdy, float viewDistance, float mask) {
-	RockDetail r;
-	r.slope = vec2(0.0);
-	r.tint = vec3(1.0);
-	r.material = TERRAIN_STRATA_FIRST;
-	r.materialMix = 0.0;
-	float footprint = max(max(abs(dPdx.y), abs(dPdy.y)), 0.3 * max(length(dPdx.xz), length(dPdy.xz)));
-	// close up only: further out the layers lined whole mountainsides like rice terraces (viewDistance is 0 in the
-	// cache, its texel footprint fades it there)
-	float colourWeight = mask * (1.0 - smoothstep(0.15, 0.4, footprint / STRATA_THICKNESS)) * (1.0 - smoothstep(60.0, 110.0, viewDistance));
-	r.weight = mask * (1.0 - smoothstep(0.06, 0.2, footprint / STRATA_THICKNESS)) * (1.0 - smoothstep(6.0, 22.0, viewDistance));
-	if (colourWeight <= 0.0) return r;
-	float fine = 1.0 - smoothstep(0.15, 0.4, footprint / (STRATA_THICKNESS * 0.3)); // the thin layers go first
-
-	// the layers are horizontal-ish, tilted a little (the dip) and bent by a slow warp so they wander along the face
-	// and swell / pinch (no two the same thickness)
-	const vec2 dip = vec2(0.12, -0.07);
-	float warp = (detailValueNoise(worldXZ * 0.12) - 0.5) * 2.5 + (detailValueNoise(worldXZ * 0.5 + 7.0) - 0.5) * 0.6; // in layers
-	vec2 warpGrad = detailValueNoiseGrad(worldXZ * 0.12) * 0.12 * 2.5 + detailValueNoiseGrad(worldXZ * 0.5 + 7.0) * 0.5 * 0.6;
-	float layer = (h + dot(worldXZ, dip)) / STRATA_THICKNESS + warp;
-	vec2 layerGrad = (gradient + dip) + warpGrad * STRATA_THICKNESS; // in height units per world unit
-
-	// every big layer its own rock: buff sandstone, dark slate, rusty iron stained stone, or the base rock. only
-	// partly (a tint of it over the base rock, they're one cliff) and only in some stretches of a face (formations
-	// come and go). soft at the layer edges, where it fades into the next one
-	float id = floor(layer);
-	float pick = fract(sin(id * 78.233) * 43758.5453);
-	r.material = TERRAIN_STRATA_FIRST + int(pick * 4.0) % 3;
-	float fl = fract(layer);
-	float soft = smoothstep(0.0, 0.12, fl) * (1.0 - smoothstep(0.88, 1.0, fl));
-	float formation = smoothstep(0.2, 0.5, detailValueNoise(worldXZ * 0.03 + 3.0)) * smoothstep(0.15, 0.45, detailValueNoise(worldXZ * 0.15 + id * 1.7));
-	r.materialMix = colourWeight * (pick < 0.75 ? 0.5 : 0.0) * soft * formation;
-	if (r.weight <= 0.0) return r;
-
-	// big layers: their ledges come and go along the face (blocky, broken, not contour lines)
-	float f;
-	vec2 big = strataStep(layer, layerGrad, 0.3, f); // wide, rounded risers (narrow ones read as knife cuts)
-	float ledge = smoothstep(0.2, 0.5, detailValueNoise(worldXZ * vec2(0.35, 0.35) + id * 3.7));
-	r.slope = big * ledge * 0.4; // part way: full treads lay flat and the faces read as rice terraces
-	// thin layering inside them (shale), weaker
-	float fFine;
-	vec2 thin = strataStep(layer * 3.3 + 0.37, layerGrad, 0.3, fFine) * 0.08 * fine; // a hint, many sharp lines looked like wood grain
-	r.slope += thin;
-
-	// the flutes: ridged noise across the fall line, stretched down it, only on real faces
-	float g = length(gradient);
-	vec2 down = gradient / max(g, 1e-3), across = vec2(-down.y, down.x);
-	vec2 q = vec2(dot(worldXZ, across) / FLUTE_WIDTH, h / (FLUTE_WIDTH * 5.0));
-	float n = detailValueNoise(q);
-	vec2 nGrad = detailValueNoiseGrad(q);
-	float ridged = 1.0 - abs(2.0 * n - 1.0);
-	vec2 ridgedGrad = -2.0 * sign(2.0 * n - 1.0) * nGrad; // per q
-	float faces = smoothstep(0.5, 1.1, g);
-	r.slope += FLUTE_DEPTH * (ridgedGrad.x * across / FLUTE_WIDTH + ridgedGrad.y * gradient / (FLUTE_WIDTH * 5.0)) * faces;
-	r.slope *= r.weight;
-
-	// colour: every big layer its own shade of grey / buff (sediment), dark in the crease where a tread meets the
-	// riser above it (where the ledge is), light along the weathered edges, darker down the runnels
-	float band = fract(sin(id * 12.9898) * 43758.5453);
-	float crease = smoothstep(0.15, 0.3, f) * (1.0 - smoothstep(0.3, 0.55, f)) * ledge;
-	float edge = (smoothstep(0.85, 1.0, f) + 1.0 - smoothstep(0.0, 0.1, f)) * ledge;
-	float thinLine = smoothstep(0.3, 0.5, fFine) * (1.0 - smoothstep(0.5, 0.8, fFine)) * fine;
-	r.tint = mix(vec3(0.94, 0.93, 0.92), vec3(1.04, 1.03, 1.0), band) * (1.0 - crease * 0.22) * (1.0 + edge * 0.08)
-		   * (1.0 - thinLine * 0.04) * (1.0 - (1.0 - ridged) * 0.25 * faces);
+// mask = how much bare rock this is. the other rocks come in slow noise patches (~100-250m) and fade out towards
+// where they switch (the base rock between them)
+RockCover rockCover(vec2 worldXZ, float mask) {
+	RockCover r;
+	r.cliffMix = mask * 0.85;
+	float k = detailValueNoise(worldXZ * 0.035 - 13.0) * 3.0;
+	float within = fract(k);
+	r.kind = TERRAIN_ROCK_KINDS_FIRST + min(int(k), 2);
+	r.kindMix = mask * 0.45 * smoothstep(0.0, 0.2, within) * (1.0 - smoothstep(0.8, 1.0, within))
+			  * smoothstep(0.4, 0.65, detailValueNoise(worldXZ * 0.05 + 7.0));
 	return r;
 }
 
-// the layer's own rock over a projection's base material
-void strataBlend(RockDetail r, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, inout vec3 albedo, inout vec3 normal) {
-	if (r.materialMix <= 0.01) return;
-	Material m = sampleMaterial(r.material, near, far, macro, farWeight, macroWeight, false);
-	vec3 layer = mix(vec3(dot(m.albedo, vec3(0.3, 0.59, 0.11))), m.albedo, 0.6); // less saturated, it's weathered
-	albedo = mix(albedo, layer, r.materialMix);
-	normal = normalize(mix(normal, normalize(m.normal), r.materialMix));
+DetailUV scaleUV(DetailUV d, float k) { return DetailUV(d.uv * k, d.dx * k, d.dy * k); }
+
+// the cliff photo and the other rock over one projection's base material. near = that projection's near layer
+// (uv = world / textureRepeatNear)
+void rockBlend(RockCover r, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, inout vec3 albedo, inout vec3 normal) {
+	if (r.kindMix > 0.01) {
+		Material m = sampleMaterial(r.kind, near, far, macro, farWeight, macroWeight, false);
+		vec3 rock = mix(vec3(dot(m.albedo, vec3(0.3, 0.59, 0.11))), m.albedo, 0.6); // weathered, less saturated
+		albedo = mix(albedo, rock, r.kindMix);
+		normal = normalize(mix(normal, normalize(m.normal), r.kindMix));
+	}
+	if (r.cliffMix > 0.01) {
+		DetailUV cliffNear = scaleUV(near, ubo.textureRepeatNear / CLIFF_SIZE);
+		DetailUV cliffFar = scaleUV(near, ubo.textureRepeatNear / (CLIFF_SIZE * 1.6)); // a bigger tile in the distance
+		Material m = sampleMaterial(TERRAIN_CLIFF, cliffNear, cliffFar, cliffFar, farWeight, 0.0, false);
+		// mostly its light and shade: cliff_side is canyon orange, the mountains here are grey stone
+		float luma = dot(m.albedo, vec3(0.3, 0.59, 0.11));
+		vec3 cliff = mix(vec3(luma) * vec3(1.02, 1.0, 0.97), m.albedo, 0.18);
+		// most of it up close, where its blocks and joints show; further out the base rock's streaks carry the shape
+		float mixHere = r.cliffMix * mix(1.0, 0.45, farWeight);
+		albedo = mix(albedo, cliff, mixHere);
+		normal = normalize(mix(normal, normalize(m.normal), mixHere));
+	}
 }
 
 TerrainSurface shadeTerrain(TerrainShading s) {
@@ -466,12 +413,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 		if (ubo.pomShadow > 0.0) pomShadow = mix(1.0, parallaxShadow(first, second, wA, near, near.uv, depth, lightTS, scale), pomFade);
 	}
 
-	// rock faces up close: the heightmap is ~9m a texel and the mesh's triangles are no finer, so a cliff was one
-	// smooth plastered slope. layered strata (ledges + risers, tilted a little and warped) and vertical erosion
-	// flutes in the shading normal, plus banding / creases in the colour (rockStrata, applied after the albedo)
-	vec2 heightGrad = vec2(hR - hL, hT - hB) * heightPerTexel; // height per world unit
-	RockDetail rockDetail = rockStrata(s.position.y, s.worldXZ, heightGrad, s.dPdx, s.dPdy, s.viewDistance,
-									   rock * smoothstep(0.25, 0.6, slope) * (1.0 - snowCap));
+	RockCover rockDetail = rockCover(s.worldXZ, rock * smoothstep(0.2, 0.5, slope) * (1.0 - snowCap));
 	// every projection that has weight here: the two materials height blended, the normal map turned into world
 	// space (whiteout blend for the side planes, see Golus' triplanar normal mapping notes)
 	vec3 albedoSum = vec3(0.0), normalSum = vec3(0.0);
@@ -479,7 +421,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	if (wTop > 0.02) {
 		vec3 a, n;
 		sampleBlend(first, second, wA, near, far, macroLayer, farWeight, macroWeight, a, n);
-		strataBlend(rockDetail, near, far, macroLayer, farWeight, macroWeight, a, n);
+		rockBlend(rockDetail, near, far, macroLayer, farWeight, macroWeight, a, n);
 		albedoSum += a * wTop;
 		normalSum += normalize(mat3(va, vb, normal) * n) * wTop;
 		wSum += wTop;
@@ -487,7 +429,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	if (wX > 0.02) {
 		vec3 a, n;
 		sampleBlend(first, second, wA, sideXNear, sideXFar, sideXMacro, farWeight, macroWeight, a, n);
-		strataBlend(rockDetail, sideXNear, sideXFar, sideXMacro, farWeight, macroWeight, a, n);
+		rockBlend(rockDetail, sideXNear, sideXFar, sideXMacro, farWeight, macroWeight, a, n);
 		n.x *= axisSign.x;
 		vec3 t = vec3(n.xy + normal.zy, abs(n.z) * normal.x);
 		albedoSum += a * wX;
@@ -497,7 +439,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	if (wZ > 0.02) {
 		vec3 a, n;
 		sampleBlend(first, second, wA, sideZNear, sideZFar, sideZMacro, farWeight, macroWeight, a, n);
-		strataBlend(rockDetail, sideZNear, sideZFar, sideZMacro, farWeight, macroWeight, a, n);
+		rockBlend(rockDetail, sideZNear, sideZFar, sideZMacro, farWeight, macroWeight, a, n);
 		n.x *= -axisSign.z;
 		vec3 t = vec3(n.xy + normal.xy, abs(n.z) * normal.z);
 		albedoSum += a * wZ;
@@ -505,11 +447,6 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 		wSum += wZ;
 	}
 	normal = normalize(normalSum);
-
-	if (rockDetail.weight > 0.0) {
-		vec3 n = normal / max(normal.y, 0.2); // as a height field's (-dx, 1, -dz), the detail's slope adds on
-		normal = normalize(n - vec3(rockDetail.slope.x, 0.0, rockDetail.slope.y));
-	}
 
 	vec3 albedo = pow(albedoSum / max(wSum, 1e-4), vec3(2.2)); // textures are srgb, light in linear
 
@@ -522,8 +459,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	albedo *= 1.0 - gully * mix(0.12, 0.28, rockiness) + ridge * mix(0.05, 0.14, rockiness);
 	// stone is grey: the rock texture's brown read as mud on whole mountainsides
 	float rockLuma = dot(albedo, vec3(0.3, 0.59, 0.11));
-	albedo = mix(albedo, rockLuma * vec3(0.96, 0.97, 1.02), rockiness * 0.55 * (1.0 - rockDetail.materialMix * 0.7)); // (the strata keep their colours)
-	albedo *= mix(vec3(1.0), rockDetail.tint, rockDetail.weight);
+	albedo = mix(albedo, rockLuma * vec3(0.96, 0.97, 1.02), rockiness * 0.55 * (1.0 - rockDetail.kindMix * 0.6)); // (the other rocks keep some colour)
 	// grass: a little less saturated, with drier yellowish patches (one flat bright green looked painted)
 	float grassiness = clamp(weights[BIOME_PLAINS] + weights[BIOME_TAIGA] * 0.5, 0.0, 1.0) * (1.0 - snowCap);
 	float grassLuma = dot(albedo, vec3(0.3, 0.59, 0.11));
