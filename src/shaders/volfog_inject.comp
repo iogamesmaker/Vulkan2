@@ -70,7 +70,7 @@ float hg(float cosTheta, float g) {
 // toned down from g 0.65 at 3/4 (~13x the light towards the sun as sideways): into a low sun the whole view went
 // under a bright veil, beautiful but you couldn't see anything. ~5x now, the beams still read
 float fogPhase(float cosTheta) {
-	return mix(hg(cosTheta, -0.2), hg(cosTheta, 0.55), 0.6);
+	return mix(hg(cosTheta, -0.2), hg(cosTheta, ubo.fogTuning2.x), 0.6); // (forward g: the fog playground, 0.55)
 }
 
 float terrainAt(vec2 uv) {
@@ -105,16 +105,16 @@ void main() {
 	// (it burns off quicker than it did: thick from 0.1 to 0.55 of sun height, the evening sun brought it back too and
 	// the low sun views went under a milky veil. and outside the valleys only a trace: 6% of the valley's density was
 	// still ~10x the haze, every ray skimming a slope went through it)
-	float dawn = 1.0 - 0.85 * smoothstep(0.03, 0.3, pc.sundir.y);
-	float mistHeight = mix(5.0, 40.0, hollow); // metres
+	float dawn = ubo.fogTuning3.x > 0.5 ? 1.0 : 1.0 - 0.85 * smoothstep(0.03, 0.3, pc.sundir.y);
+	float mistHeight = mix(5.0, 40.0, hollow) * ubo.fogTuning.z; // metres
 	float mist = pc.params.y * dawn * mix(0.02, 1.0, hollow * hollow) * exp(-above / mistHeight);
 	// broken up into banks and wisps that drift with the wind (~100m features)
 	vec3 drift = vec3(pc.cloudWind.x, 0.0, pc.cloudWind.y) * 1000.0 * 0.4 + vec3(0.0, pc.params.w * 0.15, 0.0);
 	vec3 worldMetres = (pos + vec3(float(pc.mapOffset.x), 0.0, float(pc.mapOffset.y)) * (pc.terrainSize / hmSize.x)) * metres;
-	float n = fbm((worldMetres - drift) * 0.01);
-	mist *= smoothstep(0.3, 0.7, n) * 1.8;
+	float n = fbm((worldMetres - drift) / ubo.fogTuning.w);
+	mist *= mix(1.0, smoothstep(0.3, 0.7, n) * 1.8, ubo.fogTuning2.w);
 	// haze: thin everywhere close to the ground, fading over a few hundred metres up
-	float haze = exp(-above / 300.0);
+	float haze = exp(-above / ubo.fogTuning.y) * ubo.fogTuning.x;
 	// the weather thickens the haze near the ground: rain and snow to a kilometre or two of visibility, a sandstorm to a
 	// few hundred metres (its dust hugs the ground a little more)
 	float weatherHaze = pc.weather.a * mix(1.0, exp(-above / 120.0) * 1.6, clamp(pc.weather.a / 5.0, 0.0, 1.0));
@@ -151,7 +151,7 @@ void main() {
 		ambient += moonLight * max(moonDir.y, 0.0) * vec3(0.1, 0.12, 0.18) * 0.25;
 
 		vec3 albedo = pc.weather.rgb; // droplets barely absorb, dust does (and tints it)
-		current = vec4(extinction * albedo * (direct + ambient), extinction);
+		current = vec4(extinction * albedo * (direct + ambient) * ubo.fogTuning2.y, extinction);
 	}
 
 	// last frame's value where this froxel's (unjittered) centre was, so the jittered samples average out
@@ -163,7 +163,7 @@ void main() {
 			float prevS = fogSliceCoord(distance(centre, pc.prevCampos), far);
 			if (all(greaterThanEqual(prevUV, vec2(0.0))) && all(lessThanEqual(prevUV, vec2(1.0))) && prevS < 1.0) {
 				vec4 previous = textureLod(history, vec3(prevUV, prevS), 0.0);
-				current = mix(previous, current, 0.1);
+				current = mix(previous, current, ubo.fogTuning2.z);
 			}
 		}
 	}

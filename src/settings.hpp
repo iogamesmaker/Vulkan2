@@ -59,9 +59,21 @@ struct GraphicsSettings {
 
 	// volumetric fog (volfog.glsl): mist pooling in valleys, haze, beams through trees and past ridges
 	bool volumetricFog = true;
-	int fogQuality = 0;		  // froxel grid: 0 = 160x90x64, 1 = 240x135x128
+	int fogQuality = 0;		  // froxel grid: FOG_GRIDS, the last one = fogCustomWidth x 9/16 x fogCustomSlices
 	float fogDensity = 1.0f;  // everything
 	float valleyMist = 1.0f;  // the ground mist on top of the haze
+	// TEMPORARY fog playground (the "Volumetric fog playground" section): the volfog_inject.comp constants
+	int fogCustomWidth = 320, fogCustomSlices = 128;
+	float fogReach = 2.4f;		  // km the froxel grid reaches (the aerial perspective takes over past it)
+	float fogHaze = 1.0f;		  // the thin haze everywhere, times its default
+	float fogHazeHeight = 300.0f; // metres it fades out over above the ground
+	float fogMistHeight = 1.0f;	  // the valley mist's layer thickness, times its default (5-40m)
+	float fogMistSize = 100.0f;	  // metres, the size of the mist's banks
+	float fogMistBreakup = 1.0f;  // 0 = an even layer, 1 = banks and wisps
+	bool fogMistAllDay = false;	  // the mist doesn't burn off after sunrise
+	float fogForward = 0.55f;	  // forward scattering (Henyey-Greenstein g): the glow towards the sun, the beams
+	float fogLight = 1.0f;		  // how much light the fog scatters (direct + sky), times its default
+	float fogTemporal = 0.1f;	  // this frame's share of every froxel (lower = smoother, slower to follow)
 
 	// advanced: the systems behind the scenes
 	float pomDepth = 27.0f;		  // cm between a height map's lowest and highest point
@@ -79,6 +91,18 @@ inline constexpr ShadowRange SHADOW_RANGES[] = {
 	{ "Balanced (85m / 540m / 3km)", { 14.0f, 90.0f, 500.0f } },
 	{ "Far (120m / 840m / 5.4km)", { 20.0f, 140.0f, 900.0f } },
 };
+
+// the volumetric fog's froxel grids (x across, y up, z slices along the view ray), the last entry is the custom one
+struct FogGrid { const char* name; uint32_t x, y, z; };
+inline constexpr FogGrid FOG_GRIDS[] = {
+	{ "160x90x64", 160, 90, 64 },
+	{ "240x135x128 (ultra)", 240, 135, 128 },
+	{ "320x180x128 (~120MB)", 320, 180, 128 },
+	{ "480x270x192 (~400MB)", 480, 270, 192 },
+	{ "640x360x256 (~1.4GB)", 640, 360, 256 },
+	{ "Custom", 0, 0, 0 },
+};
+inline constexpr int FOG_GRID_COUNT = sizeof(FOG_GRIDS) / sizeof(FOG_GRIDS[0]);
 
 // the render resolution presets (a scale of the window, per axis). TAA upsamples below 100%, above it supersamples
 struct ResolutionPreset { const char* name; float scale; };

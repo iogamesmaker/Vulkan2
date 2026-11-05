@@ -213,11 +213,47 @@ void Application::drawSettings() {
 	check("Volumetric fog", &s.volumetricFog);
 	ImGui::SetItemTooltip("Mist pooling in the valleys (thickest around sunrise), haze, and light shafts through the trees");
 	ImGui::BeginDisabled(!s.volumetricFog);
-	const char* fogQualities[] = { "160x90x64", "240x135x128 (ultra)" };
-	changed |= ImGui::Combo("Fog resolution", &s.fogQuality, fogQualities, 2);
+	const char* fogQualities[FOG_GRID_COUNT];
+	for(int i = 0; i < FOG_GRID_COUNT; i++) fogQualities[i] = FOG_GRIDS[i].name;
+	changed |= ImGui::Combo("Fog resolution", &s.fogQuality, fogQualities, FOG_GRID_COUNT);
+	ImGui::SetItemTooltip("Froxels across x up x slices along the view. The memory is the three volumes together (two of history, the summed one)");
 	slider("Fog density", &s.fogDensity, 0.0f, 4.0f);
 	slider("Valley mist", &s.valleyMist, 0.0f, 4.0f);
 	ImGui::EndDisabled();
+
+	// TEMPORARY: every knob of the volumetric fog, to play with
+	if(ImGui::CollapsingHeader("Volumetric fog playground", ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::BeginDisabled(!s.volumetricFog);
+		if(s.fogQuality == FOG_GRID_COUNT - 1) {
+			changed |= ImGui::SliderInt("Custom froxels across", &s.fogCustomWidth, 32, 960);
+			changed |= ImGui::SliderInt("Custom slices", &s.fogCustomSlices, 16, 512);
+			float mb = s.fogCustomWidth * (s.fogCustomWidth * 9.0f / 16.0f) * s.fogCustomSlices * 8.0f * 3.0f / (1024.0f * 1024.0f);
+			ImGui::TextDisabled("%d x %d x %d, ~%.0f MB", s.fogCustomWidth, s.fogCustomWidth * 9 / 16, s.fogCustomSlices, mb);
+		}
+		slider("Reach (km)", &s.fogReach, 0.3f, 20.0f, "%.1f km");
+		ImGui::SetItemTooltip("How far the froxel grid reaches. The same slices over a longer reach: coarser up close (they're spread quadratically, thin near the camera)");
+		slider("Haze", &s.fogHaze, 0.0f, 20.0f);
+		slider("Haze height (m)", &s.fogHazeHeight, 10.0f, 3000.0f, "%.0f m");
+		slider("Mist layer height", &s.fogMistHeight, 0.1f, 10.0f);
+		slider("Mist bank size (m)", &s.fogMistSize, 5.0f, 1000.0f, "%.0f m");
+		slider("Mist breakup", &s.fogMistBreakup, 0.0f, 1.0f);
+		check("Mist all day", &s.fogMistAllDay);
+		ImGui::SetItemTooltip("Normally the mist is thickest from night through sunrise and burns off as the sun climbs");
+		slider("Forward scattering", &s.fogForward, 0.0f, 0.95f);
+		ImGui::SetItemTooltip("How much the fog glows towards the sun: higher = brighter halo and stronger light shafts looking into the light");
+		slider("Fog light", &s.fogLight, 0.0f, 5.0f);
+		slider("Temporal blend", &s.fogTemporal, 0.02f, 1.0f);
+		ImGui::SetItemTooltip("This frame's share of every froxel. Lower is smoother but smears when you move, 1 = no history (noisy)");
+		if(ImGui::Button("Reset fog playground")) {
+			GraphicsSettings d;
+			s.fogCustomWidth = d.fogCustomWidth; s.fogCustomSlices = d.fogCustomSlices; s.fogReach = d.fogReach;
+			s.fogHaze = d.fogHaze; s.fogHazeHeight = d.fogHazeHeight; s.fogMistHeight = d.fogMistHeight;
+			s.fogMistSize = d.fogMistSize; s.fogMistBreakup = d.fogMistBreakup; s.fogMistAllDay = d.fogMistAllDay;
+			s.fogForward = d.fogForward; s.fogLight = d.fogLight; s.fogTemporal = d.fogTemporal;
+			changed = true;
+		}
+		ImGui::EndDisabled();
+	}
 
 	if(ImGui::CollapsingHeader("Advanced")) {
 		slider("Parallax depth (cm)", &s.pomDepth, 0.0f, 80.0f, "%.0f");
@@ -332,8 +368,14 @@ void Application::applySettings() {
 	m_FogDensity = s.fogDensity;
 	m_FogMist = s.valleyMist;
 	ubo.volumetricFog = s.volumetricFog ? 1.0f : 0.0f;
-	ubo.fogDistance = 2400.0f / metersPerUnit;
-	glm::uvec3 fogGrid = s.fogQuality >= 1 ? glm::uvec3(240, 135, 128) : glm::uvec3(160, 90, 64);
+	ubo.fogDistance = s.fogReach * 1000.0f / metersPerUnit;
+	ubo.fogTuning = glm::vec4(s.fogHaze, s.fogHazeHeight, s.fogMistHeight, s.fogMistSize);
+	ubo.fogTuning2 = glm::vec4(s.fogForward, s.fogLight, s.fogTemporal, s.fogMistBreakup);
+	ubo.fogTuning3 = glm::vec4(s.fogMistAllDay ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+	int fogPreset = std::clamp(s.fogQuality, 0, FOG_GRID_COUNT - 1);
+	glm::uvec3 fogGrid = fogPreset == FOG_GRID_COUNT - 1
+		? glm::uvec3(std::max(s.fogCustomWidth, 8), std::max(s.fogCustomWidth * 9 / 16, 8), std::max(s.fogCustomSlices, 8))
+		: glm::uvec3(FOG_GRIDS[fogPreset].x, FOG_GRIDS[fogPreset].y, FOG_GRIDS[fogPreset].z);
 	if(fogGrid != m_FogGrid) {
 		if(m_FogInjectLayout == VK_NULL_HANDLE) m_FogGrid = fogGrid; // not set up yet, initVolumetricFog uses it
 		else {

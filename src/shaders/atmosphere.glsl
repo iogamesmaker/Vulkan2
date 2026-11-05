@@ -58,6 +58,10 @@ layout(set = ATMOSPHERE_SET, binding = ATMOSPHERE_BINDING) uniform AtmosphereUBO
 
 	vec4 weather;	// weather.cpp: x = overcast, y = wetness, z = lightning flash, w = snow cover
 	vec4 weather2;	// x = rain, y = snowfall, z = sand, w = wind (0 calm .. 1 storm)
+	// TEMPORARY fog playground (settings.hpp), volfog_inject.comp
+	vec4 fogTuning;	 // haze strength, haze height (m), mist height scale, mist bank size (m)
+	vec4 fogTuning2; // forward scattering g, light scale, temporal blend, mist breakup
+	vec4 fogTuning3; // x = mist all day
 } ubo;
 
 // the weather's dimming of the sky's light: an overcast sky is a grey lid, much darker than the clear sky LUT
