@@ -43,6 +43,15 @@ vec3 perturbNormal(vec3 N, vec3 dp1, vec3 dp2, vec2 duv1, vec2 duv2, vec3 mapNor
 	return normalize(mat3(T * invmax, B * invmax, N) * mapNormal);
 }
 
+// the side of a surface that faces the camera, from the triangle's own orientation (its screen space derivatives):
+// gl_FrontFacing can't be trusted for it here (the projection flips y, so the side facing the camera counts as the
+// back face and every visible bark / leaf got its normal reversed: lit from the side away from the sun)
+vec3 normalTowardsCamera(vec3 normal, vec3 dp1, vec3 dp2, vec3 toCamera) {
+	vec3 face = cross(dp1, dp2);
+	if (dot(face, toCamera) < 0.0) face = -face;
+	return dot(normal, face) < 0.0 ? -normal : normal;
+}
+
 void main() {
 	if (treeFaded(inFade, gl_FragCoord.xy, false)) discard; // dithered fade: edge of the range, LOD crossfade
 
@@ -56,7 +65,7 @@ void main() {
 	vec3 normal = normalize(inNormal);
 	// bark seen from inside (two sided): the side facing the camera. the leaf clusters' normals point out of the
 	// crown (the packs bend them for a soft, round canopy): the same on both sides of a card
-	if (!leaves && !gl_FrontFacing) normal = -normal;
+	if (!leaves) normal = normalTowardsCamera(normal, dp1, dp2, pc.campos - inPosition);
 
 	vec4 texel = textureGrad(treeTextures[nonuniformEXT(slot)], inUV, duv1, duv2);
 	if (leaves) {

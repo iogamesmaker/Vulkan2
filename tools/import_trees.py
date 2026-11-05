@@ -257,6 +257,16 @@ def vertices(lod, centre, size, crown):
     ao = np.where(leaf, ao * (0.85 + 0.15 * np.clip(nor[:, 1] * 0.5 + 0.5, 0, 1)), np.maximum(ao, 0.55) * (0.6 + 0.4 * h))
     baked = ~np.isnan(col[:, 0])
     ao[baked] = np.clip(col[baked, 0], 0.15, 1.0) * 0.8 + ao[baked] * 0.2
+    # the leaf cards' normals: the packs' are the cards' own, pointing either way (only about half out of the crown),
+    # so the crowns shaded as a noisy mix instead of a sunny side and a shaded one. every card's normal turned to
+    # point out of the crown, then bent most of the way towards the crown's own (ellipsoid) normal there: the usual
+    # "spherical" foliage normals, the crown shades as one soft volume and the cards keep a bit of their angle
+    radial = (p - c) / (radii * radii)
+    radial /= np.maximum(np.linalg.norm(radial, axis=1, keepdims=True), 1e-9)
+    card = nor * np.where(np.einsum("ij,ij->i", nor, radial) < 0.0, -1.0, 1.0)[:, None]
+    bent = card * 0.35 + radial * 0.65
+    bent /= np.maximum(np.linalg.norm(bent, axis=1, keepdims=True), 1e-9)
+    nor = np.where(leaf[:, None], bent, nor)
     return p, nor, uv, wind, ao, leaf, idx
 
 

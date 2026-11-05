@@ -20,13 +20,22 @@ layout(location = 1) out vec4 outNormal;
 
 layout(set = 0, binding = 1) uniform sampler2D treeTextures[TREE_PACKS * 4]; // per pack: bark, bark normal, leaves, leaf normal
 
+// the side of a surface that faces the camera, from the triangle's own orientation (its screen space derivatives):
+// gl_FrontFacing can't be trusted for it here (the projection flips y, so the side facing the camera counts as the
+// back face and every visible bark / leaf got its normal reversed: lit from the side away from the sun)
+vec3 normalTowardsCamera(vec3 normal, vec3 dp1, vec3 dp2, vec3 toCamera) {
+	vec3 face = cross(dp1, dp2);
+	if (dot(face, toCamera) < 0.0) face = -face;
+	return dot(normal, face) < 0.0 ? -normal : normal;
+}
+
 void main() {
 	bool leaves = (inMaterial & 1) == 1;
 	uint pack = uint(inMaterial >> 1);
 	vec4 texel = texture(treeTextures[nonuniformEXT(int(pack) * 4 + (leaves ? 2 : 0))], inUV);
 	if (leaves && texel.a < 0.5) discard;
 	vec3 normal = normalize(inNormal);
-	if (!leaves && !gl_FrontFacing) normal = -normal;
+	if (!leaves) normal = normalTowardsCamera(normal, dFdx(inPosition), dFdy(inPosition), pc.campos - inPosition);
 	outAlbedo = vec4(pow(packColour(pow(texel.rgb, vec3(2.2)), pack, leaves), vec3(1.0 / 2.2)), 1.0); // the same colours as the meshes
 	// the impostor card faces the camera, so store the normal relative to this view (x right, y up, z to the viewer)
 	vec3 toViewer = pc.sundir;
