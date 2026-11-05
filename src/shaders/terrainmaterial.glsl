@@ -209,62 +209,88 @@ struct TerrainSurface {
 
 struct RockCover {
 	float cliffMix; // how much of the cliff photo over the base rock
+	float cliffBig; // its second, bigger and shifted copy's share (no 18m repeat across a whole face)
 	int kind;		// which other rock
-	float kindMix;
+	float kindMix;	// how much of it over the cliff / base rock
 };
 
-// mask = how much bare rock this is. the other rocks come in slow noise patches (~100-250m) and fade out towards
-// where they switch (the base rock between them)
+// mask = how much bare rock this is. every choice comes from its own slow noise, so a mountainside changes stone
+// every 50-150m: the cliff photo in about half of it, the other rocks in their own patches over it (they tint the
+// cliff's structure, they don't hide it), the base rock where neither is
 RockCover rockCover(vec2 worldXZ, float mask) {
 	RockCover r;
-	r.cliffMix = mask * 0.85;
+	r.cliffMix = mask * 0.85 * smoothstep(0.38, 0.6, detailValueNoise(worldXZ * 0.03 + 41.0));
+	r.cliffBig = smoothstep(0.3, 0.7, detailValueNoise(worldXZ * 0.05 - 71.0));
 	float k = detailValueNoise(worldXZ * 0.035 - 13.0) * 3.0;
 	float within = fract(k);
 	r.kind = TERRAIN_ROCK_KINDS_FIRST + min(int(k), 2);
-	r.kindMix = mask * 0.45 * smoothstep(0.0, 0.2, within) * (1.0 - smoothstep(0.8, 1.0, within))
-			  * smoothstep(0.4, 0.65, detailValueNoise(worldXZ * 0.05 + 7.0));
+	r.kindMix = mask * 0.6 * smoothstep(0.0, 0.2, within) * (1.0 - smoothstep(0.8, 1.0, within))
+			  * smoothstep(0.35, 0.6, detailValueNoise(worldXZ * 0.06 + 7.0));
 	return r;
 }
 
 DetailUV scaleUV(DetailUV d, float k) { return DetailUV(d.uv * k, d.dx * k, d.dy * k); }
 
-// the cliff photo and the other rock over one projection's base material. near = that projection's near layer
+// the cliff photo, then the other rock, over one projection's base material. near = that projection's near layer
 // (uv = world / textureRepeatNear)
 void rockBlend(RockCover r, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, inout vec3 albedo, inout vec3 normal) {
-	if (r.kindMix > 0.01) {
-		Material m = sampleMaterial(r.kind, near, far, macro, farWeight, macroWeight, false);
-		vec3 rock = mix(vec3(dot(m.albedo, vec3(0.3, 0.59, 0.11))), m.albedo, 0.6); // weathered, less saturated
-		albedo = mix(albedo, rock, r.kindMix);
-		normal = normalize(mix(normal, normalize(m.normal), r.kindMix));
-	}
 	if (r.cliffMix > 0.01) {
-		DetailUV cliffNear = scaleUV(near, ubo.textureRepeatNear / CLIFF_SIZE);
-		DetailUV cliffFar = scaleUV(near, ubo.textureRepeatNear / (CLIFF_SIZE * 1.6)); // a bigger tile in the distance
-		Material m = sampleMaterial(TERRAIN_CLIFF, cliffNear, cliffFar, cliffFar, farWeight, 0.0, false);
+		vec3 cAlbedo = vec3(0.0), cNormal = vec3(0.0);
+		for (int i = 0; i < 2; i++) {
+			float w = i == 0 ? 1.0 - r.cliffBig : r.cliffBig;
+			if (w < 0.01) continue;
+			float size = CLIFF_SIZE * (i == 0 ? 1.0 : 1.7);
+			DetailUV cliffNear = scaleUV(near, ubo.textureRepeatNear / size);
+			cliffNear.uv += i == 0 ? vec2(0.0) : vec2(0.37, 0.61); // a different part of the photo
+			DetailUV cliffFar = scaleUV(cliffNear, 1.0 / 1.6); // a bigger tile in the distance
+			Material m = sampleMaterial(TERRAIN_CLIFF, cliffNear, cliffFar, cliffFar, farWeight, 0.0, false);
+			cAlbedo += m.albedo * w;
+			cNormal += normalize(m.normal) * w;
+		}
 		// mostly its light and shade: cliff_side is canyon orange, the mountains here are grey stone
-		float luma = dot(m.albedo, vec3(0.3, 0.59, 0.11));
-		vec3 cliff = mix(vec3(luma) * vec3(1.02, 1.0, 0.97), m.albedo, 0.18);
+		float luma = dot(cAlbedo, vec3(0.3, 0.59, 0.11));
+		vec3 cliff = mix(vec3(luma) * vec3(1.02, 1.0, 0.97), cAlbedo, 0.18);
 		// most of it up close, where its blocks and joints show; further out the base rock's streaks carry the shape
 		float mixHere = r.cliffMix * mix(1.0, 0.45, farWeight);
 		albedo = mix(albedo, cliff, mixHere);
-		normal = normalize(mix(normal, normalize(m.normal), mixHere));
+		normal = normalize(mix(normal, normalize(cNormal), mixHere));
 	}
+	if (r.kindMix > 0.01) {
+		Material m = sampleMaterial(r.kind, near, far, macro, farWeight, macroWeight, false);
+		vec3 rock = mix(vec3(dot(m.albedo, vec3(0.3, 0.59, 0.11))), m.albedo, 0.65); // weathered, less saturated
+		albedo = mix(albedo, rock, r.kindMix);
+		normal = normalize(mix(normal, normalize(m.normal), r.kindMix * 0.6)); // the cliff's relief stays
+	}
+}
+
+// the heightmap bilinearly filtered at full precision (the hardware's filter weights are only ~8 bit), wrapping
+// like the ring buffer's REPEAT sampler
+float heightmapExact(vec2 uv) {
+	ivec2 size = textureSize(heightmap, 0);
+	vec2 coord = uv * vec2(size) - 0.5;
+	vec2 f = fract(coord);
+	ivec2 i = ivec2(floor(coord));
+	ivec2 i0 = (i % size + size) % size, i1 = ((i + 1) % size + size) % size;
+	float a = texelFetch(heightmap, ivec2(i0.x, i0.y), 0).a, b = texelFetch(heightmap, ivec2(i1.x, i0.y), 0).a;
+	float c = texelFetch(heightmap, ivec2(i0.x, i1.y), 0).a, d = texelFetch(heightmap, ivec2(i1.x, i1.y), 0).a;
+	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
 TerrainSurface shadeTerrain(TerrainShading s) {
 	vec2 size = vec2(textureSize(heightmap, 0));
 	vec2 readCoord = s.readCoord;
 
-	float hR = textureLodOffset(heightmap, readCoord, 0.0, ivec2(1, 0)).a;
-	float hL = textureLodOffset(heightmap, readCoord, 0.0, ivec2(-1, 0)).a;
-	float hT = textureLodOffset(heightmap, readCoord, 0.0, ivec2(0, 1)).a;
-	float hB = textureLodOffset(heightmap, readCoord, 0.0, ivec2(0, -1)).a;
+	// (exact filtering: the slope and the normal are differences of nearly equal heights, scaled up a lot)
+	float hR = heightmapExact(readCoord + vec2(1.0, 0.0) / size);
+	float hL = heightmapExact(readCoord - vec2(1.0, 0.0) / size);
+	float hT = heightmapExact(readCoord + vec2(0.0, 1.0) / size);
+	float hB = heightmapExact(readCoord - vec2(0.0, 1.0) / size);
 
 	float dzdx = (hR - hL) * heightmapSlopeScale(size.x);
 	float dzdy = (hT - hB) * heightmapSlopeScale(size.x);
 	float slope = dzdx * dzdx + dzdy * dzdy;
 
-	vec4 terrainData = vec4(textureLod(climateMap, readCoord, 0.0).rgb, textureLod(heightmap, readCoord, 0.0).a); // climate (half resolution), height
+	vec4 terrainData = vec4(textureLod(climateMap, readCoord, 0.0).rgb, heightmapExact(readCoord)); // climate (half resolution), height
 	vec3 climate = terrainData.rgb;
 	float terrainHeight = terrainData.a;
 
@@ -288,9 +314,11 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// (only where it shows: mountains, and cliffs anywhere. the lowlands skip the 4 extra heightmap reads)
 	float curvature = 0.0;
 	if (mountains > 0.01 || slope > 0.3) {
+		// exact bilinear (texel fetches, filtered in fp32): the difference of nearly equal heights times ~160 amplified
+		// the hardware filter's coarse sub-texel weights into blocky steps in the snow cover
 		vec2 curvatureStep = 3.0 / size;
-		float around = textureLod(heightmap, readCoord + vec2(curvatureStep.x, 0.0), 0.0).a + textureLod(heightmap, readCoord - vec2(curvatureStep.x, 0.0), 0.0).a
-					 + textureLod(heightmap, readCoord + vec2(0.0, curvatureStep.y), 0.0).a + textureLod(heightmap, readCoord - vec2(0.0, curvatureStep.y), 0.0).a;
+		float around = heightmapExact(readCoord + vec2(curvatureStep.x, 0.0)) + heightmapExact(readCoord - vec2(curvatureStep.x, 0.0))
+					 + heightmapExact(readCoord + vec2(0.0, curvatureStep.y)) + heightmapExact(readCoord - vec2(0.0, curvatureStep.y));
 		curvature = (around * 0.25 - terrainHeight) * s.factor / (3.0 * ubo.terrainSize / size.x);
 	}
 	float gully = smoothstep(0.01, 0.12, curvature), ridge = smoothstep(-0.01, -0.12, curvature);
