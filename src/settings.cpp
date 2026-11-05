@@ -210,7 +210,7 @@ void Application::drawSettings() {
 	check("Volumetric fog", &s.volumetricFog);
 	ImGui::SetItemTooltip("Mist pooling in the valleys (thickest around sunrise), haze, and light shafts through the trees");
 	ImGui::BeginDisabled(!s.volumetricFog);
-	const char* fogQualities[] = { "160x90x32", "240x135x64 (ultra)" };
+	const char* fogQualities[] = { "160x90x16", "240x135x32 (ultra)" };
 	changed |= ImGui::Combo("Fog resolution", &s.fogQuality, fogQualities, 2);
 	slider("Fog density", &s.fogDensity, 0.0f, 4.0f);
 	slider("Valley mist", &s.valleyMist, 0.0f, 4.0f);
@@ -325,7 +325,7 @@ void Application::applySettings() {
 	m_FogMist = s.valleyMist;
 	ubo.volumetricFog = s.volumetricFog ? 1.0f : 0.0f;
 	ubo.fogDistance = 2400.0f / metersPerUnit;
-	glm::uvec3 fogGrid = s.fogQuality >= 1 ? glm::uvec3(240, 135, 64) : glm::uvec3(160, 90, 32); // (half the slices they had: no visible difference)
+	glm::uvec3 fogGrid = s.fogQuality >= 1 ? glm::uvec3(240, 135, 32) : glm::uvec3(160, 90, 16); // (a quarter of the slices they once had: the frame barely changes, measured with the slices multiplier)
 	if(fogGrid != m_FogGrid) {
 		if(m_FogInjectLayout == VK_NULL_HANDLE) m_FogGrid = fogGrid; // not set up yet, initVolumetricFog uses it
 		else {

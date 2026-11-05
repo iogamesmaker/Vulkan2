@@ -58,7 +58,7 @@ struct GraphicsSettings {
 
 	// volumetric fog (volfog.glsl): mist pooling in valleys, haze, beams through trees and past ridges
 	bool volumetricFog = true;
-	int fogQuality = 0;		  // froxel grid: 0 = 160x90x32, 1 = 240x135x64
+	int fogQuality = 0;		  // froxel grid: 0 = 160x90x16, 1 = 240x135x32
 	float fogDensity = 1.0f;  // everything
 	float valleyMist = 1.0f;  // the ground mist on top of the haze
 

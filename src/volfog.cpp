@@ -60,7 +60,7 @@ void Application::initVolumetricFog() {
 	m_FogIntegrateEffect = loadComputeShader("src/shaders/bin/volfog_integrate.comp.spv", "volumetric fog integrate", integrateLayout);
 
 	// the render set's binding 7 has to be valid from the first frame on, fog or not
-	createFogVolumes(m_FogGrid.x > 0 ? m_FogGrid : glm::uvec3(160, 90, 64));
+	createFogVolumes(m_FogGrid.x > 0 ? m_FogGrid : glm::uvec3(160, 90, 16));
 
 	m_DeletionQueue.push([this]() {
 		destroyFogVolumes();
