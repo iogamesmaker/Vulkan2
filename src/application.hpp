@@ -499,6 +499,16 @@ private:
 	TerrainCache m_TerrainCache;
 	// the "debug textures" window: render targets, shadow maps, LUTs, and the layouts they're in at the end of a frame
 	DebugView m_DebugView;
+	// "GPU draw counts": the indirect draw buffers of the GPU driven passes copied back every frame (drawstats.hpp)
+	bool m_ShowDrawStats = false;
+	AllocatedBuffer m_DrawStatsReadback{}; // FRAME_OVERLAP slots of all the systems' buffers
+	VkDeviceSize m_DrawStatsSlotBytes = 0;
+	bool m_DrawStatsWritten[FRAME_OVERLAP] = {};
+	std::vector<DrawStat> m_DrawStats;
+	std::vector<DrawStatBuffer> drawStatBuffers() const;
+	void recordDrawStats(VkCommandBuffer cmd);
+	void readDrawStats();
+	void drawDrawStatsWindow();
 	std::vector<DebugTexture> debugTextures();
 	bool m_HiZValid = false;
 	glm::mat4 m_HiZViewProj{ 1.0f };

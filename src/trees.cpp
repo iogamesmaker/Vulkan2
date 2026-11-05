@@ -346,8 +346,8 @@ void Trees::init(Application* engine, const AllocatedImage& heightmap, const All
 	m_PlacedCount = engine->createBuffer(sizeof(uint32_t), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_OcclusionBuffer = engine->createBuffer(sizeof(OcclusionData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_Instances = engine->createBuffer((MAX_INSTANCES + 1) * sizeof(glm::vec4) * 2, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY); // + the impostor bake
-	m_Commands = engine->createBuffer(BINS * sizeof(VkDrawIndexedIndirectCommand), storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-	m_ImpostorCommands = engine->createBuffer(sizeof(VkDrawIndirectCommand), storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_Commands = engine->createBuffer(BINS * sizeof(VkDrawIndexedIndirectCommand), storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_ImpostorCommands = engine->createBuffer(sizeof(VkDrawIndirectCommand), storage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 
 	m_CommandTemplate.resize(BINS);
 	for(uint32_t bin = 0; bin < BINS; bin++) {

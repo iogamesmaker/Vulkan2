@@ -394,7 +394,7 @@ void ShadowFilter::setTargets(const AllocatedImage& drawImage, const AllocatedIm
 		VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &image.imageView));
 	};
 	create(m_Direct, DIRECT_LIGHT_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT); // sampled: the debug view
-	create(m_Temp, VK_FORMAT_R16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT);
+	create(m_Temp, VK_FORMAT_R16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT); // sampled: the debug view
 
 	VkDescriptorImageInfo images[4] = {
 		{ VK_NULL_HANDLE, drawImage.imageView, VK_IMAGE_LAYOUT_GENERAL },

@@ -2,6 +2,7 @@
 #define FOLIAGE_HPP
 
 #include <vk_types.h>
+#include "drawstats.hpp"
 
 class Application;
 
@@ -41,6 +42,13 @@ public:
 	void draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet);
 	// grass near the camera into a shadow cascade
 	void drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj);
+	// the "GPU draw counts" window (drawstats.hpp)
+	std::vector<DrawStatBuffer> drawStatBuffers() const { return { { m_Indirect.buffer, sizeof(VkDrawIndirectCommand) * 3 } }; }
+	void drawStats(const std::vector<const uint8_t*>& data, std::vector<DrawStat>& out) const {
+		out.push_back(sumNonIndexed("grass, near ring (curved blades)", data[0], 2, 1));
+		out.push_back(sumNonIndexed("grass, outer rings", data[0], 0, 1));
+		out.push_back(sumNonIndexed("grass, shadow casters", data[0], 1, 1));
+	}
 
 	void drawImGui();
 

@@ -44,6 +44,7 @@ public:
 	void record(VkCommandBuffer cmd, const std::vector<DebugTexture>& textures, uint32_t frameNumber);
 
 	bool m_Open = false;
+	void select(int index) { m_Selected = index; } // (VULKAN2_DEBUGTEX_CYCLE)
 	float m_Near = 0.02f, m_Far = 20000.0f; // the camera's, for depth as distance
 
 private:
