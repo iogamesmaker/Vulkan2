@@ -214,6 +214,11 @@ void Application::drawSettings() {
 	changed |= ImGui::Combo("Fog resolution", &s.fogQuality, fogQualities, 2);
 	slider("Fog density", &s.fogDensity, 0.0f, 4.0f);
 	slider("Valley mist", &s.valleyMist, 0.0f, 4.0f);
+	// TEMPORARY: the fog with more / fewer slices, and only the difference to the normal one on screen
+	slider("Fog slices multiplier", &s.fogSliceMultiplier, 0.1f, 2.0f);
+	ImGui::SetItemTooltip("At 1 the fog as usual. Otherwise a second fog volume with this many times the slices is rendered and the screen shows ONLY the difference between the two");
+	ImGui::SameLine();
+	if(ImGui::SmallButton("1.0##slices")) { s.fogSliceMultiplier = 1.0f; changed = true; }
 	ImGui::EndDisabled();
 
 	if(ImGui::CollapsingHeader("Advanced")) {
@@ -326,14 +331,17 @@ void Application::applySettings() {
 	ubo.volumetricFog = s.volumetricFog ? 1.0f : 0.0f;
 	ubo.fogDistance = 2400.0f / metersPerUnit;
 	glm::uvec3 fogGrid = s.fogQuality >= 1 ? glm::uvec3(240, 135, 64) : glm::uvec3(160, 90, 32); // (half the slices they had: no visible difference)
-	if(fogGrid != m_FogGrid) {
-		if(m_FogInjectLayout == VK_NULL_HANDLE) m_FogGrid = fogGrid; // not set up yet, initVolumetricFog uses it
+	bool compareChanged = s.fogSliceMultiplier != m_FogSliceMultiplier;
+	m_FogSliceMultiplier = s.fogSliceMultiplier;
+	if(fogGrid != m_Fog.grid || compareChanged) {
+		if(m_FogInjectLayout == VK_NULL_HANDLE) m_Fog.grid = fogGrid; // not set up yet, initVolumetricFog uses it
 		else {
 			{
 				std::lock_guard<std::mutex> lock(m_QueueMutex);
 				vkDeviceWaitIdle(m_Device); // frames in flight still read the old volumes
 			}
-			createFogVolumes(fogGrid);
+			if(fogGrid != m_Fog.grid) createFogVolumes(m_Fog, fogGrid);
+			updateFogCompare(); // follows the base grid
 		}
 	}
 	if(m_Device) {

@@ -2357,6 +2357,14 @@ bool Application::updateShots() {
 	m_Camera.pitch = shot.pitch;
 	m_AtmosphereManager.setTimeOfDay(shot.hour, false);
 	// enough frames for the heightmap, tree placement, shadow cascades and the smoothed GPU timers to settle
+	// VULKAN2_FOG_SLICES=<multiplier>: TEMPORARY, the fog slices comparison. switched on once the exposure has
+	// settled on the normal frame (it stays frozen on the difference image, like moving the slider does)
+	if(m_ShotFrames == 60) {
+		if(const char* slices = std::getenv("VULKAN2_FOG_SLICES")) {
+			m_Settings.fogSliceMultiplier = static_cast<float>(std::atof(slices));
+			applySettings();
+		}
+	}
 	if(++m_ShotFrames == 90 || (m_ShotPair && m_ShotFrames == 91)) m_CaptureThisFrame = true;
 	return true;
 }
@@ -2663,10 +2671,10 @@ std::vector<DebugTexture> Application::debugTextures() {
 		add(i ? "TAA history B" : "TAA history A", m_History[i].imageView, read, DebugTexHint::Hdr, m_History[i].imageExtent);
 	// volumetric fog (volfog.cpp): the froxel grid, always in GENERAL
 	for(int i = 0; i < 2; i++)
-		add(i ? "fog froxels B (rgb in-scattering, a = extinction)" : "fog froxels A (rgb in-scattering, a = extinction)", m_FogFroxels[i].imageView,
-			VK_IMAGE_LAYOUT_GENERAL, DebugTexHint::Hdr, m_FogFroxels[i].imageExtent).kind = DebugTexKind::Tex3D;
-	add("fog integrated (rgb towards the camera, a = transmittance)", m_FogIntegrated.imageView, VK_IMAGE_LAYOUT_GENERAL, DebugTexHint::Hdr,
-		m_FogIntegrated.imageExtent).kind = DebugTexKind::Tex3D;
+		add(i ? "fog froxels B (rgb in-scattering, a = extinction)" : "fog froxels A (rgb in-scattering, a = extinction)", m_Fog.froxels[i].imageView,
+			VK_IMAGE_LAYOUT_GENERAL, DebugTexHint::Hdr, m_Fog.froxels[i].imageExtent).kind = DebugTexKind::Tex3D;
+	add("fog integrated (rgb towards the camera, a = transmittance)", m_Fog.integrated.imageView, VK_IMAGE_LAYOUT_GENERAL, DebugTexHint::Hdr,
+		m_Fog.integrated.imageExtent).kind = DebugTexKind::Tex3D;
 	// clouds
 	add("clouds raw (this frame's march, before the reprojection)", m_CloudRaw.imageView, read, DebugTexHint::Hdr, m_CloudRaw.imageExtent);
 	add("clouds history", m_CloudHistory.imageView, read, DebugTexHint::Hdr, m_CloudHistory.imageExtent);
