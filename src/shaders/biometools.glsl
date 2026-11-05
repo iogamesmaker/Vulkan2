@@ -92,9 +92,12 @@ vec3 treeChances(vec4 data, float treelineJitter, float density) {
 
 // terrain.frag's rock / snow line noise, the same function at the same heightmap coordinate
 float lineHash(vec2 p) {
-	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-	p3 += dot(p3, p3.yzx + 33.33);
-	return fract((p3.x + p3.y) * p3.z);
+	// exact integer math on the lattice point: the float hash (fract chains) is chaotic, the compiler fusing its
+	// multiply-adds differently for the cells either side of a border gave different values for the same point,
+	// hard seams in the noise (the snow edge's stripes), worse the further from the world's origin
+	uvec2 q = uvec2(ivec2(p)) * uvec2(1597334673u, 3812015801u);
+	uint n = (q.x ^ q.y) * 1597334673u;
+	return float(n >> 8) * (1.0 / 16777216.0);
 }
 
 float lineValueNoise(vec2 p) {

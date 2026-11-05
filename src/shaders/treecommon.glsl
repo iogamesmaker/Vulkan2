@@ -201,7 +201,14 @@ float trunkRadius(uint species, float height) {
 
 // the tree types' colours (uv.w of the mesh, trees.cpp): the branch photos are shared, this sets them apart.
 // 1 spruce, 2 pine, 3 oak, 5 birch. albedo linear, bark uv wraps around the trunk once
-float treeHash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float treeHash(vec2 p) {
+	// exact integer math on the lattice point: the float hash (fract chains) is chaotic, the compiler fusing its
+	// multiply-adds differently for the cells either side of a border gave different values for the same point,
+	// hard seams in the noise (the snow edge's stripes), worse the further from the world's origin
+	uvec2 q = uvec2(ivec2(p)) * uvec2(1597334673u, 3812015801u);
+	uint n = (q.x ^ q.y) * 1597334673u;
+	return float(n >> 8) * (1.0 / 16777216.0);
+}
 float treeNoise(vec2 p) {
 	vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
 	return mix(mix(treeHash(i), treeHash(i + vec2(1, 0)), u.x), mix(treeHash(i + vec2(0, 1)), treeHash(i + vec2(1, 1)), u.x), u.y);

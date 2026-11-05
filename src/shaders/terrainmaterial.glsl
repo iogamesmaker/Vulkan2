@@ -14,9 +14,12 @@
 // ------------------------------------------------------------------ texturing helpers
 
 float hash12(vec2 p) {
-	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-	p3 += dot(p3, p3.yzx + 33.33);
-	return fract((p3.x + p3.y) * p3.z);
+	// exact integer math on the lattice point: the float hash (fract chains) is chaotic, the compiler fusing its
+	// multiply-adds differently for the cells either side of a border gave different values for the same point,
+	// hard seams in the noise (the snow edge's stripes), worse the further from the world's origin
+	uvec2 q = uvec2(ivec2(p)) * uvec2(1597334673u, 3812015801u);
+	uint n = (q.x ^ q.y) * 1597334673u;
+	return float(n >> 8) * (1.0 / 16777216.0);
 }
 
 float valueNoise(vec2 p) {
@@ -255,14 +258,14 @@ RockDetail rockStrata(float h, vec2 worldXZ, vec2 gradient, vec3 dPdx, vec3 dPdy
 	r.material = TERRAIN_STRATA_FIRST + int(pick * 4.0) % 3;
 	float fl = fract(layer);
 	float soft = smoothstep(0.0, 0.12, fl) * (1.0 - smoothstep(0.88, 1.0, fl));
-	float formation = smoothstep(0.35, 0.7, detailValueNoise(worldXZ * 0.03 + 3.0)) * smoothstep(0.2, 0.55, detailValueNoise(worldXZ * 0.15 + id * 1.7));
+	float formation = smoothstep(0.2, 0.5, detailValueNoise(worldXZ * 0.03 + 3.0)) * smoothstep(0.15, 0.45, detailValueNoise(worldXZ * 0.15 + id * 1.7));
 	r.materialMix = colourWeight * (pick < 0.75 ? 0.5 : 0.0) * soft * formation;
 	if (r.weight <= 0.0) return r;
 
 	// big layers: their ledges come and go along the face (blocky, broken, not contour lines)
 	float f;
 	vec2 big = strataStep(layer, layerGrad, 0.3, f); // wide, rounded risers (narrow ones read as knife cuts)
-	float ledge = smoothstep(0.3, 0.6, detailValueNoise(worldXZ * vec2(0.35, 0.35) + id * 3.7));
+	float ledge = smoothstep(0.2, 0.5, detailValueNoise(worldXZ * vec2(0.35, 0.35) + id * 3.7));
 	r.slope = big * ledge * 0.4; // part way: full treads lay flat and the faces read as rice terraces
 	// thin layering inside them (shale), weaker
 	float fFine;
