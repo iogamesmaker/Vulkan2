@@ -259,10 +259,9 @@ float dunes(vec2 p) {
 	return ridges;
 }
 
-// the erosion filter carves gullies down every slope. the lowlands get it as strongly as the mountains (relative to
-// their relief, which is scaled down per biome in lowlandMix), except the farmland (soil), which stays smooth. at 0.4
-// the rolling hills were smooth blobs
-#define LOWLAND_EROSION 1.4 // times EROSION_STRENGTH (0.22). at 2.0 the gullies' walls cut long narrow scarps along the hillsides
+// the erosion filter carves gullies down every slope: the mountains (and the foothills, by the mountain weight) in
+// full, the lowland biomes only lightly. (stronger, up to 2x, cut long narrow scarps along every lowland hill)
+#define LOWLAND_EROSION 0.25 // times EROSION_STRENGTH: the lowlands are only lightly weathered, the mountains get it in full
 
 // the lowland biomes' shapes mixed by their cover. h = the eroded hills, hSmooth = without erosion (the farmland),
 // dune = the desert's dunes on top
