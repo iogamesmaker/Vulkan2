@@ -14,6 +14,8 @@ namespace {
 	constexpr SpeciesFile SPECIES_FILES[] = {
 		{ "fern_02", false }, { "dry_branches_medium_01", true }, { "shrub_02", false }, { "shrub_03", false }, { "nettle_plant", false },
 		{ "periwinkle_plant", true }, { "shrub_sorrel_01", false }, { "weed_plant_02", false }, { "dandelion_01", false },
+		{ "flower_gazania", false }, { "flower_ursinia", false }, { "flower_empodium", false }, { "flower_stinkkruid", false },
+		{ "wild_rooibos_bush", false },
 	};
 	constexpr size_t MAX_TRIANGLES = 9600; // the dense variants (some dandelions, a periwinkle) cost more than they show
 
@@ -66,26 +68,40 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 		fastgltf::Asset& gltf = asset.get();
 		for(const fastgltf::Node& node : gltf.nodes) {
 			if(!node.meshIndex || m_Meshes.size() >= MAX_MESHES) continue;
-			const fastgltf::Primitive& p = gltf.meshes[*node.meshIndex].primitives[0];
-			if(!p.indicesAccessor) continue;
-			const fastgltf::Accessor& indexAccessor = gltf.accessors[*p.indicesAccessor];
-			if(indexAccessor.count / 3 > MAX_TRIANGLES) continue;
-			auto position = p.findAttribute("POSITION"), normal = p.findAttribute("NORMAL"), uv = p.findAttribute("TEXCOORD_0");
-			if(position == p.attributes.end() || normal == p.attributes.end() || uv == p.attributes.end()) continue;
+			// every primitive of the node into one mesh (some plants are split into twigs / leaves / stems, all on
+			// the same texture)
+			const fastgltf::Mesh& gltfMesh = gltf.meshes[*node.meshIndex];
+			size_t triangles = 0;
+			bool usable = true;
+			for(const fastgltf::Primitive& p : gltfMesh.primitives) {
+				usable &= p.indicesAccessor && p.findAttribute("POSITION") != p.attributes.end() && p.findAttribute("NORMAL") != p.attributes.end()
+						  && p.findAttribute("TEXCOORD_0") != p.attributes.end();
+				if(p.indicesAccessor) triangles += gltf.accessors[*p.indicesAccessor].count / 3;
+			}
+			if(!usable || triangles > MAX_TRIANGLES) continue;
 
 			glm::mat4 transform = nodeMatrix(node);
 			size_t first = vertices.size();
-			const fastgltf::Accessor& positions = gltf.accessors[position->accessorIndex];
-			vertices.resize(first + positions.count);
-			fastgltf::iterateAccessorWithIndex<glm::vec3>(gltf, positions, [&](glm::vec3 v, size_t i) {
-				vertices[first + i].positionSpecies = glm::vec4(glm::vec3(transform * glm::vec4(v, 1.0f)) * toWorld, static_cast<float>(s));
-			});
-			fastgltf::iterateAccessorWithIndex<glm::vec3>(gltf, gltf.accessors[normal->accessorIndex], [&](glm::vec3 v, size_t i) {
-				vertices[first + i].normalHeight = glm::vec4(glm::normalize(glm::mat3(transform) * v), 0.0f);
-			});
-			fastgltf::iterateAccessorWithIndex<glm::vec2>(gltf, gltf.accessors[uv->accessorIndex], [&](glm::vec2 v, size_t i) {
-				vertices[first + i].uv = glm::vec4(v, 0.0f, 0.0f);
-			});
+			Mesh mesh;
+			mesh.firstIndex = static_cast<uint32_t>(indices.size());
+			mesh.vertexOffset = static_cast<int32_t>(first);
+			for(const fastgltf::Primitive& p : gltfMesh.primitives) {
+				size_t base = vertices.size();
+				const fastgltf::Accessor& positions = gltf.accessors[p.findAttribute("POSITION")->accessorIndex];
+				vertices.resize(base + positions.count);
+				fastgltf::iterateAccessorWithIndex<glm::vec3>(gltf, positions, [&](glm::vec3 v, size_t i) {
+					vertices[base + i].positionSpecies = glm::vec4(glm::vec3(transform * glm::vec4(v, 1.0f)) * toWorld, static_cast<float>(s));
+				});
+				fastgltf::iterateAccessorWithIndex<glm::vec3>(gltf, gltf.accessors[p.findAttribute("NORMAL")->accessorIndex], [&](glm::vec3 v, size_t i) {
+					vertices[base + i].normalHeight = glm::vec4(glm::normalize(glm::mat3(transform) * v), 0.0f);
+				});
+				fastgltf::iterateAccessorWithIndex<glm::vec2>(gltf, gltf.accessors[p.findAttribute("TEXCOORD_0")->accessorIndex], [&](glm::vec2 v, size_t i) {
+					vertices[base + i].uv = glm::vec4(v, 0.0f, 0.0f);
+				});
+				uint32_t offset = static_cast<uint32_t>(base - first); // indices are relative to the mesh's vertexOffset
+				fastgltf::iterateAccessor<uint32_t>(gltf, gltf.accessors[*p.indicesAccessor], [&](uint32_t index) { indices.push_back(index + offset); });
+			}
+			mesh.indexCount = static_cast<uint32_t>(indices.size()) - mesh.firstIndex;
 			// standing on its lowest point, the height up the plant for the wind and the AO
 			float bottom = 1e9f, top = -1e9f, radius = 0.0f;
 			for(size_t i = first; i < vertices.size(); i++) {
@@ -99,16 +115,11 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 				radius = std::max(radius, glm::length(glm::vec3(v.positionSpecies)));
 			}
 
-			Mesh mesh;
-			mesh.firstIndex = static_cast<uint32_t>(indices.size());
-			mesh.vertexOffset = static_cast<int32_t>(first);
-			fastgltf::iterateAccessor<uint32_t>(gltf, indexAccessor, [&](uint32_t index) { indices.push_back(index); });
-			mesh.indexCount = static_cast<uint32_t>(indices.size()) - mesh.firstIndex;
 			m_Meshes.push_back(mesh);
 			species[s].meshes.y++;
 			species[s].size.x = std::max(species[s].size.x, radius);
 		}
-		// lightest first: further away groundcover.comp only picks from the lighter half (a poor man's LOD)
+		// lightest first: groundcover.comp lets the dense upper half reach less far
 		std::sort(m_Meshes.begin() + species[s].meshes.x, m_Meshes.end(), [](const Mesh& a, const Mesh& b) { return a.indexCount < b.indexCount; });
 
 	}
@@ -262,18 +273,6 @@ void GroundCover::destroy() {
 
 // ---------------------------------------------------------------- per frame
 
-static void groundCoverBarrier(VkCommandBuffer cmd, VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
-	VkMemoryBarrier2 barrier{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-	barrier.srcStageMask = srcStage;
-	barrier.srcAccessMask = srcAccess;
-	barrier.dstStageMask = dstStage;
-	barrier.dstAccessMask = dstAccess;
-	VkDependencyInfo dependency{ .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-	dependency.memoryBarrierCount = 1;
-	dependency.pMemoryBarriers = &barrier;
-	vkCmdPipelineBarrier2(cmd, &dependency);
-}
-
 void GroundCover::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 	m_PushConstants = pc;
 	m_PushConstants.extra = m_Density; // groundcover.comp: pc.interaction
@@ -281,16 +280,16 @@ void GroundCover::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 	const VkPipelineStageFlags2 drawStages = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
 	const VkAccessFlags2 drawReads = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
 
-	groundCoverBarrier(cmd, drawStages, drawReads, VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+	vkutil::memoryBarrier(cmd, drawStages, drawReads, VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 	vkCmdUpdateBuffer(cmd, m_Commands.buffer, 0, m_CommandTemplate.size() * sizeof(VkDrawIndexedIndirectCommand), m_CommandTemplate.data());
-	groundCoverBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Scatter.pipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Scatter.layout, 0, 1, &m_ComputeSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_Scatter.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
-	vkCmdDispatch(cmd, (SIDE_BIG * SIDE_BIG + SIDE_SMALL * SIDE_SMALL + 63) / 64, 1, 1);
+	vkCmdDispatch(cmd, (THREADS + 63) / 64, 1, 1);
 
-	groundCoverBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, drawStages, drawReads);
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, drawStages, drawReads);
 }
 
 void GroundCover::draw(VkCommandBuffer cmd) {

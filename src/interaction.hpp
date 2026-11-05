@@ -6,7 +6,7 @@
 
 class Application;
 
-// where the player's feet were over the last few seconds (interaction.glsl): grass, undergrowth and the low leaves of
+// where the player's feet were over the last few seconds (interaction.glsl): the grass and the low leaves of
 // trees bend away from it and spring back after. a small uniform buffer, written with vkCmdUpdateBuffer at the start
 // of every frame so the frames in flight never see it change under them
 class PlayerTrail {

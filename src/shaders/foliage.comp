@@ -36,21 +36,6 @@ const uint RING_SIDE[4] = uint[](140u, 200u, 200u, 200u);		  // Foliage::RING_SI
 const float CELL_SIZE[4] = float[](0.065, 0.18, 0.36, 0.7);	  // world units (~6m each)
 const float RING_RADIUS[4] = float[](4.5, 18.0, 36.0, 70.0); // ~27m of dense grass, ~110m of mid, ~215m in total, wheat to ~420m
 
-// terrain.frag's rock / snow line noise, the same function at the same heightmap coordinate
-float lineHash(vec2 p) {
-	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-	p3 += dot(p3, p3.yzx + 33.33);
-	return fract((p3.x + p3.y) * p3.z);
-}
-
-float lineValueNoise(vec2 p) {
-	vec2 i = floor(p);
-	vec2 f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(lineHash(i), lineHash(i + vec2(1.0, 0.0)), u.x),
-			   mix(lineHash(i + vec2(0.0, 1.0)), lineHash(i + vec2(1.0, 1.0)), u.x), u.y);
-}
-
 void main() {
 	uint id = gl_GlobalInvocationID.x;
 	// the rings are consecutive thread ranges
@@ -105,25 +90,11 @@ void main() {
 	float dzdy = (hT - hB) * heightmapSlopeScale(size.x);
 	float slope = dzdx * dzdx + dzdy * dzdy;
 
-	// grow wherever the ground SHOWS grass: terrain.frag's own rock and snow masks, noise included, so slopes and
-	// alpine meadows are covered right up to where the ground turns to rock / snow, and nothing grows on the stone.
-	// (a fixed slope 0.3 cut and a height cut on every mountain left lots of grass texture with nothing growing on it;
-	// the masks without the noise put grass on the rock wherever the noise had pulled the rock line down)
+	// grow wherever the ground SHOWS grass (biometools.glsl), nothing on stone at all (the rock texture shows from ~0.2)
 	float mountains = mountainWeight(data.rgb);
-	float lineNoise = lineValueNoise(uv * 180.0) * 0.65 + lineValueNoise(uv * 900.0) * 0.35;
-	// bare rock on cliffs: in the lowlands only where it's really steep (the erosion's small scarps on the grassy hills
-	// were all rock streaks), the mountains from a gentler slope
-	float steepRock = smoothstep(mix(0.6, 0.35, mountains), mix(1.0, 0.75, mountains), slope + (lineNoise - 0.5) * 0.3);
-	float rockline = 0.58 + (lineNoise - 0.5) * 0.12;
-	float highRock = smoothstep(rockline, rockline + 0.06, data.a) * mountains;
-	float snowline = mix(0.44, 0.68, data.r);
-	// the snow exactly as terrain.frag maps it (its cover goes through a 0.3..0.7 edge, the plants stop inside it)
-	float snowCover = smoothstep(snowline - 0.03, snowline + 0.06, data.a) * (1.0 - steepRock * 0.8);
-	float snowCap = smoothstep(0.1, 0.3, snowCover) * mountains; // (a margin: the terrain frays its snow edge with noise)
-	float stone = max(steepRock, highRock);
-	if (stone > 0.2) return; // the rock texture already shows through from ~0.2: no grass on stone at all
-	float bare = max(stone * 4.0, snowCap);
-	if (bare > 0.85) return;
+	GroundBareness ground = groundBareness(uv, data, slope);
+	if (ground.stone > 0.2 || ground.bare > 0.85) return;
+	float bare = ground.bare;
 
 	float weights[BIOME_COUNT];
 	groundCover(data.rgb, true, weights);
@@ -144,16 +115,10 @@ void main() {
 						   mix(hash42(patchCell + vec2(0, 1)).x, hash42(patchCell + vec2(1, 1)).x, smoothFrac.x), smoothFrac.y);
 	float flowers = grass * smoothstep(0.6, 0.85, patchNoise) * 0.45;
 
-	// undergrowth on forest floors (taiga). not in the meadows: leafy branch cards lying in the grass read as
-	// smeared photos up close
-	// (a sparse accent: each clump is ten big leaf cards, at 30% of the clumps they buried the grass)
-	float undergrowth = weights[BIOME_TAIGA] * 0.06 * (1.0 - barren) * (1.0 - field);
-
 	float type;
-	if (rnd.z < undergrowth) type = FOLIAGE_UNDERGROWTH;
-	else if (rnd.z - undergrowth < wheat) type = FOLIAGE_WHEAT;
-	else if (rnd.z - undergrowth < wheat + flowers) type = FOLIAGE_FLOWERS;
-	else if (rnd.z - undergrowth < wheat + grass) type = FOLIAGE_GRASS;
+	if (rnd.z < wheat) type = FOLIAGE_WHEAT;
+	else if (rnd.z < wheat + flowers) type = FOLIAGE_FLOWERS;
+	else if (rnd.z < wheat + grass) type = FOLIAGE_GRASS;
 	else return;
 	// the outermost ring is for the wheat fields only: a field is big and flat, its plants stand out against the
 	// sky far away (a meadow's grass far away is just the ground's colour)

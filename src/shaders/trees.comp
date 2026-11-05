@@ -70,7 +70,7 @@ void appendImpostor(uint mesh, TreeInstance instance) {
 		return;
 	}
 	instance.params.w = packImpostorFade(mesh, instance.params.w);
-	instances[binOffset(27u) + slot] = instance;
+	instances[binOffset(3u * TREE_MESHES) + slot] = instance;
 }
 
 void main() {
@@ -86,16 +86,15 @@ void main() {
 	float dist = distance(pos + vec3(0.0, treeHeight * 0.5, 0.0), pc.campos);
 
 	float jitter = fract(tree.params.z * 0.618); // per tree, so LOD switches don't form rings
-	bool bush = mesh / VARIANTS == SPECIES_BUSH;
 
 	TreeInstance instance;
 	instance.posScale = vec4(pos, treeHeight);
-	float fade = bush ? 1.0 - smoothstep(BUSH_RADIUS * 0.8, BUSH_RADIUS, dist) : 1.0 - smoothstep(PLACE_RADIUS * 0.85, PLACE_RADIUS, dist);
+	float fade = 1.0 - smoothstep(PLACE_RADIUS * 0.85, PLACE_RADIUS, dist);
 	if (fade <= 0.0) return;
 	instance.params = vec4(tree.params.xyz, fade);
 
 	// shadow casters near the camera, regardless of where it's looking (no dither in the shadow pass)
-	if (dist < SHADOW_DISTANCE) append(18u + mesh, instance);
+	if (dist < SHADOW_DISTANCE) append(2u * TREE_MESHES + mesh, instance);
 
 	// frustum cull with a sphere around the tree
 	vec4 clip = pc.viewproj * vec4(pos + vec3(0.0, treeHeight * 0.5, 0.0), 1.0);
@@ -104,9 +103,8 @@ void main() {
 	// behind a hill / ridge / other trees (last frame's depth): no mesh, no impostor. the shadow casters above stay
 	if (occluded(pos + vec3(0.0, treeHeight * 0.5, 0.0), treeHeight * 0.6)) return;
 
-	float lod0 = LOD0_DISTANCE * (0.8 + 0.4 * jitter) * (bush ? 0.5 : 1.0);
+	float lod0 = LOD0_DISTANCE * (0.8 + 0.4 * jitter);
 	if (dist < lod0) { append(mesh, instance); return; }
-	if (bush) { append(9u + mesh, instance); return; } // bushes end before the impostors start
 
 	// mesh -> impostor: a dithered crossfade over a band instead of a hard switch, drawn as both inside it
 	float lod1 = LOD1_DISTANCE * (0.85 + 0.3 * jitter);
@@ -114,7 +112,7 @@ void main() {
 	if (toImpostor < 1.0) {
 		TreeInstance meshInstance = instance;
 		meshInstance.params.w = fade * (1.0 - toImpostor);
-		append(9u + mesh, meshInstance);
+		append(TREE_MESHES + mesh, meshInstance);
 	}
 	if (toImpostor > 0.0) {
 		instance.params.w = fade * toImpostor;

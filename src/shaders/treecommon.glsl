@@ -2,14 +2,16 @@
 #ifndef TREE_COMMON_GLSL
 #define TREE_COMMON_GLSL
 
+#include "biometools.glsl" // treeChances
+
 #define SPECIES_CONIFER	  0
 #define SPECIES_BROADLEAF 1
-#define SPECIES_BUSH	  2
-#define SPECIES_COUNT	  3
+#define SPECIES_COUNT	  2 // (the bushes are in the ground cover, groundcover.comp)
 #define VARIANTS		  3 // meshes per species
+#define TREE_MESHES (SPECIES_COUNT * VARIANTS)
 
-// instance bins, must match trees.hpp: main LOD0 (9), main LOD1 (9), shadow casters (9, LOD1), impostors (9)
-#define BINS_PER_GROUP 9
+// instance bins, must match trees.hpp: LOD0, LOD1, shadow casters (LOD1) per mesh, then the impostor pool
+#define BINS_PER_GROUP TREE_MESHES
 // per mesh, sized for wall to wall conifers (3 meshes share them) seen from above, where the whole radius is in view
 #define CAPACITY_LOD0  4096u
 #define CAPACITY_LOD1  32768u
@@ -21,10 +23,11 @@
 #define MAX_PLACED_TREES 1048576u // Trees::MAX_PLACED, more than the placement circle can hold (~994k cells)
 
 uint binOffset(uint bin) {
-	if (bin < 9u)  return bin * CAPACITY_LOD0;
-	if (bin < 18u) return 9u * CAPACITY_LOD0 + (bin - 9u) * CAPACITY_LOD1;
-	if (bin < 27u) return 9u * (CAPACITY_LOD0 + CAPACITY_LOD1) + (bin - 18u) * CAPACITY_SHADOW;
-	return 9u * (CAPACITY_LOD0 + CAPACITY_LOD1 + CAPACITY_SHADOW) + (bin - 27u) * CAPACITY_IMPOSTOR;
+	const uint M = uint(TREE_MESHES);
+	if (bin < M)	  return bin * CAPACITY_LOD0;
+	if (bin < 2u * M) return M * CAPACITY_LOD0 + (bin - M) * CAPACITY_LOD1;
+	if (bin < 3u * M) return M * (CAPACITY_LOD0 + CAPACITY_LOD1) + (bin - 2u * M) * CAPACITY_SHADOW;
+	return M * (CAPACITY_LOD0 + CAPACITY_LOD1 + CAPACITY_SHADOW) + (bin - 3u * M) * CAPACITY_IMPOSTOR;
 }
 
 // impostor instances carry their mesh in the integer part of the fade (the fade is 0..1)
@@ -32,13 +35,13 @@ float packImpostorFade(uint mesh, float fade) { return float(mesh) * 2.0 + clamp
 void unpackImpostorFade(float packed, out uint mesh, out float fade) { mesh = uint(packed * 0.5); fade = packed - float(mesh) * 2.0; }
 
 uint binCapacity(uint bin) {
-	return bin < 9u ? CAPACITY_LOD0 : (bin < 18u ? CAPACITY_LOD1 : (bin < 27u ? CAPACITY_SHADOW : CAPACITY_IMPOSTOR));
+	const uint M = uint(TREE_MESHES);
+	return bin < M ? CAPACITY_LOD0 : (bin < 2u * M ? CAPACITY_LOD1 : (bin < 3u * M ? CAPACITY_SHADOW : CAPACITY_IMPOSTOR));
 }
 
 // persistent placement (trees_place.comp), re-run when the camera moved, culled every frame (trees.comp)
 #define PLACE_RADIUS 900.0	   // ~5.4km
 #define PLACE_GRID_SIDE 1125u  // 2 * PLACE_RADIUS / TREE_CELL_SIZE
-#define BUSH_RADIUS 160.0
 #define LOD0_DISTANCE 45.0 // the full crowns (inner branch rings) only up close
 #define LOD1_DISTANCE 160.0	   // impostors beyond (the full crowns are too many cards for further out)
 #define IMPOSTOR_BLEND 0.08   // fraction of LOD1_DISTANCE the mesh and the impostor crossfade over (dithered, a wide band shows as a checker pattern)
@@ -139,30 +142,7 @@ struct TreePlacement {
 	vec4 rnd, rnd2;
 };
 
-// the chances of a conifer, a broadleaf and a bush in a cell (before its roll), from the ground there (the heightmap's
-// rgba: climate + height). treelineJitter moves the treeline (-0.5..0.5 per tree, 0 = the average), density = the
-// setting. placeTree rolls against these; horizonao.comp bakes their average into the forest canopy map
-vec3 treeChances(vec4 data, float treelineJitter, float density) {
-	float temperature = data.r, moisture = data.g, height = data.a;
-	float weights[BIOME_COUNT];
-	groundCover(data.rgb, true, weights);
-	float mountains = mountainWeight(data.rgb);
-
-	// treeline on mountains, a bit lower where it's cold
-	float treeline = mix(0.42, 0.56, temperature) + treelineJitter * 0.05;
-	float belowTreeline = mountains * (1.0 - smoothstep(treeline - 0.04, treeline, height));
-	float lowland = 1.0 - mountains;
-
-	float conifer = (weights[BIOME_TAIGA] * 0.75 + weights[BIOME_SNOW] * 0.1) * lowland
-				  + belowTreeline * (temperature < 0.5 ? 0.45 : 0.1);
-	float broadleaf = weights[BIOME_PLAINS] * (0.03 + 0.55 * smoothstep(0.6, 0.78, moisture)) * lowland
-					+ belowTreeline * (temperature < 0.5 ? 0.05 : 0.35);
-	float bush = (weights[BIOME_PLAINS] * 0.08 + weights[BIOME_TAIGA] * 0.06 + weights[BIOME_DESERT] * 0.04) * lowland
-			   + belowTreeline * 0.05;
-	// no trees or bushes in wheat fields (the same field mask as foliage.comp)
-	float field = smoothstep(0.35, 0.5, weights[BIOME_WHEAT] * lowland);
-	return vec3(conifer, broadleaf, bush) * density * (1.0 - field);
-}
+// treeChances (where trees grow) lives in biometools.glsl, the ground cover uses it too
 
 bool placeTree(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld, ivec2 offset, float terrainSize, float density, out TreePlacement t) {
 	t.rnd = hash42(cellIndex * 1.37 + 11.0);
@@ -186,14 +166,17 @@ bool placeTree(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld
 	vec3 chances = treeChances(data, t.rnd2.x - 0.5, density);
 
 	float roll = t.rnd.z;
+	bool young = false;
 	if (roll < chances.x) t.species = SPECIES_CONIFER;
 	else if (roll < chances.x + chances.y) t.species = SPECIES_BROADLEAF;
-	else if (roll < chances.x + chances.y + chances.z) t.species = SPECIES_BUSH;
-	else return false;
+	else if (roll < chances.x + chances.y + chances.z) {
+		// a young tree out in the open / at the forest's edge: whichever kind grows around here
+		young = true;
+		t.species = chances.x > chances.y || (chances.x + chances.y < 1e-4 && temperature < 0.4) ? SPECIES_CONIFER : SPECIES_BROADLEAF;
+	} else return false;
 
-	if (t.species == SPECIES_CONIFER)		 t.height = mix(2.4, 4.4, t.rnd2.y);	// ~15-26m
-	else if (t.species == SPECIES_BROADLEAF) t.height = mix(2.0, 3.4, t.rnd2.y);	// ~12-20m
-	else									 t.height = mix(0.18, 0.42, t.rnd2.y); // ~1-2.5m
+	if (t.species == SPECIES_CONIFER) t.height = young ? mix(0.6, 1.5, t.rnd2.y) : mix(2.4, 4.4, t.rnd2.y); // ~4-9m, ~15-26m
+	else							  t.height = young ? mix(0.5, 1.3, t.rnd2.y) : mix(2.0, 3.4, t.rnd2.y); // ~3-8m, ~12-20m
 
 	// snowy trees where the ground is snowy too: the snow biome and above the snowline on mountains (terrain.frag).
 	// (cold alone used to frost them, which gave white trees standing on green ground in the taiga)
@@ -209,15 +192,15 @@ bool placeTree(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld
 	return true;
 }
 
-// trunk radius at the base, matches the meshes in trees.cpp (0 for bushes, you can walk through those)
+// trunk radius at the base, matches the meshes in trees.cpp
 float trunkRadius(uint species, float height) {
-	return species == SPECIES_CONIFER ? height * 0.018 : (species == SPECIES_BROADLEAF ? height * 0.03 : 0.0);
+	return species == SPECIES_CONIFER ? height * 0.018 : height * 0.03;
 }
 
 #endif
 
 // the tree types' colours (uv.w of the mesh, trees.cpp): the branch photos are shared, this sets them apart.
-// 1 spruce, 2 pine, 3 oak, 4 autumn bush, 5 birch, 6 bush. albedo linear, bark uv wraps around the trunk once
+// 1 spruce, 2 pine, 3 oak, 5 birch. albedo linear, bark uv wraps around the trunk once
 float treeHash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float treeNoise(vec2 p) {
 	vec2 i = floor(p), f = fract(p), u = f * f * (3.0 - 2.0 * f);
@@ -233,7 +216,6 @@ vec3 treeTint(vec3 albedo, float tint, bool leaves, vec2 uv) {
 		if (type == 2) return albedo * vec3(1.0, 1.02, 0.9);
 		if (type == 3) return albedo * vec3(0.9, 1.0, 0.82);
 		if (type == 5) return albedo * vec3(1.18, 1.2, 0.8);  // birch: light, yellowish
-		if (type == 6) return albedo * vec3(0.85, 0.95, 0.8);
 		return albedo;
 	}
 	// bark: the photos are calibrated bright (linear ~0.15 / ~0.2), real bark is ~0.05-0.1 and next to the leaves

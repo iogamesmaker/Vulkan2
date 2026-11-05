@@ -20,17 +20,6 @@ struct FogInjectPushConstants {
 };
 static_assert(sizeof(FogInjectPushConstants) == 224, "must match volfog_inject.comp");
 
-void memoryBarrier(VkCommandBuffer cmd, VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
-	VkMemoryBarrier2 barrier{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
-	barrier.srcStageMask = srcStage;
-	barrier.srcAccessMask = srcAccess;
-	barrier.dstStageMask = dstStage;
-	barrier.dstAccessMask = dstAccess;
-	VkDependencyInfo dependency{ .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-	dependency.memoryBarrierCount = 1;
-	dependency.pMemoryBarriers = &barrier;
-	vkCmdPipelineBarrier2(cmd, &dependency);
-}
 }
 
 void Application::initVolumetricFog() {
@@ -162,7 +151,7 @@ void Application::drawVolumetricFog(VkCommandBuffer cmd) {
 	const glm::mat4 viewProj = m_UnjitteredProjection * m_View;
 
 	// last frame's lookups (lighting) are done with the integrated volume, its injection with these froxels
-	memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
 				  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
 
 	FogInjectPushConstants pc{};
@@ -187,7 +176,7 @@ void Application::drawVolumetricFog(VkCommandBuffer cmd) {
 	vkCmdPushConstants(cmd, m_FogInjectEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 	vkCmdDispatch(cmd, (m_FogGrid.x + 7) / 8, (m_FogGrid.y + 7) / 8, m_FogGrid.z);
 
-	memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
 
 	glm::vec4 far(m_AtmosphereManager.m_AtmosphereData.fogDistance, 0.0f, 0.0f, 0.0f);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_FogIntegrateEffect.pipeline);
@@ -196,7 +185,7 @@ void Application::drawVolumetricFog(VkCommandBuffer cmd) {
 	vkCmdDispatch(cmd, (m_FogGrid.x + 7) / 8, (m_FogGrid.y + 7) / 8, 1);
 
 	// lighting.comp
-	memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
+	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT,
 				  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
 
 	m_FogPrevViewProj = viewProj;

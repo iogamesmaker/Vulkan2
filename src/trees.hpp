@@ -10,9 +10,10 @@ class Application;
 
 constexpr uint32_t TREE_TEXTURES = 10; // must match treeTextures[] in the tree shaders
 
-// procedural conifers, broadleaf trees and bushes. the meshes are generated once at startup (a few variants per
+// procedural conifers and broadleaf trees (young ones too, smaller). the meshes are generated once at startup (a few variants per
 // species, each with a cheaper LOD), a compute pass scatters them per biome around the camera every frame into
-// per mesh bins, and every bin is an indexed indirect draw. bins 18..26 are shadow casters near the camera.
+// per mesh bins, and every bin is an indexed indirect draw: LOD0, LOD1, then shadow casters near the camera (one bin
+// per mesh each), the impostors have their own draw. bushes are part of the ground cover (groundcover.hpp)
 
 struct TreeVertex {
 	glm::vec4 positionWind;	  // xyz in tree space (height 1), w = how much it sways (0 at the base)
@@ -45,11 +46,11 @@ public:
 	bool m_Enabled = true;
 	float m_Density = 1.0f;
 private:
-	// init's writes of the heightmap + path map into the sets that sample them
+	// init's writes of the heightmap + climate map into the sets that sample them
 	void setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler);
 	struct Mesh { uint32_t firstIndex, indexCount; };
 	
-	static constexpr uint32_t SPECIES = 3, VARIANTS = 3, MESHES = SPECIES * VARIANTS;
+	static constexpr uint32_t SPECIES = 2, VARIANTS = 3, MESHES = SPECIES * VARIANTS; // treecommon.glsl TREE_MESHES
 	static constexpr uint32_t BINS = MESHES * 3; // indexed draws: LOD0, LOD1, shadow (impostors have their own commands)
 	// must match treecommon.glsl
 	static constexpr uint32_t MAX_PLACED = 1048576; // more than the placement circle holds (~994k cells), can't overflow
