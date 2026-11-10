@@ -1860,7 +1860,10 @@ void Application::drawLighting(VkCommandBuffer cmd) {
 
 		// the cloud shadow, baked into g for the window around the camera: every frame (the sun moves, the weather
 		// eases in), one dispatch instead of 4 density samples in every lit pixel, froxel and far fog step
-		if(m_CloudMapValid && atmosphere.clouds > 0.5f && atmosphere.cloudShadows > 0.5f && m_SunDir.y > 0.03f) {
+		// (for whichever of the sun / moon is up: the moon behind a cloud has to darken the land too, or its glints
+		// on the grass shimmered under a dark sky)
+		glm::vec3 cloudLightDir = m_SunDir.y > 0.0f ? m_SunDir : -m_SunDir;
+		if(m_CloudMapValid && atmosphere.clouds > 0.5f && atmosphere.cloudShadows > 0.5f && cloudLightDir.y > 0.03f) {
 			VkMemoryBarrier2 barrier{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
 			VkDependencyInfo dependency{ .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
 			dependency.memoryBarrierCount = 1;
@@ -1873,7 +1876,7 @@ void Application::drawLighting(VkCommandBuffer cmd) {
 			CloudShadowPushConstants shadow{};
 			shadow.size = glm::ivec2(CLOUD_SHADOW_WINDOW);
 			shadow.start = glm::ivec2(glm::floor(camWorldKm / texel)) - CLOUD_SHADOW_WINDOW / 2;
-			shadow.sun = glm::vec4(m_SunDir, 0.0f);
+			shadow.sun = glm::vec4(cloudLightDir, 0.0f);
 			shadow.texel = texel;
 			VkDescriptorSet shadowSets[] = { m_CloudShadowSet, m_AtmosphereManager.getRenderDescriptor() };
 			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudShadowEffect.pipeline);

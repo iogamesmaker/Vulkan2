@@ -51,7 +51,8 @@ float fogExtinction(float height, float ground, float around, vec3 worldMetres, 
 	float hollow = clamp((around - ground) * metres / 25.0, 0.0, 1.0); // 25m below the surroundings: a proper valley
 	float above = max(height - ground, 0.0) * metres;
 	// mist: a thick layer in the valleys, only a trace elsewhere, heaviest from night through sunrise
-	float dawn = 1.0 - 0.85 * smoothstep(0.03, 0.3, f.sunHeight);
+	// (a low sun thickens it, but not the 7x it was: every sunset in a forest hollow was a wall of red fog)
+	float dawn = 1.0 - 0.6 * smoothstep(0.03, 0.3, f.sunHeight);
 	float mistHeight = mix(5.0, 40.0, hollow); // metres
 	float mist = f.mist * dawn * mix(0.02, 1.0, hollow * hollow) * exp(-above / mistHeight);
 	if (mist > 1e-5) {
@@ -66,7 +67,9 @@ float fogExtinction(float height, float ground, float around, vec3 worldMetres, 
 	float weatherHaze = f.weatherHaze * mix(1.0, exp(-above / 120.0) * 1.6, clamp(f.weatherHaze / 5.0, 0.0, 1.0));
 	// (the haze ~4.5km of mean free path near the ground: enough for the sun's shafts through trees and past ridges
 	// to show on a clear day. at 3km it veiled every view, the distance haze is on top)
-	return (mist * 0.025 + haze * 0.00019 * (1.0 + weatherHaze * 10.0)) * f.density * metres;
+	// (the mist at its thickest ~150m of visibility, it was ~20m: you saw 10m into a valley at sunset. the weather's
+	// haze 6x per unit, rain closed in to a few dozen metres at 10x)
+	return (mist * 0.006 + haze * 0.00019 * (1.0 + weatherHaze * 6.0)) * f.density * metres;
 }
 
 // distance along the view ray (world units) at slice coordinate s (0 = camera, 1 = far)

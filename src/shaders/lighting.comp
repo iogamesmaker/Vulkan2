@@ -258,6 +258,19 @@ void main() {
 	else if (material == MAT_IMPOSTOR) roughness = 0.65;
 	else if (material == MAT_GRASS) roughness = 0.5;
 	else if (material == MAT_TERRAIN && roughness > 0.99) roughness = mix(0.85, 0.5, smoothstep(0.4, 0.65, min(albedo.r, min(albedo.g, albedo.b))));
+	// specular anti-aliasing (Kaplanyan / Tokuyoshi): where the normal changes a lot from pixel to pixel (grass
+	// blades, leaf edges, needles) a narrow highlight lands on some pixels and not their neighbours and flickers as
+	// they move. the normals' spread over the neighbours widens the lobe to what a pixel actually covers
+	{
+		vec3 nRight = texelFetch(gbufferNormal, min(p + ivec2(1, 0), size - 1), 0).xyz;
+		vec3 nDown = texelFetch(gbufferNormal, min(p + ivec2(0, 1), size - 1), 0).xyz;
+		// (a sky neighbour has no normal, garbage or zero: normalize(0) is NaN, which the TAA would smear around)
+		vec3 dn1 = dot(nRight, nRight) > 0.25 ? normalize(nRight) - normal : vec3(0.0);
+		vec3 dn2 = dot(nDown, nDown) > 0.25 ? normalize(nDown) - normal : vec3(0.0);
+		float variance = 0.25 * (dot(dn1, dn1) + dot(dn2, dn2));
+		float kernel = min(2.0 * variance, 0.25);
+		roughness = sqrt(clamp(roughness * roughness + kernel, 0.0, 1.0));
+	}
 
 	// the weather on the ground (weather.cpp): fresh snow settling on what faces up, in patches that grow together as
 	// it builds up; rain darkening everything it soaks and filling the flat spots with puddles
@@ -349,8 +362,9 @@ void main() {
 	// cloud shadows drifting over the land: the sun ray from here through the cloud layer (clouds.glsl)
 	vec2 heightmapTexels = vec2(textureSize(heightmapClimate, 0));
 	vec2 worldKm = (position.xz + vec2(pc.mapOffset) * (pc.terrainSize / heightmapTexels.x)) * ubo.worldScale + pc.cloudWind;
-	float clouds = ubo.cloudShadows > 0.5 ? cloudShadow(worldKm, ubo.baseAltitude + position.y * ubo.worldScale, sunDir) : 1.0;
-	direct *= mix(vec3(1.0), vec3(clouds), step(0.0, sunDir.y)); // the moon lights through, it's dim anyway
+	// (the moon too: its specular glints kept shimmering on the grass with the moon hidden behind a cloud)
+	float clouds = ubo.cloudShadows > 0.5 ? cloudShadow(worldKm, ubo.baseAltitude + position.y * ubo.worldScale, shadowDir) : 1.0;
+	direct *= clouds;
 
 	// the far forests' shade: the trees only cast real shadows out to SHADOW_DISTANCE (treecommon.glsl), past it a
 	// forest was lit like open ground, a flat bright green. there the light comes through the canopy map's crown
