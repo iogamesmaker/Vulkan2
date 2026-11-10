@@ -49,6 +49,16 @@ void main() {
 	// horizontal distance, like terrain.tese (the 3D one floated / buried the rocks when the camera was above them)
 	float groundY = terrainHeight(heightmap, placement.uv, distXZ, terrainSpacing(distXZ, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
 	groundY -= meshSag(heightmap, placement.uv, terrainSpacing(dist, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize); // (foliage.comp)
+	// a log rests on the ground under its two ends (propplacement.glsl tilts it to them): its middle at the line
+	// between them, or lower where the ground under the middle is (a dip: the ends dig in a little, never float)
+	if (mesh >= PROP_FIRST_LOG && mesh < PROP_FIRST_STUMP) {
+		vec2 axisWorld = vec2(cos(placement.yaw), -sin(placement.yaw)) * LOG_HALF_LENGTH * scale;
+		vec2 axisUV = axisWorld / pc.terrainSize;
+		float spacing = terrainSpacing(distXZ, pc.lodPixels, pc.projScale);
+		float endA = terrainHeight(heightmap, placement.uv - axisUV, distXZ, spacing, pc.factor, pc.terrainSize);
+		float endB = terrainHeight(heightmap, placement.uv + axisUV, distXZ, spacing, pc.factor, pc.terrainSize);
+		groundY = min(groundY, 0.5 * (endA + endB));
+	}
 	PropInstance instance;
 	// rocks sink in a bit (over uneven ground their base would float), logs lie on the ground
 	instance.posScale = vec4(xz.x, groundY - (mesh < PROP_FIRST_LOG ? ROCK_SINK : (mesh < PROP_FIRST_STUMP ? LOG_SINK : 0.01)) * scale, xz.y, scale);

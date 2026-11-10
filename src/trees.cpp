@@ -525,5 +525,4 @@ void Trees::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {
 
 void Trees::drawImGui() {
 	ImGui::Checkbox("Trees", &m_Enabled);
-	ImGui::SliderFloat("Tree density", &m_Density, 0.0f, 3.0f);
 }

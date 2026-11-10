@@ -19,6 +19,7 @@ const vec3 ROCK_RADII[PROP_ROCKS] = vec3[](vec3(0.382, 0.603, 0.55), vec3(0.29, 
 const float LOG_RADII[PROP_LOGS] = float[](0.033, 0.051);
 const float LOG_AXIS[PROP_LOGS] = float[](0.039, 0.169);
 #define LOG_SINK 0.01
+#define LOG_HALF_LENGTH 0.45 // the log meshes run -0.5..0.5 along x (Props::loadMesh), the ends taper
 // stumps: the trunk's radius (before the roots flare out) and their height
 const float STUMP_RADII[PROP_STUMPS] = float[](0.08, 0.089);
 #define STUMP_HEIGHT 0.1
@@ -85,6 +86,13 @@ bool placeProp(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld
 	float along = dot(gradient, vec2(cos(p.yaw), -sin(p.yaw)));
 	float across = dot(gradient, vec2(sin(p.yaw), cos(p.yaw)));
 	vec2 onGround = vec2(atan(along), -atan(across));
+	// a log is long (3-6m): the slope under its middle isn't the slope between its ends, over a dip or a bump one
+	// end hung in the air. its tilt along its length comes from the ground at its two ends
+	if (p.mesh >= PROP_FIRST_LOG && p.mesh < PROP_FIRST_STUMP) {
+		vec2 axisUV = vec2(cos(p.yaw), -sin(p.yaw)) * (LOG_HALF_LENGTH * p.scale / terrainSize);
+		float endA = textureLod(hm, p.uv - axisUV, 0.0).a, endB = textureLod(hm, p.uv + axisUV, 0.0).a;
+		onGround.x = atan((endB - endA) * factor / (2.0 * LOG_HALF_LENGTH * p.scale));
+	}
 	vec2 wobble = (vec2(rnd2.y, fract(rnd2.y * 7.31 + rnd2.w)) - 0.5) * 0.4;
 	vec2 tilt = p.mesh >= PROP_FIRST_STUMP ? onGround * 0.25 : (p.mesh >= PROP_FIRST_LOG ? onGround : onGround * 0.8 + wobble);
 	p.tilt = packTilt(tilt);

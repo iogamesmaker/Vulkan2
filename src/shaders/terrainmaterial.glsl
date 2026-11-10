@@ -74,9 +74,10 @@ void addLayerNoTile(inout Material m, int index, DetailUV layer, float weight, b
 	float k = valueNoise(layer.uv * noiseScale) * 8.0;
 	float i = floor(k), f = fract(k);
 	vec2 offsetA = sin(vec2(3.0, 7.0) * i), offsetB = sin(vec2(3.0, 7.0) * (i + 1.0));
-	// (the contrast shifts the fade by up to 0.15 either way)
-	if (f < 0.25) { sampleOffset(m, index, layer, offsetA, weight, needHeight); return; }
-	if (f > 0.75) { sampleOffset(m, index, layer, offsetB, weight, needHeight); return; }
+	// (the contrast shifts the fade by up to 0.15 either way. a narrow band: it's on all the ground now, inside it
+	// everything is sampled twice)
+	if (f < 0.36) { sampleOffset(m, index, layer, offsetA, weight, needHeight); return; }
+	if (f > 0.64) { sampleOffset(m, index, layer, offsetB, weight, needHeight); return; }
 	Material a, b;
 	a.albedo = vec3(0.0); a.normal = vec3(0.0); a.height = 0.0;
 	b = a;
@@ -86,6 +87,14 @@ void addLayerNoTile(inout Material m, int index, DetailUV layer, float weight, b
 	m.albedo += mix(a.albedo, b.albedo, t) * weight;
 	m.normal += mix(a.normal, b.normal, t) * weight;
 	m.height += mix(a.height, b.height, t) * weight;
+}
+
+// the offset addLayerNoTile mostly uses here, without its cross fade: what the parallax traces (one height read per
+// step instead of two; it differs from the textures only inside the narrow fade bands)
+vec2 noTileOffset(vec2 uv) {
+	float k = valueNoise(uv * 0.6) * 8.0;
+	float i = floor(k), f = fract(k);
+	return sin(vec2(3.0, 7.0) * (f < 0.5 ? i : i + 1.0));
 }
 
 Material sampleMaterial(int index, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, bool needHeight, bool nearNoTile) {
@@ -205,6 +214,7 @@ void sampleBlend(int first, int second, float wA, DetailUV near, DetailUV far, D
 // the height of the blended surface here, with exactly the blend the textures get, so the parallax traces the
 // same surface that ends up textured
 float groundHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) {
+	uv += noTileOffset(uv); // (the top projection's near layer has its repeat broken up too, sampleBlend)
 	if (wFirst > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[nonuniformEXT(first)], uv, near.dx, near.dy).r;
 	if (wFirst < HEIGHT_BLEND_CUTOFF) return textureGrad(pom[nonuniformEXT(second)], uv, near.dx, near.dy).r;
 	float h1 = textureGrad(pom[nonuniformEXT(first)], uv, near.dx, near.dy).r;
@@ -213,19 +223,19 @@ float groundHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) 
 }
 float blendedHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) {
 	float snow = g_SnowOver;
-	if (snow > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[BIOME_SNOW], uv, near.dx, near.dy).r;
+	if (snow > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[BIOME_SNOW], uv + noTileOffset(uv), near.dx, near.dy).r;
 	float litter = g_LitterOver;
 	float h;
-	if (litter > 1.0 - HEIGHT_BLEND_CUTOFF) h = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE, near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
+	if (litter > 1.0 - HEIGHT_BLEND_CUTOFF) h = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE + noTileOffset(uv * LITTER_SCALE), near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
 	else {
 		h = groundHeight(first, second, wFirst, near, uv);
 		if (litter >= HEIGHT_BLEND_CUTOFF) {
-			float hl = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE, near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
+			float hl = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE + noTileOffset(uv * LITTER_SCALE), near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
 			h = mix(h, hl, heightBlend(h, hl, 1.0 - litter));
 		}
 	}
 	if (snow >= HEIGHT_BLEND_CUTOFF) {
-		float hs = textureGrad(pom[BIOME_SNOW], uv, near.dx, near.dy).r;
+		float hs = textureGrad(pom[BIOME_SNOW], uv + noTileOffset(uv), near.dx, near.dy).r;
 		h = mix(h, hs, materialBlend(-1, BIOME_SNOW, h, hs, 1.0 - snow));
 	}
 	return h;
@@ -450,12 +460,9 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// the forest floor under the crowns (the canopy map follows the trees actually placed), patchy at the edges of a
 	// stand and between trees, never on rock, snow or in a field. needles where the conifers grow, leaves elsewhere
 	{
-		float crowns = textureLod(skyVisibility, readCoord, 0.0).g;
-		float patches = valueNoise(s.worldXZ * 0.4 + 13.0) * 0.6 + valueNoise(s.worldXZ * 1.7 - 3.0) * 0.4;
-		// (only where the crowns close up: in open woods it turned whole hillsides into sand with ferns on it.) and up
-		// close only: from afar the crowns hide the floor and the grass between them is what shows, the litter turned
-		// every forested mountainside an autumn brown (the cache's viewDistance is huge: none baked in)
-		g_LitterOver = smoothstep(0.32, 0.5, crowns + (patches - 0.5) * 0.2) * (1.0 - rock) * (1.0 - weights[BIOME_WHEAT])
+		// (only where the crowns close up, and up close only: from afar the crowns hide the floor, the litter turned
+		// every forested mountainside an autumn brown. the cache's viewDistance is huge: none baked in)
+		g_LitterOver = forestFloorCover(skyVisibility, readCoord, s.worldXZ) * (1.0 - rock) * (1.0 - weights[BIOME_WHEAT])
 					 * (1.0 - smoothstep(45.0, 110.0, s.viewDistance));
 		vec3 trees = treeChances(vec4(climate, terrainHeight), 0.0, 1.0);
 		g_LitterKind = trees.x > trees.y ? TERRAIN_NEEDLES : TERRAIN_LEAF_LITTER;
@@ -553,7 +560,9 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	float wSum = 0.0;
 	if (wTop > 0.02) {
 		vec3 a, n;
-		sampleBlend(first, second, wA, near, far, macroLayer, farWeight, macroWeight, false, a, n);
+		// (the repeat broken up on the flat ground too: the forest floor's dirt patches printed a grid every 3.6m seen
+		// from a few metres up)
+		sampleBlend(first, second, wA, near, far, macroLayer, farWeight, macroWeight, ubo.cliffNoTile > 0.5, a, n);
 		rockBlend(rockDetail, near, far, macroLayer, farWeight, macroWeight, false, a, n);
 		albedoSum += a * wTop;
 		normalSum += normalize(mat3(va, vb, normal) * n) * wTop;

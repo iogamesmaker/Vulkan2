@@ -37,10 +37,15 @@ void main() {
 	local.xz = rotation * local.xz;
 	vec3 normal = inNormalMaterial.xyz;
 	normal.xz = rotation * normal.xz;
-	// the lean (trees_place.comp): sheared off vertical by height, the foot stays put. the normals the inverse way
-	local.xz += lean * local.y;
-	normal.y -= dot(normal.xz, lean);
-	normal = normalize(normal);
+	// the lean (trees_place.comp): the whole tree turned about its foot towards the lean's direction (a rotation,
+	// not a shear: sheared, the trunk slid sideways with height and the crown stretched, it looked skewed)
+	float leanAmount = length(lean);
+	if (leanAmount > 1e-4) {
+		vec3 axis = vec3(lean.y, 0.0, -lean.x) / leanAmount; // up x the lean's direction
+		float angle = atan(leanAmount), c = cos(angle), s = sin(angle);
+		local = local * c + cross(axis, local) * s + axis * dot(axis, local) * (1.0 - c);
+		normal = normal * c + cross(axis, normal) * s + axis * dot(axis, normal) * (1.0 - c);
+	}
 
 	float treeHeight = inst.posScale.w;
 	vec3 pos = inst.posScale.xyz + local * treeHeight;

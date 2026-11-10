@@ -94,6 +94,29 @@ bool Props::loadMesh(uint32_t mesh, std::vector<Vertex>& vertices, std::vector<u
 
 	glm::vec3 lo(1e9f), hi(-1e9f);
 	for(const Vertex& v : vertices) { lo = glm::min(lo, glm::vec3(v.positionMaterial)); hi = glm::max(hi, glm::vec3(v.positionMaterial)); }
+	if(file.kind == Kind::Log) {
+		// the scans lie on a slope of their own (one end on its root plate, the other end raised): stood on their
+		// lowest point, the far end hung in the air on flat ground. levelled about z so the lowest points near both
+		// ends (the outer 15% of the length) are at the same height
+		float length = hi.x - lo.x;
+		float lowLeft = 1e9f, lowRight = 1e9f, xLeft = lo.x, xRight = hi.x;
+		for(const Vertex& v : vertices) {
+			glm::vec3 p(v.positionMaterial);
+			if(p.x < lo.x + 0.15f * length && p.y < lowLeft) { lowLeft = p.y; xLeft = p.x; }
+			if(p.x > hi.x - 0.15f * length && p.y < lowRight) { lowRight = p.y; xRight = p.x; }
+		}
+		float angle = -std::atan2(lowRight - lowLeft, xRight - xLeft);
+		float c = std::cos(angle), s = std::sin(angle);
+		auto rotateZ = [&](glm::vec3 v) { return glm::vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z); };
+		lo = glm::vec3(1e9f); hi = glm::vec3(-1e9f);
+		for(Vertex& v : vertices) {
+			glm::vec3 p = rotateZ(glm::vec3(v.positionMaterial));
+			v.positionMaterial = glm::vec4(p, v.positionMaterial.w);
+			v.normalAO = glm::vec4(rotateZ(glm::vec3(v.normalAO)), v.normalAO.w);
+			lo = glm::min(lo, p); hi = glm::max(hi, p);
+		}
+		fmt::print("props: {} levelled by {:.1f} degrees\n", file.folder, glm::degrees(angle));
+	}
 	glm::vec3 centre = (lo + hi) * 0.5f;
 	glm::vec3 origin;
 	float scale;

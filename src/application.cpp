@@ -817,11 +817,8 @@ void Application::initDefaultData() {
 	if(const char* treeDist = std::getenv("VULKAN2_TREEDIST")) m_Settings.treeDetailDistance = static_cast<float>(std::atof(treeDist));
 	// VULKAN2_TAA=0: TAA off (flicker captures)
 	if(const char* taa = std::getenv("VULKAN2_TAA")) m_Settings.taa = std::atoi(taa) != 0;
-	// VULKAN2_GROUNDCOVER=<density>, 0 = off (comparison captures)
-	if(const char* density = std::getenv("VULKAN2_GROUNDCOVER")) {
-		m_Settings.groundCoverDensity = static_cast<float>(std::atof(density));
-		m_Settings.groundCover = m_Settings.groundCoverDensity > 0.0f;
-	}
+	// VULKAN2_GROUNDCOVER=0: ground cover off (comparison captures; how much grows is the world's call, not a setting)
+	if(const char* groundCover = std::getenv("VULKAN2_GROUNDCOVER")) m_Settings.groundCover = std::atof(groundCover) > 0.0f;
 	if(!m_Shots.empty()) m_Settings.vsync = false; // see parseShots
 	applySettings();
 }

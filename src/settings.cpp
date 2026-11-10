@@ -184,12 +184,10 @@ void Application::drawSettings() {
 	const char* ranges[] = { "Near (~27m)", "Medium (~110m)", "Far (~215m, wheat ~420m)" };
 	changed |= ImGui::Combo("Grass distance", &s.grassRange, ranges, 3);
 	check("Trees", &s.trees);
-	slider("Tree density", &s.treeDensity, 0.0f, 3.0f);
 	slider("Tree detail distance", &s.treeDetailDistance, 0.5f, 1.5f);
 	ImGui::SetItemTooltip("How far trees stay full meshes before they turn into flat impostors. Forests cost much less closer in");
 	check("Rocks + logs", &s.props);
 	check("Ground cover", &s.groundCover);
-	slider("Ground cover density", &s.groundCoverDensity, 0.0f, 2.0f);
 
 	ImGui::SeparatorText("Lighting + post");
 	check("SSAO", &s.ssao);
@@ -265,9 +263,9 @@ void Application::applySettings() {
 	m_TerrainPC.tessellationFactor = s.tessellation;
 
 	// the shadow casters change with these, the cached cascades have to be re-rendered
-	bool recast = m_Foliage.m_CastShadows != s.grassShadows || m_Trees.m_Enabled != s.trees || m_Trees.m_Density != s.treeDensity
+	bool recast = m_Foliage.m_CastShadows != s.grassShadows || m_Trees.m_Enabled != s.trees
 				|| m_Props.m_Enabled != s.props || m_Foliage.m_Enabled != s.foliage
-				|| m_GroundCover.m_Enabled != s.groundCover || m_GroundCover.m_Density != s.groundCoverDensity;
+				|| m_GroundCover.m_Enabled != s.groundCover;
 	m_Shadows.setQuality(s.shadows, s.softShadows);
 	{
 		uint32_t resolution = 1024u << std::clamp(s.shadowResolution, 0, 2);
@@ -288,16 +286,14 @@ void Application::applySettings() {
 	m_TerrainCacheEnabled = s.terrainCache;
 
 	// the forest canopy in the sky visibility map follows the trees: all of it re-baked when they change
-	bool canopyChanged = m_Trees.m_Enabled != s.trees || m_Trees.m_Density != s.treeDensity;
+	bool canopyChanged = m_Trees.m_Enabled != s.trees;
 	m_Foliage.m_Enabled = s.foliage;
 	m_Foliage.m_Rings = s.grassRange >= 2 ? 4 : static_cast<uint32_t>(s.grassRange) + 1; // far includes the wheat ring
 	m_Foliage.m_CastShadows = s.grassShadows;
 	m_Trees.m_Enabled = s.trees;
-	m_Trees.m_Density = s.treeDensity;
 	m_Trees.m_DetailDistance = s.treeDetailDistance;
 	m_Props.m_Enabled = s.props;
 	m_GroundCover.m_Enabled = s.groundCover;
-	m_GroundCover.m_Density = s.groundCoverDensity;
 	if(canopyChanged && m_Device && m_SkyVisibilityReady) {
 		{
 			std::lock_guard<std::mutex> lock(m_QueueMutex);

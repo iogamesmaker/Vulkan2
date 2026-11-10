@@ -126,6 +126,28 @@ struct GroundBareness {
 // rock / snow and never on the stone. (a fixed slope cut left grass texture with nothing on it; the masks without
 // the noise put plants on the rock wherever the noise had pulled the rock line down.) data = climate rgb + height,
 // slope = the squared heightmap gradient (terrain.frag's measure)
+// the forest floor's cover (0..1): where the leaf litter / needles show (terrainmaterial.glsl) and, with exactly the
+// same function, where the grass thins out (foliage.comp). they used to differ: the grass went from the raw canopy
+// map and left bare blocky holes where the litter didn't come in. canopy: horizonao.comp's map (g = the crowns, its
+// texels are ~18m: four taps half a texel apart soften the bilinear blocks), worldXZ: continuous world units
+float forestFloorHash(vec2 p) {
+	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.x + p3.y) * p3.z);
+}
+float forestFloorNoise(vec2 x) {
+	vec2 i = floor(x), f = fract(x);
+	vec2 u = f * f * (3.0 - 2.0 * f);
+	return mix(mix(forestFloorHash(i), forestFloorHash(i + vec2(1, 0)), u.x), mix(forestFloorHash(i + vec2(0, 1)), forestFloorHash(i + vec2(1, 1)), u.x), u.y);
+}
+float forestFloorCover(sampler2D canopy, vec2 uv, vec2 worldXZ) {
+	vec2 t = 0.5 / vec2(textureSize(canopy, 0));
+	float crowns = 0.25 * (textureLod(canopy, uv + t, 0.0).g + textureLod(canopy, uv - t, 0.0).g
+						 + textureLod(canopy, uv + vec2(t.x, -t.y), 0.0).g + textureLod(canopy, uv + vec2(-t.x, t.y), 0.0).g);
+	float patches = forestFloorNoise(worldXZ * 0.12 + 29.0) * 0.45 + forestFloorNoise(worldXZ * 0.4 + 13.0) * 0.35 + forestFloorNoise(worldXZ * 1.7 - 3.0) * 0.2;
+	return smoothstep(0.36, 0.56, crowns + (patches - 0.5) * 0.4);
+}
+
 GroundBareness groundBareness(vec2 uv, vec4 data, float slope) {
 	float mountains = mountainWeight(data.rgb);
 	float lineNoise = lineValueNoise(uv * 180.0) * 0.65 + lineValueNoise(uv * 900.0) * 0.35;

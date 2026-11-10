@@ -132,8 +132,7 @@ void main() {
 	float bare = ground.bare;
 	// under the crowns the floor is shaded and mostly bare (fallen leaves / needles, terrainmaterial.glsl's litter)
 	// instead of a lawn: the grass thins out with the same threshold the litter comes in with
-	float crowns = textureLod(canopyMap, uv, 0.0).g;
-	float forestFloor = smoothstep(0.32, 0.5, crowns) * (1.0 - smoothstep(45.0, 110.0, distXZ));
+	float forestFloor = forestFloorCover(canopyMap, uv, world) * (1.0 - smoothstep(45.0, 110.0, distXZ)); // (biometools.glsl, the litter's own)
 	if (hash42(cellIndex * 1.91 + 5.0 + float(ring) * 13.0).y < forestFloor * 0.85) return;
 
 	float weights[BIOME_COUNT];

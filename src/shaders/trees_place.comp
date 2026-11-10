@@ -45,6 +45,7 @@ void main() {
 	float slopeLen = length(gradient);
 	vec2 downhill = slopeLen > 1e-4 ? -gradient / slopeLen : vec2(0.0);
 	vec2 randomDir = vec2(cos(t.rnd.z * 6.2831853), sin(t.rnd.z * 6.2831853));
-	vec2 lean = downhill * min(atan(slopeLen) * 0.15, 0.06) + randomDir * 0.025 * t.rnd.w;
+	// (with the ground: the steeper, the more it leans out over the slope, up to ~6 degrees, plus 0-3 at random)
+	vec2 lean = downhill * min(atan(slopeLen) * 0.3, 0.1) + randomDir * 0.05 * t.rnd.w;
 	placed[slot].params = vec4(packYawLean(t.rnd2.z * 6.2831853, lean), t.dryness, t.rnd2.w * 1000.0, float(t.mesh));
 }

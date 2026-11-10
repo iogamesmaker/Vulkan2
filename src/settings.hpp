@@ -34,11 +34,9 @@ struct GraphicsSettings {
 	bool foliage = true;
 	int grassRange = 2; // 0 = ~27m, 1 = ~110m, 2 = ~215m
 	bool trees = true;
-	float treeDensity = 1.0f;
 	float treeDetailDistance = 1.0f; // how far trees are full meshes before they turn into impostors (x 70 units)
 	bool props = true;
 	bool groundCover = true;		 // ferns, bushes, weeds, dead branches
-	float groundCoverDensity = 1.0f;
 
 	// lighting extras + post
 	bool ssao = true;
@@ -102,7 +100,7 @@ inline GraphicsSettings qualityPreset(Quality q) {
 		s.pomDistance = 0.0f;
 		s.softShadows = false; s.shadowSmoothing = 1; s.shadowResolution = 0;
 		s.grassShadows = false; s.cloudShadows = false;
-		s.grassRange = 0; s.treeDensity = 0.7f; s.groundCoverDensity = 0.5f; s.treeDetailDistance = 0.6f;
+		s.grassRange = 0; s.treeDetailDistance = 0.6f;
 		s.ssao = false; s.contactShadows = false; s.bounceLight = false;
 		s.volumetricFog = false;
 		s.cloudResolution = 0; // quarter: the clouds are soft, the temporal resolve hides most of it
@@ -113,7 +111,7 @@ inline GraphicsSettings qualityPreset(Quality q) {
 		s.pomDistance = 25.0f; s.pomSteps = 8;
 		s.shadowSmoothing = 2;
 		s.grassShadows = false;
-		s.grassRange = 1; s.groundCoverDensity = 0.75f; s.treeDetailDistance = 0.8f;
+		s.grassRange = 1; s.treeDetailDistance = 0.8f;
 		s.contactShadows = false; s.bounceLight = false;
 		break;
 	case Quality::Ultra: // tuned for a desktop GPU at 1080p (RTX 4060 class)
@@ -122,7 +120,6 @@ inline GraphicsSettings qualityPreset(Quality q) {
 		s.pomDistance = 80.0f; s.pomSteps = 24;
 		s.shadowSmoothing = 4;
 		s.shadowResolution = 2; // 4096: ~4cm texels around the player
-		s.treeDensity = 1.3f;
 		s.fullResSSAO = true; s.cloudResolution = 2;
 		s.fogQuality = 1;
 		break;
