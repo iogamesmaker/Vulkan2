@@ -455,7 +455,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 		// (only where the crowns close up: in open woods it turned whole hillsides into sand with ferns on it.) and up
 		// close only: from afar the crowns hide the floor and the grass between them is what shows, the litter turned
 		// every forested mountainside an autumn brown (the cache's viewDistance is huge: none baked in)
-		g_LitterOver = smoothstep(0.18, 0.5, crowns + (patches - 0.5) * 0.3) * (1.0 - rock) * (1.0 - weights[BIOME_WHEAT])
+		g_LitterOver = smoothstep(0.32, 0.5, crowns + (patches - 0.5) * 0.2) * (1.0 - rock) * (1.0 - weights[BIOME_WHEAT])
 					 * (1.0 - smoothstep(45.0, 110.0, s.viewDistance));
 		vec3 trees = treeChances(vec4(climate, terrainHeight), 0.0, 1.0);
 		g_LitterKind = trees.x > trees.y ? TERRAIN_NEEDLES : TERRAIN_LEAF_LITTER;
@@ -596,10 +596,11 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// grass: a little less saturated, with drier yellowish patches (one flat bright green looked painted)
 	// (not on the forest floor: the litter isn't grass, the meadow's tints turned it a flat yellow green)
 	float grassiness = clamp(weights[BIOME_PLAINS] + weights[BIOME_TAIGA] * 0.5, 0.0, 1.0) * (1.0 - snowCap) * (1.0 - g_LitterOver);
-	// the forest floor: damp, shaded litter is darker than the photos' open ground, a touch more saturated
+	// the forest floor: damp, shaded litter is darker and browner than the photos' sunny autumn ground (their orange
+	// read as a patch of something spilt over the grass)
 	{
 		float l = dot(albedo, vec3(0.3, 0.59, 0.11));
-		albedo = mix(albedo, mix(vec3(l), albedo, 1.15) * 0.78, g_LitterOver * (1.0 - snowCap));
+		albedo = mix(albedo, mix(vec3(l), albedo, 0.7) * vec3(0.72, 0.7, 0.66), g_LitterOver * (1.0 - snowCap));
 	}
 	float grassLuma = dot(albedo, vec3(0.3, 0.59, 0.11));
 	albedo = mix(albedo, mix(vec3(grassLuma), albedo, 0.8), grassiness);
