@@ -24,6 +24,7 @@ layout(set = 0, binding = 4) uniform TerrainCacheInfo {
 	vec4 levels[TERRAIN_CACHE_LEVELS]; // xy = the baked square's first texel, z = texel size (world units), w = 1 when baked
 	vec4 params;					   // y = 1 when on, z = texels per side
 } cache;
+layout(set = 0, binding = 6) uniform sampler2D canopyMap; // horizonao.comp: g = the tree crowns over the ground
 layout(set = 0, binding = 5) uniform sampler2DArray cacheAlbedo; // sRGB (linear when read), wraps
 
 // the ground's albedo at this world position from the finest baked level that holds it, a ~1.5m average (mip 1: the
@@ -119,6 +120,10 @@ void main() {
 	GroundBareness ground = groundBareness(uv, data, slope);
 	if (ground.stone > 0.2 || ground.bare > 0.85) return;
 	float bare = ground.bare;
+	// under the crowns the floor is shaded and mostly bare (fallen leaves / needles, terrainmaterial.glsl's litter)
+	// instead of a lawn: the grass thins out with the same threshold the litter comes in with
+	float crowns = textureLod(canopyMap, uv, 0.0).g;
+	if (hash42(cellIndex * 1.91 + 5.0 + float(ring) * 13.0).y < smoothstep(0.18, 0.5, crowns) * 0.85 * (1.0 - smoothstep(45.0, 110.0, distXZ))) return;
 
 	float weights[BIOME_COUNT];
 	groundCover(data.rgb, true, weights);

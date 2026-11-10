@@ -147,6 +147,15 @@ float materialBlend(int first, int second, float h1, float h2, float wFirst) {
 // ground materials under it swapped places (both had the third strongest taken off, the ground went to zero), a
 // thin white line along every such swap, rings and ovals in the grass at the snowline. 0..1, terrainSurface sets it
 float g_SnowOver = 0.0;
+// the forest floor the same way, under the snow: fallen leaves under broadleaf trees, needles under conifers, where
+// the canopy map (horizonao.comp, g) says the crowns are. 0..1 and which texture (TERRAIN_LEAF_LITTER / _NEEDLES)
+float g_LitterOver = 0.0;
+int g_LitterKind = 10;
+#define TERRAIN_LEAF_LITTER 10 // Application::loadTextures: Poly Haven forest_leaves_02
+#define TERRAIN_NEEDLES 11	   // forrest_ground_03
+// the litter photos cover ~2m, the terrain's near tile is ~3.6m: at that size the leaves smeared into blobs
+const float LITTER_SCALE = 1.8;
+DetailUV litterUV(DetailUV d) { return DetailUV(d.uv * LITTER_SCALE, d.dx * LITTER_SCALE, d.dy * LITTER_SCALE); }
 
 // the two ground materials of one projection, height blended (one alone where the other can't show, most pixels),
 // then the snow over them, height blended against the ground's relief
@@ -158,9 +167,15 @@ void sampleBlend(int first, int second, float wA, DetailUV near, DetailUV far, D
 		return;
 	}
 	bool snowEdge = snow >= HEIGHT_BLEND_CUTOFF;
+	float litter = g_LitterOver;
+	bool litterEdge = litter >= HEIGHT_BLEND_CUTOFF && litter <= 1.0 - HEIGHT_BLEND_CUTOFF;
 	float groundHeight;
-	if (wA > 1.0 - HEIGHT_BLEND_CUTOFF || wA < HEIGHT_BLEND_CUTOFF) {
-		Material m = sampleMaterial(wA > 0.5 ? first : second, near, far, macro, farWeight, macroWeight, snowEdge, nearNoTile);
+	if (litter > 1.0 - HEIGHT_BLEND_CUTOFF) {
+		Material m = sampleMaterial(g_LitterKind, litterUV(near), litterUV(far), macro, farWeight, macroWeight, snowEdge, nearNoTile);
+		albedo = m.albedo; normal = normalize(m.normal);
+		groundHeight = m.height;
+	} else if (wA > 1.0 - HEIGHT_BLEND_CUTOFF || wA < HEIGHT_BLEND_CUTOFF) {
+		Material m = sampleMaterial(wA > 0.5 ? first : second, near, far, macro, farWeight, macroWeight, snowEdge || litterEdge, nearNoTile);
 		albedo = m.albedo; normal = normalize(m.normal);
 		groundHeight = m.height;
 	} else {
@@ -170,6 +185,14 @@ void sampleBlend(int first, int second, float wA, DetailUV near, DetailUV far, D
 		albedo = mix(m1.albedo, m2.albedo, blend);
 		normal = normalize(mix(m1.normal, m2.normal, blend));
 		groundHeight = mix(m1.height, m2.height, blend);
+	}
+	if (litterEdge) {
+		// leaves and needles pile in the hollows first, the ground's bumps poke through (the plain height blend)
+		Material l = sampleMaterial(g_LitterKind, litterUV(near), litterUV(far), macro, farWeight, macroWeight, true, nearNoTile);
+		float blend = heightBlend(groundHeight, l.height, 1.0 - litter);
+		albedo = mix(albedo, l.albedo, blend);
+		normal = normalize(mix(normal, l.normal, blend));
+		groundHeight = mix(groundHeight, l.height, blend);
 	}
 	if (snowEdge) {
 		Material s = sampleMaterial(BIOME_SNOW, near, far, macro, farWeight, macroWeight, true, nearNoTile);
@@ -191,7 +214,16 @@ float groundHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) 
 float blendedHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) {
 	float snow = g_SnowOver;
 	if (snow > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[BIOME_SNOW], uv, near.dx, near.dy).r;
-	float h = groundHeight(first, second, wFirst, near, uv);
+	float litter = g_LitterOver;
+	float h;
+	if (litter > 1.0 - HEIGHT_BLEND_CUTOFF) h = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE, near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
+	else {
+		h = groundHeight(first, second, wFirst, near, uv);
+		if (litter >= HEIGHT_BLEND_CUTOFF) {
+			float hl = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE, near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
+			h = mix(h, hl, heightBlend(h, hl, 1.0 - litter));
+		}
+	}
 	if (snow >= HEIGHT_BLEND_CUTOFF) {
 		float hs = textureGrad(pom[BIOME_SNOW], uv, near.dx, near.dy).r;
 		h = mix(h, hs, materialBlend(-1, BIOME_SNOW, h, hs, 1.0 - snow));
@@ -415,6 +447,19 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// the snow goes over the two ground materials (sampleBlend), it isn't ranked with them
 	g_SnowOver = materials[BIOME_SNOW];
 	materials[BIOME_SNOW] = 0.0;
+	// the forest floor under the crowns (the canopy map follows the trees actually placed), patchy at the edges of a
+	// stand and between trees, never on rock, snow or in a field. needles where the conifers grow, leaves elsewhere
+	{
+		float crowns = textureLod(skyVisibility, readCoord, 0.0).g;
+		float patches = valueNoise(s.worldXZ * 0.4 + 13.0) * 0.6 + valueNoise(s.worldXZ * 1.7 - 3.0) * 0.4;
+		// (only where the crowns close up: in open woods it turned whole hillsides into sand with ferns on it.) and up
+		// close only: from afar the crowns hide the floor and the grass between them is what shows, the litter turned
+		// every forested mountainside an autumn brown (the cache's viewDistance is huge: none baked in)
+		g_LitterOver = smoothstep(0.18, 0.5, crowns + (patches - 0.5) * 0.3) * (1.0 - rock) * (1.0 - weights[BIOME_WHEAT])
+					 * (1.0 - smoothstep(45.0, 110.0, s.viewDistance));
+		vec3 trees = treeChances(vec4(climate, terrainHeight), 0.0, 1.0);
+		g_LitterKind = trees.x > trees.y ? TERRAIN_NEEDLES : TERRAIN_LEAF_LITTER;
+	}
 
 	// only the two strongest materials get sampled. the third strongest is taken off both weights, so a material
 	// has faded out completely by the time it swaps places with the next one (otherwise every swap is a seam)
@@ -489,7 +534,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// so it meanders organically instead of following the smooth climate / slope gradient as a clean line
 	float edgeNoise = valueNoise(s.worldXZ * 0.35) * 0.65 + valueNoise(s.worldXZ * 1.3 + 17.0) * 0.35;
 	wA = clamp(wA + (edgeNoise - 0.5) * 0.45 * smoothstep(0.0, 0.25, wA * (1.0 - wA)), 0.0, 1.0);
-	float pomMaterial = mix(mix(POM_MATERIAL_DEPTH[second], POM_MATERIAL_DEPTH[first], wA), POM_MATERIAL_DEPTH[BIOME_SNOW], g_SnowOver);
+	float pomMaterial = mix(mix(mix(POM_MATERIAL_DEPTH[second], POM_MATERIAL_DEPTH[first], wA), 0.5, g_LitterOver), POM_MATERIAL_DEPTH[BIOME_SNOW], g_SnowOver);
 	// faded over the outer 70% of the range
 	float pomFade = ubo.pomDistance > 0.0 && ubo.pomDepth > 0.0 ? 1.0 - smoothstep(ubo.pomDistance * 0.3, ubo.pomDistance, viewDistance) : 0.0;
 	pomFade *= wTop * smoothstep(0.02, 0.1, pomMaterial);
@@ -549,7 +594,13 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	float rockLuma = dot(albedo, vec3(0.3, 0.59, 0.11));
 	albedo = mix(albedo, rockLuma * vec3(0.96, 0.97, 1.02), rockiness * 0.55 * (1.0 - rockDetail.kindMix * 0.6)); // (the other rocks keep some colour)
 	// grass: a little less saturated, with drier yellowish patches (one flat bright green looked painted)
-	float grassiness = clamp(weights[BIOME_PLAINS] + weights[BIOME_TAIGA] * 0.5, 0.0, 1.0) * (1.0 - snowCap);
+	// (not on the forest floor: the litter isn't grass, the meadow's tints turned it a flat yellow green)
+	float grassiness = clamp(weights[BIOME_PLAINS] + weights[BIOME_TAIGA] * 0.5, 0.0, 1.0) * (1.0 - snowCap) * (1.0 - g_LitterOver);
+	// the forest floor: damp, shaded litter is darker than the photos' open ground, a touch more saturated
+	{
+		float l = dot(albedo, vec3(0.3, 0.59, 0.11));
+		albedo = mix(albedo, mix(vec3(l), albedo, 1.15) * 0.78, g_LitterOver * (1.0 - snowCap));
+	}
 	float grassLuma = dot(albedo, vec3(0.3, 0.59, 0.11));
 	albedo = mix(albedo, mix(vec3(grassLuma), albedo, 0.8), grassiness);
 	// the meadow ground leans towards the grass blades' own colour, so where the grass rings thin out (or end) the

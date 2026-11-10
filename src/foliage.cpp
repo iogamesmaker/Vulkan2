@@ -22,6 +22,7 @@ void Foliage::init(Application* engine, const AllocatedImage& heightmap, const A
 	computeBuilder.add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // climate map
 	computeBuilder.add_binding(4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);		  // terrain cache info (setTerrainCache)
 	computeBuilder.add_binding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // terrain cache albedo levels
+	computeBuilder.add_binding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // the forest canopy (setCanopyMap)
 
 	m_ComputeLayout = computeBuilder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_ComputeSet = engine->g_DescriptorAllocator.allocate(m_Device, m_ComputeLayout);
@@ -154,6 +155,18 @@ void Foliage::setHeightmap(const AllocatedImage& heightmap, const AllocatedImage
 		writes[i].pImageInfo = &infos[i];
 	}
 	vkUpdateDescriptorSets(m_Device, 2, writes, 0, nullptr);
+}
+
+// the sky visibility map (horizonao.comp): its g is where the tree crowns are, the grass thins out under them
+void Foliage::setCanopyMap(VkImageView canopy, VkSampler sampler) {
+	VkDescriptorImageInfo info{ sampler, canopy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+	VkWriteDescriptorSet write{ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+	write.dstSet = m_ComputeSet;
+	write.dstBinding = 6;
+	write.descriptorCount = 1;
+	write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	write.pImageInfo = &info;
+	vkUpdateDescriptorSets(m_Device, 1, &write, 0, nullptr);
 }
 
 void Foliage::setTerrainCache(VkBuffer infoBuffer, VkImageView albedoLevels, VkSampler sampler) {

@@ -55,6 +55,7 @@ public:
 	void drawImGui();
 	// the far terrain cache's info + albedo levels (terraincache.hpp): the grass takes its colour from the baked ground
 	void setTerrainCache(VkBuffer infoBuffer, VkImageView albedoLevels, VkSampler sampler);
+	void setCanopyMap(VkImageView canopy, VkSampler sampler);
 
 	bool m_Enabled = true;
 	uint32_t m_Rings = 4;	   // how far the grass reaches: 1 near (~27m), 2 + mid (~110m), 3 + far (~215m), 4 + wheat fields (~420m)

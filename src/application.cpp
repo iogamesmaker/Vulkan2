@@ -787,6 +787,7 @@ void Application::initDefaultData() {
 	m_Foliage.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Shadows.getFormat(), m_BladeAtlas, m_FlowerAtlas, m_WheatAtlas, m_Sampler,
 				   m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_PlayerTrail.buffer());
 	m_Foliage.setTerrainCache(m_TerrainCache.getInfoBuffer(), m_TerrainCache.getAlbedoView(), m_TerrainCache.getSampler());
+	m_Foliage.setCanopyMap(m_SkyVisibility.imageView, m_HeightmapSampler);
 	m_Trees.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Sampler,
 				 m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_Shadows.getFormat(), m_PlayerTrail.buffer());
 	// the props bring their own scanned textures, the moss on them is the grass
@@ -898,6 +899,10 @@ void Application::loadTextures() {
 		"rock_layer_dark",
 		"rock_layer_rust",
 		"rock_cliff",
+		// the forest floor under the crowns (terrainmaterial.glsl g_LitterOver), Poly Haven (CC0): fallen leaves
+		// with twigs and moss (forest_leaves_02), pine needles (forrest_ground_03)
+		"leaf_litter",
+		"pine_needles",
 	};
 	static_assert(std::size(materials) == TERRAIN_MATERIALS);
 	for(const char* name : materials) {
