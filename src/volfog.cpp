@@ -181,6 +181,7 @@ void Application::drawVolumetricFog(VkCommandBuffer cmd) {
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_FogInjectEffect.layout, 0, 3, injectSets, 0, nullptr);
 	vkCmdPushConstants(cmd, m_FogInjectEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 	vkCmdDispatch(cmd, (m_FogGrid.x + 7) / 8, (m_FogGrid.y + 7) / 8, m_FogGrid.z);
+	mark(cmd, "fog froxels"); // the fog and its light per froxel
 
 	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
 
@@ -198,4 +199,5 @@ void Application::drawVolumetricFog(VkCommandBuffer cmd) {
 	m_FogPrevCampos = m_CameraPos;
 	m_FogPrevMapOffset = m_MapOffset;
 	m_FogHistoryValid = true;
+	mark(cmd, "fog integrate"); // front to back through the slices
 }

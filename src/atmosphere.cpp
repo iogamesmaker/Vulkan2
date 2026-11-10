@@ -663,12 +663,13 @@ void Atmosphere::update(VkCommandBuffer cmd, const glm::mat4& view, const glm::m
 	vkutil::transition_image(cmd, aerialSun.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
-void Atmosphere::postProcess(VkCommandBuffer cmd, VkExtent2D extent) {
+void Atmosphere::postProcess(VkCommandBuffer cmd, VkExtent2D extent, const std::function<void(const char*)>& mark) {
 	// meter the HDR image first (one workgroup), then the post pass reads the adapted exposure
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ExposureEffect.pipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PostEffect.layout, 0, 1, &m_PostDescriptor, 0, nullptr);
 	vkCmdPushConstants(cmd, m_PostEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PostPushConstants), &m_PostPushConstants);
 	vkCmdDispatch(cmd, 1, 1, 1);
+	if(mark) mark("auto exposure");
 
 	VkMemoryBarrier2 barrier{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
 	barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
@@ -683,6 +684,7 @@ void Atmosphere::postProcess(VkCommandBuffer cmd, VkExtent2D extent) {
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PostEffect.pipeline);
 
 	vkCmdDispatch(cmd, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+	if(mark) mark("tonemap");
 }
 
 void Atmosphere::setBloom(VkImageView view, VkSampler sampler) {

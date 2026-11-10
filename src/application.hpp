@@ -323,7 +323,7 @@ private:
 	VkSampler m_NearestSampler;
 	void initLighting();
 	void writeLightingDescriptors(); // after the targets get recreated
-	void drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp); // writes firstTimestamp (after the fog), + 1 (after SSAO) and + 2 (after the clouds)
+	void drawLighting(VkCommandBuffer cmd); // the fog, the cloud map, SSAO, the clouds, then the lighting (marks each)
 
 	// temporal anti-aliasing (taa.comp): the projection is jittered by a sub pixel offset every frame, the resolve
 	// blends with the reprojected history. history images ping-pong, recreated with the swapchain
@@ -395,23 +395,23 @@ private:
 	// GPU time per pass, from timestamp queries (one set per frame in flight, read back after its fence)
 	// timestamps inside a render pass come out as ~0 on Intel, so for the opaque breakdown the pass gets split
 	// into one rendering per part (see drawGeometry, m_DetailedOpaqueTimings)
-	static constexpr uint32_t GPU_TIMESTAMPS = 18;
-	static constexpr const char* GPU_PASS_NAMES[GPU_TIMESTAMPS - 1] = {
-		"atmosphere LUTs", "foliage, trees, terrain cache", "shadow maps",
-		"terrain", "tree depth prepass", "trees", "tree impostors", "grass, ground cover, rocks", "sky", "volumetric fog", "SSAO", "volumetric clouds",
-		"deferred lighting", "shadow filter", "TAA / upscale", "bloom + post", "blit + ui"
-	};
-	static constexpr uint32_t GPU_OPAQUE_FIRST = 3, GPU_OPAQUE_LAST = 13; // intervals that make up the opaque pass
-	static constexpr uint32_t GPU_SHADOW_INTERVAL = 2;
+	// one timer per feature: markStart at the top of the frame, then mark(cmd, "name") right after each feature's GPU
+	// work (the interval since the previous mark is that feature's). the names are string literals, kept per frame
+	// slot until its timestamps are read back; the performance window shows one bar per name
+	static constexpr uint32_t GPU_MAX_MARKS = 63, GPU_QUERIES = GPU_MAX_MARKS + 1; // per frame (+ the start)
 	bool m_DetailedOpaqueTimings = true; // splitting the pass costs a little (attachments get stored + loaded again)
+	std::vector<const char*> m_MarkNames[FRAME_OVERLAP];
+	struct GpuTimer { const char* name; float ms; int lastSeen; };
+	std::vector<GpuTimer> m_GpuTimers; // every feature that ran lately, in frame order, smoothed
+	void markStart(VkCommandBuffer cmd);
+	void mark(VkCommandBuffer cmd, const char* name);
+	float gpuTotalMs() const { float total = 0.0f; for(const GpuTimer& t : m_GpuTimers) total += t.ms; return total; }
 	uint32_t m_ShadowCascadesRendered[FRAME_OVERLAP] = {}; // per frame slot, for the shadow timer
 	float m_ShadowRenderMs = 0.0f; // smoothed over the frames that re-rendered cascades only
 	float m_ShadowRendersPerSecond = 0.0f;
 	VkQueryPool m_TimestampPool = VK_NULL_HANDLE;
 	float m_TimestampPeriod = 1.0f; // ns per tick
 	bool m_TimestampsWritten[FRAME_OVERLAP] = {};
-	float m_GpuPassTimes[GPU_TIMESTAMPS - 1] = {}; // ms, smoothed
-	void timestamp(VkCommandBuffer cmd, uint32_t index);
 
 	// VULKAN2_SHOT="x,z,height,yaw,pitch,hour,file.png;..." renders each shot from a fixed camera (height above
 	// the ground, angles in radians, hour of the day), lets it settle, writes the image + the GPU timers, then quits

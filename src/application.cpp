@@ -371,7 +371,7 @@ void Application::initSyncStructures() {
 
 	VkQueryPoolCreateInfo queryCI{ .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
 	queryCI.queryType = VK_QUERY_TYPE_TIMESTAMP;
-	queryCI.queryCount = GPU_TIMESTAMPS * FRAME_OVERLAP;
+	queryCI.queryCount = GPU_QUERIES * FRAME_OVERLAP;
 	VK_CHECK(vkCreateQueryPool(m_Device, &queryCI, nullptr, &m_TimestampPool));
 	VkPhysicalDeviceProperties properties;
 	vkGetPhysicalDeviceProperties(m_GPU, &properties);
@@ -1338,8 +1338,15 @@ void Application::drawTerrain(VkCommandBuffer cmd, const glm::mat4& viewproj, co
 	vkCmdDraw(cmd, static_cast<uint32_t>(m_PatchVertices.size()), 1, 0, 0);
 }
 
-void Application::timestamp(VkCommandBuffer cmd, uint32_t index) {
-	vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_TimestampPool, (m_FrameNumber % FRAME_OVERLAP) * GPU_TIMESTAMPS + index);
+void Application::markStart(VkCommandBuffer cmd) {
+	vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_TimestampPool, (m_FrameNumber % FRAME_OVERLAP) * GPU_QUERIES);
+}
+
+void Application::mark(VkCommandBuffer cmd, const char* name) {
+	std::vector<const char*>& names = m_MarkNames[m_FrameNumber % FRAME_OVERLAP];
+	if(names.size() >= GPU_MAX_MARKS) return;
+	names.push_back(name);
+	vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_TimestampPool, (m_FrameNumber % FRAME_OVERLAP) * GPU_QUERIES + static_cast<uint32_t>(names.size()));
 }
 
 void Application::drawGeometry(VkCommandBuffer cmd) {
@@ -1368,19 +1375,13 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 		vkCmdBeginRendering(cmd, &renderInfo);
 	};
 
-	// GPU timer boundaries between the parts of the pass. with the detailed timings the rendering is ended for
-	// each one (timestamps inside a render pass are useless on Intel), otherwise they're all written once the
-	// G-buffer pass ends and only its total means anything
-	uint32_t nextTimestamp = GPU_OPAQUE_FIRST + 1;
-	uint32_t pendingTimestamps = 0;
-	auto split = [&]() {
-		if(m_DetailedOpaqueTimings) {
-			vkCmdEndRendering(cmd);
-			timestamp(cmd, nextTimestamp++);
-			beginGBuffer(false);
-		} else {
-			pendingTimestamps++;
-		}
+	// GPU timer boundaries between the parts of the pass: with the breakdown on the rendering is ended for each
+	// one (timestamps inside a render pass are useless on Intel), otherwise the whole pass is one timer
+	auto split = [&](const char* name) {
+		if(!m_DetailedOpaqueTimings) return;
+		vkCmdEndRendering(cmd);
+		mark(cmd, name);
+		beginGBuffer(false);
 	};
 
 	beginGBuffer(true);
@@ -1399,18 +1400,22 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainDepthPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainLayout, 0, 3, terrainSets, 0, nullptr);
 	drawTerrain(cmd, m_Projection * m_View);
+	split("terrain depth prepass");
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainPipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainLayout, 0, 3, terrainSets, 0, nullptr);
 	drawTerrain(cmd, m_Projection * m_View);
-	split();
+	split("terrain");
 	// --- prepass | trees | impostors
-	m_Trees.draw(cmd, m_AtmosphereManager.getRenderDescriptor(), m_Shadows.getDescriptor(m_FrameNumber), split);
-	split();
+	int treeStage = 0;
+	m_Trees.draw(cmd, m_AtmosphereManager.getRenderDescriptor(), m_Shadows.getDescriptor(m_FrameNumber), [&]() { split(treeStage++ == 0 ? "tree depth prepass" : "trees"); });
+	split("tree impostors");
 	m_Foliage.draw(cmd, m_AtmosphereManager.getRenderDescriptor(), m_Shadows.getDescriptor(m_FrameNumber));
+	split("grass");
 	m_Props.draw(cmd);
+	split("rocks & logs");
 	m_GroundCover.draw(cmd);
 	vkCmdEndRendering(cmd);
-	for(; pendingTimestamps > 0; pendingTimestamps--) timestamp(cmd, nextTimestamp++);
-	timestamp(cmd, nextTimestamp++); // after the grass
+	mark(cmd, m_DetailedOpaqueTimings ? "ground cover" : "G-buffer pass (breakdown off)");
 
 	// --- the sky where nothing drew (depth still 0), straight into the draw image + its direct light target
 	VkRenderingAttachmentInfo skyAttachments[2] = {
@@ -1424,12 +1429,11 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	vkCmdBeginRendering(cmd, &skyInfo);
 	m_AtmosphereManager.draw(cmd);
 	vkCmdEndRendering(cmd);
-	timestamp(cmd, nextTimestamp++); // after the sky
+	mark(cmd, "sky");
 
 	// --- everything else gets lit, once per pixel
-	drawLighting(cmd, nextTimestamp);
-	nextTimestamp += 3;
-	timestamp(cmd, nextTimestamp++); // after the lighting
+	drawLighting(cmd);
+	mark(cmd, "deferred lighting");
 }
 
 void Application::initLighting() {
@@ -1770,11 +1774,10 @@ void Application::writeLightingDescriptors() {
 	vkUpdateDescriptorSets(m_Device, 3, ssaoWrites, 0, nullptr);
 }
 
-void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
+void Application::drawLighting(VkCommandBuffer cmd) {
 	// the volumetric fog's froxels first, alone in their GPU timer (lit through this frame's shadow maps, needs
 	// nothing from the G-buffer). the lighting composites them
-	drawVolumetricFog(cmd);
-	timestamp(cmd, firstTimestamp); // volumetric fog
+	drawVolumetricFog(cmd); // (marks its two passes)
 
 	VkImageSubresourceRange depthRange = vkinit::image_subresource_range(VK_IMAGE_ASPECT_DEPTH_BIT);
 	for(VkImage target : { m_GAlbedo.image, m_GNormal.image, m_GMaterial.image, m_GVelocity.image })
@@ -1842,6 +1845,8 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 			vkCmdPipelineBarrier2(cmd, &dependency);
 		}
 
+		mark(cmd, "cloud map");
+
 		// the cloud shadow, baked into g for the window around the camera: every frame (the sun moves, the weather
 		// eases in), one dispatch instead of 4 density samples in every lit pixel, froxel and far fog step
 		if(m_CloudMapValid && atmosphere.clouds > 0.5f && atmosphere.cloudShadows > 0.5f && m_SunDir.y > 0.03f) {
@@ -1872,6 +1877,8 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 		}
 	}
 
+	mark(cmd, "cloud shadow bake");
+
 	// SSAO first (half resolution), the lighting reads it. it runs with SSAO off too: its g channel is how much of
 	// the air in front of each pixel the sun reaches, for the haze (ssao.comp)
 	vkutil::transition_image(cmd, m_SSAOImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
@@ -1892,7 +1899,7 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 		vkCmdDispatch(cmd, (m_SSAOImage.imageExtent.width + 7) / 8, (m_SSAOImage.imageExtent.height + 7) / 8, 1);
 	}
 	vkutil::transition_image(cmd, m_SSAOImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	timestamp(cmd, firstTimestamp + 1); // SSAO
+	mark(cmd, "SSAO");
 
 	// the volumetric cumulus, half resolution (lighting.comp composites them): the march, then its accumulation
 	// over frames into m_CloudImage
@@ -1922,6 +1929,7 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudEffect.layout, 0, 2, cloudSets, 0, nullptr);
 		vkCmdPushConstants(cmd, m_CloudEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(clouds), &clouds);
 		vkCmdDispatch(cmd, (m_CloudImage.imageExtent.width + 7) / 8, (m_CloudImage.imageExtent.height + 7) / 8, 1);
+		mark(cmd, "cloud march"); // (and the far fog, marched along)
 
 		// the accumulation: ~10 frames of marches (each starts at a different random offset) average the noise out
 		vkutil::transition_image(cmd, m_CloudRaw.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1960,7 +1968,7 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 		m_CloudHistoryValid = true;
 	}
 	vkutil::transition_image(cmd, m_CloudImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	timestamp(cmd, firstTimestamp + 2); // volumetric clouds
+	mark(cmd, "cloud resolve");
 
 	LightingPushConstants pc{};
 	pc.invViewProj = glm::inverse(m_Projection * m_View);
@@ -2020,7 +2028,7 @@ void Application::run() {
 		if(bench && (benchTimer += deltatime) > 2.0f) {
 			benchTimer = 0.0f;
 			fmt::print("frame {:.2f} ms |", deltatimeMs);
-			for(uint32_t i = 0; i < GPU_TIMESTAMPS - 1; i++) fmt::print(" {} {:.2f} |", GPU_PASS_NAMES[i], m_GpuPassTimes[i]);
+			for(const GpuTimer& t : m_GpuTimers) fmt::print(" {} {:.2f} |", t.name, t.ms);
 			fmt::print(" shadow re-render {:.2f} ms {:.1f}/s\n", m_ShadowRenderMs, m_ShadowRendersPerSecond);
 			std::fflush(stdout);
 		}
@@ -2162,28 +2170,41 @@ void Application::draw() {
 	// GPU timings of this slot's last frame (its fence was waited on), then reset them for this one
 	{
 		uint32_t slot = m_FrameNumber % FRAME_OVERLAP;
-		if(m_TimestampsWritten[slot]) {
-			uint64_t ticks[GPU_TIMESTAMPS];
-			if(vkGetQueryPoolResults(m_Device, m_TimestampPool, slot * GPU_TIMESTAMPS, GPU_TIMESTAMPS, sizeof(ticks), ticks, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
-				for(uint32_t i = 0; i < GPU_TIMESTAMPS - 1; i++) {
+		std::vector<const char*>& names = m_MarkNames[slot];
+		if(m_TimestampsWritten[slot] && !names.empty()) {
+			uint64_t ticks[GPU_QUERIES];
+			uint32_t count = static_cast<uint32_t>(names.size()) + 1;
+			if(vkGetQueryPoolResults(m_Device, m_TimestampPool, slot * GPU_QUERIES, count, sizeof(uint64_t) * count, ticks, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+				size_t insertAt = 0; // a feature seen for the first time goes after the one before it this frame
+				for(uint32_t i = 0; i + 1 < count; i++) {
 					float ms = static_cast<float>(ticks[i + 1] - ticks[i]) * m_TimestampPeriod * 1e-6f;
-					m_GpuPassTimes[i] += (ms - m_GpuPassTimes[i]) * 0.1f;
-					if(i == GPU_SHADOW_INTERVAL && m_ShadowCascadesRendered[slot] > 0) m_ShadowRenderMs += (ms - m_ShadowRenderMs) * 0.3f;
+					auto it = std::find_if(m_GpuTimers.begin(), m_GpuTimers.end(), [&](const GpuTimer& t) { return std::strcmp(t.name, names[i]) == 0; });
+					if(it == m_GpuTimers.end()) it = m_GpuTimers.insert(m_GpuTimers.begin() + std::min(insertAt, m_GpuTimers.size()), GpuTimer{ names[i], ms, 0 });
+					it->ms += (ms - it->ms) * 0.1f;
+					it->lastSeen = m_FrameNumber;
+					insertAt = static_cast<size_t>(it - m_GpuTimers.begin()) + 1;
+					if(std::strcmp(names[i], "shadow maps") == 0 && m_ShadowCascadesRendered[slot] > 0) m_ShadowRenderMs += (ms - m_ShadowRenderMs) * 0.3f;
 				}
 				m_ShadowRendersPerSecond += ((m_ShadowCascadesRendered[slot] > 0 ? 1.0f : 0.0f) / std::max(m_Deltatime, 1e-4f) - m_ShadowRendersPerSecond) * 0.02f;
 			}
+			// a feature that stopped running (turned off) drops out after ~2 seconds
+			int frame = m_FrameNumber;
+			m_GpuTimers.erase(std::remove_if(m_GpuTimers.begin(), m_GpuTimers.end(), [&](const GpuTimer& t) { return frame - t.lastSeen > 240; }), m_GpuTimers.end());
 		}
-		vkCmdResetQueryPool(cmd, m_TimestampPool, slot * GPU_TIMESTAMPS, GPU_TIMESTAMPS);
+		names.clear();
+		vkCmdResetQueryPool(cmd, m_TimestampPool, slot * GPU_QUERIES, GPU_QUERIES);
 		m_TimestampsWritten[slot] = true;
 	}
-	timestamp(cmd, 0);
+	markStart(cmd);
 
 	// per frame atmosphere LUTs (sky view + aerial perspective)
 	updateCamera();
 	m_AtmosphereManager.update(cmd, m_View, m_Projection, m_CameraPos, glm::vec2(m_CameraPos.x, m_CameraPos.z) + glm::vec2(m_MapOffset) * (m_TerrainScale / static_cast<float>(m_CoordinateMultiplier)));
+	mark(cmd, "atmosphere LUTs");
 
 	// the heightmap strips the camera moved into (updateHeightmap queued them), before anything reads the map
 	recordHeightmapUpdate(cmd);
+	mark(cmd, "terrain streaming");
 
 	// terrain height under the camera, read back once this frame's fence is waited on again
 	{
@@ -2212,8 +2233,8 @@ void Application::draw() {
 		vkCmdPipelineBarrier2(cmd, &dependency);
 		m_ProbeWritten[probeSlot] = true;
 	}
+	mark(cmd, "ground probe");
 
-	timestamp(cmd, 1);
 	// grass, wheat, flowers, trees and bushes around the camera (before the shadow pass, trees cast shadows)
 	FoliagePushConstants foliagePC{};
 	foliagePC.viewproj = m_Projection * m_View;
@@ -2235,10 +2256,14 @@ void Application::draw() {
 		m_PlayerTrail.update(feet, m_GrassInteraction && m_Camera.walking && m_Camera.onGround, eye, m_Deltatime);
 		m_PlayerTrail.m_Wind = m_Weather.state().wind; // the vegetation sways in the weather's wind
 		m_PlayerTrail.record(cmd, foliagePC.offsetWorld);
+		mark(cmd, "grass trail");
 	}
 	m_Foliage.update(cmd, foliagePC);
+	mark(cmd, "grass scatter");
 	m_Props.update(cmd, foliagePC);
+	mark(cmd, "rock scatter");
 	m_GroundCover.update(cmd, foliagePC);
+	mark(cmd, "ground cover scatter");
 // last frame's depth pyramid: only while it's valid and the map hasn't re-centred since (the camera spaces differ)
 	{
 		VkExtent2D pyramid = m_HiZ.getSize();
@@ -2255,6 +2280,7 @@ void Application::draw() {
 		vkCmdPipelineBarrier2(cmd, &dependency);
 	}
 	m_Trees.update(cmd, foliagePC);
+	mark(cmd, "tree placement");
 
 	// the far field terrain cache: what came into its squares around the camera (terrain.frag reads it)
 	if(m_TerrainCacheEnabled) {
@@ -2264,7 +2290,7 @@ void Application::draw() {
 			m_FrameEvents |= FRAME_TERRAIN_CACHE;
 	} else m_TerrainCache.publishOff(cmd); // (the grass falls back to its own colour)
 
-	timestamp(cmd, 2);
+	mark(cmd, "terrain cache");
 	// shadow maps for whichever of the sun / moon is up
 	ShadowLightKeys shadowKeys = m_AtmosphereManager.getShadowLight(m_Shadows.getLightStep());
 	m_Shadows.update(m_View, shadowKeys, m_TerrainPC.factor, m_FrameNumber);
@@ -2279,7 +2305,7 @@ void Application::draw() {
 	if(m_ShadowCascadesRendered[m_FrameNumber % FRAME_OVERLAP] > 0) m_FrameEvents |= FRAME_SHADOWS;
 
 
-	timestamp(cmd, 3);
+	mark(cmd, "shadow maps");
 	// START DRAW COMMANDS
 	// no clear needed, the sky draws everywhere the terrain doesn't
 	vkutil::transition_image(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -2288,9 +2314,9 @@ void Application::draw() {
 	for(VkImage target : { m_GAlbedo.image, m_GNormal.image, m_GMaterial.image, m_GVelocity.image })
 		vkutil::transition_image(cmd, target, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
-	drawGeometry(cmd); // writes timestamps 4 - GPU_OPAQUE_LAST
+	drawGeometry(cmd); // (marks each part)
 	m_ShadowFilter.resolve(cmd, m_DrawExtent, m_DrawImage.image, m_DepthBuffer.image);
-	timestamp(cmd, GPU_OPAQUE_LAST + 1); // (relative, so adding a pass to the opaque part doesn't shift these by hand)
+	mark(cmd, "shadow filter");
 	if(m_TAA) drawTAA(cmd); // TSR: into the output image at the window's resolution
 	else {
 		// no TAA: the render resolution frame stretched to the output (bilinear)
@@ -2300,6 +2326,7 @@ void Application::draw() {
 		vkutil::copy_image_to_image(cmd, m_DrawImage.image, m_OutputImage.image, m_DrawExtent, m_SwapchainExtent);
 		vkutil::transition_image(cmd, m_OutputImage.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
 		vkutil::transition_image(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+		mark(cmd, "upscale (TAA off)");
 	}
 
 	// bloom + exposure + tonemapping, in place on the output image (GENERAL)
@@ -2307,11 +2334,11 @@ void Application::draw() {
 
 	// what's falling (weather.cpp): onto the TAA's output at the window's resolution, before the bloom + tonemapping
 	drawPrecipitation(cmd);
+	mark(cmd, "precipitation");
 
-	timestamp(cmd, GPU_OPAQUE_LAST + 2);
 	m_Bloom.render(cmd);
-	m_AtmosphereManager.postProcess(cmd, m_SwapchainExtent);
-	timestamp(cmd, GPU_OPAQUE_LAST + 3);
+	mark(cmd, "bloom");
+	m_AtmosphereManager.postProcess(cmd, m_SwapchainExtent, [&](const char* name) { mark(cmd, name); });
 	// END DRAW COMMANDS
 
 	// set the output image to read mode
@@ -2321,6 +2348,7 @@ void Application::draw() {
 		region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
 		region.imageExtent = { m_SwapchainExtent.width, m_SwapchainExtent.height, 1 };
 		vkCmdCopyImageToBuffer(cmd, m_OutputImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_CaptureBuffer.buffer, 1, &region);
+		mark(cmd, "capture readback");
 	}
 	// set the swapchain to write mode
 	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -2328,14 +2356,16 @@ void Application::draw() {
 	vkutil::copy_image_to_image(cmd, m_OutputImage.image, m_SwapchainImages[swapchainImageIndex], m_SwapchainExtent, m_SwapchainExtent);
 
 	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+	mark(cmd, "present copy");
 
 	recordDrawStats(cmd);
+	mark(cmd, "draw counts");
 	if(!m_Mouselock) {
 		m_DebugView.record(cmd, debugTextures(), m_FrameNumber); // the picked texture into what the window shows
+		mark(cmd, "debug view");
 		drawImGui(cmd, m_SwapchainImageViews[swapchainImageIndex]);
+		mark(cmd, "UI");
 	}
-	timestamp(cmd, GPU_TIMESTAMPS - 1);
-	static_assert(GPU_OPAQUE_LAST + 4 == GPU_TIMESTAMPS - 1, "the timestamps after the opaque pass don't add up");
 
 	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 	VK_CHECK(vkEndCommandBuffer(cmd));
@@ -2474,11 +2504,10 @@ void Application::writeCapture() {
 	stbi_write_png(file.c_str(), w, h, 3, pixels.data(), w * 3);
 	if(first) return;
 
-	float total = 0.0f;
-	for(float t : m_GpuPassTimes) total += t;
+	float total = gpuTotalMs();
 	glm::vec2 exposure = m_AtmosphereManager.getExposureState();
 	fmt::print("shot {} ground {:.3f} push {:.3f} {:.3f} | luminance {:.3f} exposure {:.3f} | GPU {:.2f} ms |", shot.file, m_Camera.groundHeight, m_LastProbe.y, m_LastProbe.z, exposure.x, exposure.y, total);
-	for(uint32_t i = 0; i < GPU_TIMESTAMPS - 1; i++) fmt::print(" {} {:.2f} |", GPU_PASS_NAMES[i], m_GpuPassTimes[i]);
+	for(const GpuTimer& t : m_GpuTimers) fmt::print(" {} {:.2f} |", t.name, t.ms);
 	GpuMemory memory = gpuMemory();
 	const double MB = 1024.0 * 1024.0;
 	fmt::print(" memory {:.0f} / {:.0f} MB, ours {:.0f} MB\n", memory.used / MB, memory.available / MB, memory.ours / MB);
@@ -2688,6 +2717,7 @@ void Application::drawTAA(VkCommandBuffer cmd) {
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_TAAEffect.layout, 0, 1, &m_TAASets[write], 0, nullptr);
 	vkCmdPushConstants(cmd, m_TAAEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
 	vkCmdDispatch(cmd, (m_SwapchainExtent.width + 7) / 8, (m_SwapchainExtent.height + 7) / 8, 1); // output resolution
+	mark(cmd, "TAA");
 
 	// the result stays around as next frame's history, a sharpened copy goes into the output image for post
 	vkutil::transition_image(cmd, m_History[write].image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -2696,6 +2726,7 @@ void Application::drawTAA(VkCommandBuffer cmd) {
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_SharpenEffect.layout, 0, 1, &m_SharpenSets[write], 0, nullptr);
 	vkCmdPushConstants(cmd, m_SharpenEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float), &m_Sharpness);
 	vkCmdDispatch(cmd, (m_SwapchainExtent.width + 7) / 8, (m_SwapchainExtent.height + 7) / 8, 1);
+	mark(cmd, "sharpen");
 	vkutil::transition_image(cmd, m_DrawImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 	vkutil::transition_image(cmd, m_DepthBuffer.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, depthRange);
 	m_HistoryValid = true;
@@ -2891,9 +2922,7 @@ void Application::drawDrawStatsWindow() {
 void Application::drawPerformanceWindow(float deltatimeMs) {
 	if(!ImGui::Begin("performance")) { ImGui::End(); return; }
 
-	float total = 0.0f, opaque = 0.0f;
-	for(float t : m_GpuPassTimes) total += t;
-	for(uint32_t i = GPU_OPAQUE_FIRST; i <= GPU_OPAQUE_LAST; i++) opaque += m_GpuPassTimes[i];
+	float total = gpuTotalMs();
 
 	// ---- the frame
 	float sorted[m_FrameHistorySize];
@@ -2939,7 +2968,7 @@ void Application::drawPerformanceWindow(float deltatimeMs) {
 		ImGui::Checkbox("hide < 0.05 ms", &m_HideSmallPasses);
 		ImGui::SameLine();
 		ImGui::Checkbox("opaque breakdown", &m_DetailedOpaqueTimings);
-		ImGui::SetItemTooltip("Splits the opaque pass into one rendering per part to time them (Intel reports ~0 inside a pass). Costs a little");
+		ImGui::SetItemTooltip("Splits the G-buffer pass into one rendering per part (terrain, trees, grass, ...) to time each (Intel reports ~0 inside a pass). Costs a little. Off: one G-buffer bar");
 		auto passLine = [&](const char* name, float ms, int depth) {
 			if(m_HideSmallPasses && ms < 0.05f) return;
 			if(depth > 0) ImGui::Indent(depth * 12.0f);
@@ -2955,27 +2984,11 @@ void Application::drawPerformanceWindow(float deltatimeMs) {
 			ImGui::PopStyleColor();
 			if(depth > 0) ImGui::Unindent(depth * 12.0f);
 		};
+		// one bar per feature, in the order they run (or slowest first)
 		struct Line { const char* name; float ms; int depth; };
 		std::vector<Line> lines;
-		if(m_SortPasses) {
-			// flat, slowest first (the opaque pass' parts on their own when they're timed)
-			for(uint32_t i = 0; i < GPU_TIMESTAMPS - 1; i++) {
-				bool part = i >= GPU_OPAQUE_FIRST && i < GPU_OPAQUE_LAST;
-				if(part && !m_DetailedOpaqueTimings) continue;
-				lines.push_back({ GPU_PASS_NAMES[i], m_GpuPassTimes[i], 0 });
-			}
-			if(!m_DetailedOpaqueTimings) lines.push_back({ "opaque", opaque - m_GpuPassTimes[GPU_OPAQUE_LAST], 0 });
-			std::sort(lines.begin(), lines.end(), [](const Line& a, const Line& b) { return a.ms > b.ms; });
-		} else {
-			for(uint32_t i = 0; i < GPU_TIMESTAMPS - 1; i++) {
-				if(i < GPU_OPAQUE_FIRST || i > GPU_OPAQUE_LAST) { lines.push_back({ GPU_PASS_NAMES[i], m_GpuPassTimes[i], 0 }); continue; }
-				if(i != GPU_OPAQUE_FIRST) continue;
-				lines.push_back({ "opaque", opaque, 0 }); // the opaque pass as one line, its parts underneath
-				if(m_DetailedOpaqueTimings)
-					for(uint32_t j = GPU_OPAQUE_FIRST; j < GPU_OPAQUE_LAST; j++) lines.push_back({ GPU_PASS_NAMES[j], m_GpuPassTimes[j], 1 });
-				lines.push_back({ GPU_PASS_NAMES[GPU_OPAQUE_LAST], m_GpuPassTimes[GPU_OPAQUE_LAST], 1 }); // shadow filter, always its own pass
-			}
-		}
+		for(const GpuTimer& t : m_GpuTimers) lines.push_back({ t.name, t.ms, 0 });
+		if(m_SortPasses) std::sort(lines.begin(), lines.end(), [](const Line& a, const Line& b) { return a.ms > b.ms; });
 		for(const Line& line : lines) passLine(line.name, line.ms, line.depth);
 		// shadow maps only re-render now and then, the average above hides what one re-render costs
 		ImGui::TextDisabled("shadow re-render %.2f ms, %.1f per second", m_ShadowRenderMs, m_ShadowRendersPerSecond);

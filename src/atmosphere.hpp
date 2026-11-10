@@ -1,3 +1,4 @@
+#include <functional>
 #ifndef ATMOSPHERE_HPP
 #define ATMOSPHERE_HPP
 
@@ -133,7 +134,7 @@ public:
 	void setBloom(VkImageView view, VkSampler sampler); // the bloom chain post.comp adds (Bloom), after every resize
 	void draw(VkCommandBuffer cmd);
 	// draw image in GENERAL, depth buffer in SHADER_READ_ONLY_OPTIMAL
-	void postProcess(VkCommandBuffer cmd, VkExtent2D extent);
+	void postProcess(VkCommandBuffer cmd, VkExtent2D extent, const std::function<void(const char*)>& mark = {}); // mark: the GPU timers
 	// metered luminance / current exposure (auto exposure, read back for the capture mode's printout)
 	glm::vec2 getExposureState() const;
 
