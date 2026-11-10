@@ -38,6 +38,7 @@ layout(set = 0, binding = 9) uniform sampler2D cloudCoverageMap; // cloudmap.com
 layout(std140, set = 0, binding = 10) uniform CloudMapInfo { vec4 cloudMapInfo; }; // xy centre (km), z extent, w valid
 #define CLOUD_COVERAGE_MAP
 #include "clouds.glsl"
+#include "volclouds.glsl" // cloudShadow
 
 #define SHADOW_PIXEL vec2(gl_GlobalInvocationID.xy) // no gl_FragCoord in compute
 #include "shadowsampling.glsl" // set 2
@@ -187,7 +188,7 @@ void main() {
 	if (any(greaterThanEqual(p, size))) return;
 
 	float depth = texelFetch(depthBuffer, p, 0).r;
-	bool volumetricClouds = (ubo.clouds > 0.5 && ubo.cloudQuality > 0.5) || ubo.volumetricFog > 0.5; // clouds.comp ran (the far fog too)
+	bool volumetricClouds = ubo.clouds > 0.5 || ubo.volumetricFog > 0.5; // clouds.comp ran (the far fog too)
 	if (depth <= 0.0) {
 		// sky (reversed z): the sky pass drew it, the cumulus go on top
 		vec2 uv = (vec2(p) + 0.5) / vec2(size);

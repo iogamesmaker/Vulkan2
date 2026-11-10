@@ -53,7 +53,6 @@ struct GraphicsSettings {
 
 	// sky
 	bool clouds = true;
-	bool cloudDetail = true;		// volumetric clouds (ray marched), the cheap 2D layer otherwise
 	bool aerialPerspective = true; // the haze over distance
 
 	// volumetric fog (volfog.glsl): mist pooling in valleys, haze, beams through trees and past ridges
@@ -104,14 +103,12 @@ inline GraphicsSettings qualityPreset(Quality q) {
 		s.grassShadows = false; s.cloudShadows = false;
 		s.grassRange = 0; s.treeDensity = 0.7f; s.groundCoverDensity = 0.5f;
 		s.ssao = false; s.contactShadows = false; s.bounceLight = false;
-		s.cloudDetail = false;
 		s.volumetricFog = false;
 		break;
 	case Quality::Medium:
 		s.volumetricFog = false;
 		s.tessellation = 4.0f;
 		s.pomDistance = 25.0f; s.pomSteps = 8;
-		s.cloudDetail = false; // volumetric clouds cost a few ms on integrated GPUs
 		s.shadowSmoothing = 2;
 		s.grassShadows = false;
 		s.grassRange = 1; s.groundCoverDensity = 0.75f;
@@ -140,7 +137,7 @@ inline GraphicsSettings everythingOff(GraphicsSettings s) {
 	s.shadows = false; s.softShadows = false; s.shadowSmoothing = 0; s.grassShadows = false; s.cloudShadows = false;
 	s.foliage = false; s.trees = false; s.props = false; s.groundCover = false;
 	s.ssao = false; s.contactShadows = false; s.bounceLight = false; s.bloom = 0.0f;
-	s.clouds = false; s.cloudDetail = false; s.aerialPerspective = false;
+	s.clouds = false; s.aerialPerspective = false;
 	s.volumetricFog = false;
 	return s;
 }

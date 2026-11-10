@@ -106,6 +106,38 @@ float cumulusDensity(vec2 worldKm, float hKm, vec2 wind, int detail) {
 	return max(cloudRemap(d, billows * 0.52, 1.0, 0.0, 1.0), cloudRemap(sheet, billows * 0.3, 1.0, 0.0, 1.0));
 }
 
+// the clouds' shadow on whatever is at worldKm (the cloud wind included, like cumulusDensity's), altitudeKm above
+// the ground: the sun ray from there up through the same clouds clouds.comp marches, the dome as tall as the
+// weather grows it here (a storm tower shades far more than a fair weather puff), 4 samples up through it. the lobes
+// carve the march's clouds smaller than their dome, their average carving is taken off here. (the shadows were a
+// 2D layer of a different noise at the cloud base: they didn't line up with the clouds above them)
+float cloudShadow(vec2 worldKm, float altitudeKm, vec3 sunDir) {
+	if (ubo.clouds < 0.5 || (ubo.cloudCoverage <= 0.0 && ubo.weather3.x <= 0.0) || sunDir.y <= 0.03) return 1.0;
+	// where the sun ray crosses the clouds: towards sunset that point runs off to infinity (1 / sun height) and the
+	// shadows swept across the land as fast as the sun sank. capped at ~9 degrees, faded out under ~9: at sunset the
+	// light comes through so much air that it's soft anyway
+	float slant = max(sunDir.y, 0.15);
+	vec2 drift = sunDir.xz / slant; // km sideways per km up
+	float up = max(ubo.cloudAltitude - altitudeKm, 0.0);
+	vec2 under = worldKm + drift * up;
+	float core = weatherCellCore(cloudWeatherCells(under)) * ubo.weather3.x;
+	float thickness = min(CUMULUS_THICKNESS * (1.0 + core * STORM_TOWER), cloudSlabThickness());
+	const int SAMPLES = 4;
+	float dh = thickness / float(SAMPLES);
+	float column = 0.0;
+	for (int i = 0; i < SAMPLES; i++) {
+		float h = (float(i) + 0.5) * dh;
+		float d = cumulusDensity(under + drift * h, h, vec2(0.0), 0);
+		column += cloudRemap(d, 0.25, 1.0, 0.0, 1.0) * dh;
+	}
+	float tau = column * ubo.cloudDensity * 28.0 / slant; // the way through along the sun ray
+	// beer, plus the light the cloud scatters down through itself and out of its sides: under a cloud it's dim, not
+	// black (beer alone left hard edged pools of night that read as lakes), and a thin one lets a soft glow through
+	float beer = exp(-tau);
+	float through = beer + (1.0 - beer) * 0.18 * exp(-tau * 0.05);
+	return mix(1.0, through, smoothstep(0.03, 0.15, sunDir.y));
+}
+
 // lightning (weather.cpp picks the strike, ubo.weather4): the channel from the cloud base down to the ground. real
 // bolts are chains of short straight steps with sharp kinks (the stepped leader), wandering sideways as they come
 // down, with a few thinner branches forking off. piecewise linear offsets: k = km below the bolt's top
@@ -161,7 +193,7 @@ vec3 lightningBolt(vec3 dir, float camAltKm, vec2 boltRel, float tMax) {
 vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, vec2 camWorldKm, vec2 wind, vec3 dir, float tMax, vec3 sunDir, float jitter, out float cloudEnter) {
 	cloudEnter = -1.0;
 	// (the pass also runs for the far fog alone, volumetric clouds off: no slab then)
-	bool anyClouds = ubo.clouds > 0.5 && ubo.cloudQuality > 0.5 && (ubo.cloudCoverage > 0.0 || ubo.weather3.x > 0.0);
+	bool anyClouds = ubo.clouds > 0.5 && (ubo.cloudCoverage > 0.0 || ubo.weather3.x > 0.0);
 	if (!anyClouds) return vec4(0.0);
 	float slab = cloudSlabThickness();
 	float bottom = ubo.radiusbottom + ubo.cloudAltitude, top = bottom + slab;

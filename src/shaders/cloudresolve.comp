@@ -34,16 +34,22 @@ void main() {
 	float depth = texelFetch(depthBuffer, full, 0).r;
 	float viewZ = 0.02 / max(depth, 1e-7); // reversed z, ~ view distance (the sky: huge)
 
-	// the neighbourhood's spread: history outside of it is something that isn't there any more. only the neighbours
-	// at this texel's depth: along an edge the sky's rays and the ones stopped by a tree or a ridge are very
-	// different, together they opened the box so wide the march's noise went straight through (the edges shimmered)
+	// the neighbourhood (3x3, only the texels at this one's depth: along an edge the sky's rays and the ones stopped by
+	// a tree or a ridge are very different, together they opened the box so wide the march's noise went straight
+	// through). its tent weighted mean is also a spatially filtered version of this frame, blended in instead of the
+	// raw march: a third of the noise before the history even starts. the depth tolerance is 10%: at 3% a grazing
+	// slope's neighbours all fell out, the box shrank to this texel alone and nothing accumulated (blotchy far fog)
 	vec4 m1 = vec4(0.0), m2 = vec4(0.0);
 	float wSum = 0.0;
+	bool openSky = true; // all 9 the sky
 	for (int y = -1; y <= 1; y++) {
 		for (int x = -1; x <= 1; x++) {
 			ivec2 q = clamp(p + ivec2(x, y), ivec2(0), size - 1);
-			float z = 0.02 / max(texelFetch(depthBuffer, q * ratio, 0).r, 1e-7);
-			float w = (x == 0 && y == 0) ? 1.0 : exp(-abs(z - viewZ) / (viewZ * 0.03));
+			float qDepth = texelFetch(depthBuffer, q * ratio, 0).r;
+			openSky = openSky && qDepth <= 0.0;
+			float z = 0.02 / max(qDepth, 1e-7);
+			float tent = (x == 0 ? 2.0 : 1.0) * (y == 0 ? 2.0 : 1.0);
+			float w = tent * ((x == 0 && y == 0) ? 1.0 : exp(-abs(z - viewZ) / (viewZ * 0.1)));
 			vec4 c = texelFetch(current, q, 0);
 			m1 += c * w;
 			m2 += c * c * w;
@@ -52,16 +58,30 @@ void main() {
 	}
 	m1 /= wSum;
 	vec4 sigma = sqrt(max(m2 / wSum - m1 * m1, 0.0));
-	// wide: the march's noise is the spread here, a tight box would let it all through again
-	vec4 low = m1 - sigma * 1.75, high = m1 + sigma * 1.75;
+	// the open sky: the reprojection is exact (only the camera's rotation, the clouds kilometres away and drifting
+	// slowly) and nothing can be uncovered, so hardly a clamp at all. the box is built from this frame's noisy march, along
+	// a cloud's edge it jumped about every frame and dragged the history along: the edges flickered, even holding 100
+	// frames. (a lightning flash drops the history, application.cpp.) next to the land or over it the parallax can
+	// uncover something: clamped there, never zero wide (a flat neighbourhood clamped the history to this frame's noise)
+	bool sky = openSky;
+	vec4 box = sigma * 2.0 + vec4(vec3(0.02 * max(max(m1.r, m1.g), m1.b)), 0.02);
+	// (only a very loose box in the open sky: flying fast through the clouds still has parallax up there)
+	if (sky) box = sigma * 6.0 + vec4(vec3(0.15 * max(max(m1.r, m1.g), m1.b)), 0.15);
+	vec4 low = m1 - box, high = m1 + box;
 
 	// where this pixel's ray was last frame (the clouds sit kilometres away, the scene's depth where it's in front)
 	vec4 previousClip = pc.reproject * vec4(uv * 2.0 - 1.0, depth > 0.0 ? depth : 1e-5, 1.0);
 	vec2 previousUV = previousClip.xy / previousClip.w * 0.5 + 0.5;
+	vec4 filtered = mix(now, m1, 0.6);
 	if (previousClip.w <= 0.0 || any(lessThan(previousUV, vec2(0.0))) || any(greaterThan(previousUV, vec2(1.0)))) {
-		imageStore(resolved, p, now);
+		imageStore(resolved, p, filtered);
 		return;
 	}
-	vec4 before = clamp(textureLod(history, previousUV, 0.0), low, high);
-	imageStore(resolved, p, mix(before, now, pc.blend));
+	// (texel q holds the ray through full resolution pixel q * ratio, not the texel's centre: read as if it were the
+	// history came a quarter texel off every frame, it crept and blurred, and the box fought it along every edge)
+	vec2 historyUV = ((previousUV * fullSize - 0.5) / vec2(ratio) + 0.5) / vec2(size);
+	vec4 before = clamp(textureLod(history, historyUV, 0.0), low, high);
+	// (the sky holds ~20 frames, the land ~12: nothing moves fast up there, and the cloud edges are where a march
+	// either catches a thin wisp or skips it, the most noise to average)
+	imageStore(resolved, p, mix(before, filtered, sky ? pc.blend * 0.6 : pc.blend));
 }

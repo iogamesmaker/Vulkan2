@@ -71,59 +71,6 @@ vec3 stars(vec3 dir) {
 	return result;
 }
 
-// Henyey-Greenstein phase, g > 0 scatters forwards (the bright silver lining looking towards the sun)
-float phaseHG(float cosTheta, float g) {
-	float g2 = g * g;
-	return (1.0 - g2) / (4.0 * PI * pow(1.0 + g2 - 2.0 * g * cosTheta, 1.5));
-}
-
-// the cloud layer seen along dir: rgb = light it sends towards the camera, a = how much of the sky behind it hides
-vec4 clouds(vec3 dir, vec3 skyLuminance) {
-	if (ubo.clouds < 0.5 || (ubo.cloudCoverage <= 0.0 && ubo.weather3.x <= 0.0) || dir.y <= 0.0) return vec4(0.0);
-	bool fine = ubo.cloudQuality > 0.5; // graphics settings: fewer octaves / light samples on low
-	float layerRadius = ubo.radiusbottom + ubo.cloudAltitude;
-	float t = raySphereIntersectNearest(pc.camPos, dir, layerRadius); // from below, the exit through the layer
-	if (t <= 0.0) return vec4(0.0);
-	vec3 hitKm = pc.camPos + dir * t;
-	vec2 worldKm = hitKm.xz + pc.cameraWorldKm + pc.cloudWind;
-
-	float density = cloudDensity(worldKm, fine ? 5 : 3);
-	if (density <= 0.0) return vec4(0.0);
-
-	// the layer is ~0.8km thick, looking through it at a low angle goes through a lot more of it
-	float thickness = 0.8 / max(dir.y, 0.08);
-	float opticalDepth = density * ubo.cloudDensity * thickness * 3.0;
-	float alpha = 1.0 - exp(-opticalDepth);
-
-	// the light that reaches this spot from the sun / moon through the rest of the cloud above it
-	bool sunUp = pc.sunDir.y > -0.06; // the march turns to the moon once the sun's light is gone (volclouds.glsl)
-	vec3 lightDir = sunUp ? pc.sunDir : -pc.sunDir;
-	float towardsLight = 0.0;
-	int lightSamples = fine ? 4 : 2;
-	for (int i = 1; i <= lightSamples; i++) towardsLight += cloudDensity(worldKm + lightDir.xz / max(lightDir.y, 0.2) * 0.12 * float(i) * (4.0 / float(lightSamples)), fine ? 4 : 2) * (4.0 / float(lightSamples));
-	towardsLight += density; // the part of this cloud itself the light crosses
-	float lightPath = towardsLight * ubo.cloudDensity * 1.6;
-	// beer (direct) + a softer second term standing in for the light that bounces around inside the cloud,
-	// and "powder": the thin edges facing the light are darker than the inside of a thick cloud
-	float transmitted = exp(-lightPath) + exp(-lightPath * 0.25) * 0.4;
-	float powder = 1.0 - exp(-opticalDepth * 2.0);
-	float cosTheta = dot(dir, lightDir);
-	float phase = mix(phaseHG(cosTheta, -0.15), phaseHG(cosTheta, 0.75), 0.5) * 4.0 * PI; // ~1 on average
-	// both lights fading with their discs (a hard switch changed the colour in one frame at sunset)
-	vec3 light = sunTransmittance(transmittance, hitKm, pc.sunDir) * ubo.sunIlluminance * smoothstep(-0.06, 0.0, pc.sunDir.y)
-			   + sunTransmittance(transmittance, hitKm, -pc.sunDir) * ubo.moonIlluminance * smoothstep(0.06, 0.12, -pc.sunDir.y);
-	vec3 lit = light * transmitted * mix(0.6, 1.0, powder) * phase * 0.35;
-
-	// ambient from the sky dome: the top of the cloud sees the zenith, the bottom the darker ground
-	vec2 skySize = vec2(textureSize(skyview, 0));
-	vec3 zenith = texture(skyview, vec2(0.5, 1.0 - 0.5 / skySize.y)).rgb * ubo.sunIlluminance;
-	vec3 ambient = zenith * mix(1.5, 0.45, density) * PI * 0.25; // thick parts / bases see less of the sky
-
-	// far clouds sink into the haze along the horizon (aerial perspective over tens of km)
-	float haze = 1.0 - exp(-t / 45.0);
-	vec3 color = mix(lit + ambient, skyLuminance, haze * 0.85);
-	return vec4(color, alpha * (1.0 - haze * 0.5));
-}
 
 vec3 celestialDisk(vec3 dir, vec3 bodyDir, float angularRadius, float limbExponent) {
 	float cosAngle = dot(dir, bodyDir);
@@ -172,14 +119,10 @@ void main() {
 
 		luminance += stars(dir) * ubo.starBrightness * viewTransmittance;
 
-		// clouds in front of all of it (they hide the sun, moon and stars): the cirrus high up, then the cumulus
+		// the cirrus in front of all of it (it hides the sun, moon and stars)
 		vec3 skyHere = texture(skyview, uv).rgb * ubo.sunIlluminance;
 		vec4 high = cirrus(transmittance, pc.camPos, pc.cameraWorldKm, pc.cloudWind, dir, pc.sunDir, skyHere);
 		luminance = mix(luminance, high.rgb, high.a);
-		if (ubo.cloudQuality < 0.5) {
-			vec4 cloud = clouds(dir, skyHere);
-			luminance = mix(luminance, cloud.rgb, cloud.a);
-		}
 	}
 	// (the volumetric cumulus go on top of this in lighting.comp, from clouds.comp)
 

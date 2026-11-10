@@ -795,6 +795,8 @@ void Application::initDefaultData() {
 		m_Settings = qualityPreset(m_Quality);
 		if(name == "off") { m_Settings = everythingOff(m_Settings); m_Quality = Quality::Custom; }
 	}
+	// VULKAN2_TAA=0: TAA off (flicker captures)
+	if(const char* taa = std::getenv("VULKAN2_TAA")) m_Settings.taa = std::atoi(taa) != 0;
 	// VULKAN2_GROUNDCOVER=<density>, 0 = off (comparison captures)
 	if(const char* density = std::getenv("VULKAN2_GROUNDCOVER")) {
 		m_Settings.groundCoverDensity = static_cast<float>(std::atof(density));
@@ -1812,7 +1814,7 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 	vkutil::transition_image(cmd, m_CloudImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 	const AtmosphereUBO& atmosphere = m_AtmosphereManager.m_AtmosphereData;
 	// (also for the far fog alone: it's marched in the same pass, lighting.comp composites it with the clouds)
-	bool marchClouds = (atmosphere.clouds > 0.5f && atmosphere.cloudQuality > 0.5f) || atmosphere.volumetricFog > 0.5f;
+	bool marchClouds = atmosphere.clouds > 0.5f || atmosphere.volumetricFog > 0.5f;
 	if(!marchClouds) m_CloudHistoryValid = false;
 	if(marchClouds) {
 		vkutil::transition_image(cmd, m_CloudRaw.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
@@ -1820,9 +1822,11 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 			glm::mat4 invViewProj; glm::vec3 campos; float frame; glm::vec3 sundir; float terrainSize; glm::vec2 cloudWind, mapOffset;
 			glm::vec4 fog; // the far fog: density, valley mist, the weather's haze, terrain height scale
 		} clouds;
-		clouds.invViewProj = glm::inverse(m_Projection * m_View);
+		// unjittered: the TAA's sub pixel jitter moved every half resolution texel's ray by up to a texel and a half
+		// against the history, the cloud edges shook with it (the clouds are soft, they don't need the TAA's antialiasing)
+		clouds.invViewProj = glm::inverse(m_UnjitteredProjection * m_View);
 		clouds.campos = m_CameraPos;
-		clouds.frame = static_cast<float>(m_FrameNumber % 64);
+		clouds.frame = static_cast<float>(m_FrameNumber % 1024); // the golden ratio sequence (clouds.comp): not reset every 64
 		clouds.sundir = m_SunDir;
 		clouds.terrainSize = m_WorldSize * m_TerrainScale;
 		clouds.cloudWind = m_AtmosphereManager.getCloudWind();
@@ -1838,13 +1842,13 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 		vkutil::transition_image(cmd, m_CloudRaw.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		if(!m_CloudHistoryValid) vkutil::transition_image(cmd, m_CloudHistory.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		struct { glm::mat4 reproject; float valid, blend; glm::vec2 pad; } resolve{};
-		resolve.reproject = m_PreviousViewProj * glm::inverse(m_Projection * m_View); // as clouds.comp marched (jittered)
+		resolve.reproject = m_PreviousViewProj * glm::inverse(m_UnjitteredProjection * m_View); // as clouds.comp marched (unjittered)
 		// a lightning flash (and the frame after it): no history, or the strike's light lingered and smeared
 		float flash = m_Weather.state().strikeFlash;
 		bool flashing = flash > 0.002f || m_CloudFlashLastFrame > 0.002f;
 		m_CloudFlashLastFrame = flash;
 		resolve.valid = m_CloudHistoryValid && !flashing ? 1.0f : 0.0f;
-		resolve.blend = 0.1f;
+		resolve.blend = 0.08f;
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudResolveEffect.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudResolveEffect.layout, 0, 1, &m_CloudResolveSet, 0, nullptr);
 		vkCmdPushConstants(cmd, m_CloudResolveEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(resolve), &resolve);
@@ -1900,8 +1904,10 @@ void Application::run() {
 		float deltatime = static_cast<float>(now - lastTime) / static_cast<float>(frequency);
 		lastTime = now;
 		float deltatimeMs = deltatime * 1000.0f;
-		m_AtmosphereManager.tick(deltatime);
-		updateWeather(deltatime);
+		// (pair captures freeze the wind and the weather too: the clouds drifting between the two frames read as flicker)
+		float worldDeltatime = m_ShotPair && !m_ShotPairAnimated ? 0.0f : deltatime;
+		m_AtmosphereManager.tick(worldDeltatime);
+		updateWeather(worldDeltatime);
 		if(!m_ShotPair || m_ShotPairAnimated) m_Time += deltatime; // frozen in the pair captures: only flicker changes between the frames
 		m_Deltatime = deltatime;
 		// VULKAN2_BENCH=1 prints the GPU timers every 2 seconds (for profiling without the UI)

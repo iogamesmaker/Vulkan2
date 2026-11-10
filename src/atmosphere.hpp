@@ -53,7 +53,7 @@ struct AtmosphereUBO {
 	float terrainMacro = 1.0f;	   // the far anti-tiling texture layer
 	float cloudShadows = 1.0f;
 	float clouds = 1.0f;			// the cloud layer at all (and its shadows)
-	float cloudQuality = 1.0f;		// 0 = fewer noise octaves + light samples
+	float pad0 = 0.0f;				// (was the 2D clouds' quality)
 	float aerialPerspective = 1.0f; // the haze over distance (aerial perspective LUT)
 	float volumetricFog = 0.0f;		// the froxel fog (volfog_*.comp), composited by lighting.comp
 

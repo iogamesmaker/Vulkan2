@@ -117,7 +117,10 @@ void main() {
 	// it (down to ~-2km), clamping froze the clouds in place until you climbed past it
 	vec3 camKm = vec3(0.0, ubo.radiusbottom + ubo.baseAltitude + pc.campos.y * ubo.worldScale, 0.0);
 	vec2 camWorldKm = (pc.campos.xz + pc.mapOffset * (pc.terrainSize / 4096.0)) * ubo.worldScale; // pc.mapOffset's unit
-	float jitter = fract(52.9829189 * fract(dot(vec2(p) + pc.frame * 5.588238, vec2(0.06711056, 0.00583715))));
+	// the start offset: spatially interleaved gradient noise, temporally the golden ratio sequence on top of it.
+	// every pixel goes through evenly spread offsets frame after frame, so the ~12 the history holds average out
+	// far better than random ones (that left a shimmer, worse without the TAA's second accumulation on top)
+	float jitter = fract(fract(52.9829189 * fract(dot(vec2(p), vec2(0.06711056, 0.00583715)))) + pc.frame * 0.618034);
 	float cloudEnter;
 	vec4 cloud = marchCumulus(transmittanceLUT, skyviewLUT, camKm, camWorldKm, pc.cloudWind, dir, tMax, pc.sundir, jitter, cloudEnter);
 	vec4 fog = marchFarFog(dir, tMax, jitter);

@@ -24,6 +24,7 @@ layout(set = 1, binding = 2) uniform sampler2D skyviewLUT;
 #include "atmosphere.glsl"
 #define CLOUD_COVERAGE_MAP
 #include "clouds.glsl"
+#include "volclouds.glsl" // cloudShadow
 #define SHADOW_PIXEL vec2(gl_GlobalInvocationID.xy)
 #include "shadowsampling.glsl" // set 2
 #include "volfog.glsl"
@@ -116,7 +117,7 @@ void main() {
 			float prevS = fogSliceCoord(distance(centre, pc.prevCampos), far);
 			if (all(greaterThanEqual(prevUV, vec2(0.0))) && all(lessThanEqual(prevUV, vec2(1.0))) && prevS < 1.0) {
 				vec4 previous = textureLod(history, vec3(prevUV, prevS), 0.0);
-				current = mix(previous, current, 0.1);
+				current = mix(previous, current, 0.07);
 			}
 		}
 	}

@@ -52,7 +52,7 @@ layout(set = ATMOSPHERE_SET, binding = ATMOSPHERE_BINDING) uniform AtmosphereUBO
 	float terrainMacro;
 	float cloudShadows;
 	float clouds;			 // the cloud layer at all (and its shadows)
-	float cloudQuality;		 // 0 = fewer noise octaves + light samples
+	float pad0;				 // (was the 2D clouds' quality)
 	float aerialPerspective; // the haze over distance
 	float volumetricFog;	 // 1 = the froxel fog is on
 

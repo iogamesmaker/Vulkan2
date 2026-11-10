@@ -136,18 +136,4 @@ float cloudBaseNoise(vec2 worldKm) { // the cumulus' uneven bases (volclouds.gls
 	return cloudBillowNoise(p);
 }
 
-// how much sunlight gets through the layer above a point (1 = none in the way), for the cloud shadows
-float cloudShadow(vec2 worldKm, float altitudeKm, vec3 sunDir) {
-	if (ubo.clouds < 0.5 || (ubo.cloudCoverage <= 0.0 && ubo.weather3.x <= 0.0) || sunDir.y <= 0.02) return 1.0;
-	float up = max(ubo.cloudAltitude - altitudeKm, 0.0);
-	// where the sun ray from here crosses the layer. towards sunset that point runs off to infinity (1 / sun height):
-	// at a few degrees the shadows were cast from 10-30km away and swept across the land as fast as the sun sank, a
-	// thousand clouds a minute. capped at ~3x the cloud height sideways (the sun at ~17 degrees), and faded out as the
-	// sun gets low: at sunset the light comes through so much air that it's soft anyway
-	float slant = max(sunDir.y, 0.3);
-	vec2 under = worldKm + sunDir.xz / slant * up;
-	float density = cloudCoverage4(under); // 4 octaves: crisp patches, 3 smeared them into broad gradients
-	return mix(1.0, exp(-density * ubo.cloudDensity * 4.0), smoothstep(0.04, 0.3, sunDir.y));
-}
-
 #endif

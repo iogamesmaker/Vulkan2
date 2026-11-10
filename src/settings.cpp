@@ -212,7 +212,6 @@ void Application::drawSettings() {
 	ImGui::SeparatorText("Sky");
 	check("Clouds", &s.clouds);
 	ImGui::SameLine();
-	check("Volumetric clouds", &s.cloudDetail);
 	check("Atmospheric haze", &s.aerialPerspective);
 	check("Volumetric fog", &s.volumetricFog);
 	ImGui::SetItemTooltip("Mist pooling in the valleys (thickest around sunrise), haze, and light shafts through the trees");
@@ -323,7 +322,6 @@ void Application::applySettings() {
 	m_TerrainCache.invalidate(); // the look it baked may have changed (triplanar, ...)
 	ubo.cloudShadows = s.cloudShadows ? 1.0f : 0.0f;
 	ubo.clouds = s.clouds ? 1.0f : 0.0f;
-	ubo.cloudQuality = s.cloudDetail ? 1.0f : 0.0f;
 	ubo.aerialPerspective = s.aerialPerspective ? 1.0f : 0.0f;
 
 	// volumetric fog: 2.4km of froxels (the aerial perspective takes over past that)
