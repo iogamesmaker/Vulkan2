@@ -152,20 +152,3 @@ struct Node : public IRenderable {
         }                                                               \
     } while (0)
 //< intro
-// the performance window's pass switches (Application::mark): while a switched off pass is being recorded every
-// draw and dispatch is dropped, the barriers, layout transitions, render pass begins / clears and copies stay, so the
-// frame is still valid and you see what the image looks like without that pass. defined after the wrappers, so they
-// call the real functions
-namespace passdebug { inline bool g_Skip = false; }
-inline void passdebugDispatch(VkCommandBuffer c, uint32_t x, uint32_t y, uint32_t z) { if(!passdebug::g_Skip) vkCmdDispatch(c, x, y, z); }
-inline void passdebugDispatchIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o) { if(!passdebug::g_Skip) vkCmdDispatchIndirect(c, b, o); }
-inline void passdebugDraw(VkCommandBuffer c, uint32_t v, uint32_t i, uint32_t fv, uint32_t fi) { if(!passdebug::g_Skip) vkCmdDraw(c, v, i, fv, fi); }
-inline void passdebugDrawIndexed(VkCommandBuffer c, uint32_t n, uint32_t i, uint32_t fi, int32_t vo, uint32_t fin) { if(!passdebug::g_Skip) vkCmdDrawIndexed(c, n, i, fi, vo, fin); }
-inline void passdebugDrawIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s) { if(!passdebug::g_Skip) vkCmdDrawIndirect(c, b, o, n, s); }
-inline void passdebugDrawIndexedIndirect(VkCommandBuffer c, VkBuffer b, VkDeviceSize o, uint32_t n, uint32_t s) { if(!passdebug::g_Skip) vkCmdDrawIndexedIndirect(c, b, o, n, s); }
-#define vkCmdDispatch passdebugDispatch
-#define vkCmdDispatchIndirect passdebugDispatchIndirect
-#define vkCmdDraw passdebugDraw
-#define vkCmdDrawIndexed passdebugDrawIndexed
-#define vkCmdDrawIndirect passdebugDrawIndirect
-#define vkCmdDrawIndexedIndirect passdebugDrawIndexedIndirect
