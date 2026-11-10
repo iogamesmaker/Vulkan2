@@ -60,8 +60,14 @@ struct AtmosphereUBO {
 	// the weather (weather.cpp), every frame
 	glm::vec4 weather{ 0.0f };	// x = overcast, y = wetness, z = lightning flash, w = snow cover
 	glm::vec4 weather2{ 0.0f }; // x = rain, y = snowfall, z = sand, w = wind (0 calm .. 1 storm)
+	// the weather field (clouds.glsl weatherCells): x = instability (how strongly the convective cells show: towers,
+	// showers, storms), y = rain everywhere under a thick deck (stratiform), z = rain under the cells (showers), w = spare
+	glm::vec4 weather3{ 0.0f };
+	// lightning: xy = the strike (continuous world km, no wind), z = the flash at the bolt itself (weather.z is what
+	// reaches the camera), w = the strike's seed (its shape)
+	glm::vec4 weather4{ 0.0f };
 };
-static_assert(sizeof(AtmosphereUBO) == 224, "AtmosphereUBO doesn't match the std140 layout");
+static_assert(sizeof(AtmosphereUBO) == 256, "AtmosphereUBO doesn't match the std140 layout");
 
 // per frame data for the sky view / aerial LUTs and the sky shader
 struct AtmospherePushConstants {

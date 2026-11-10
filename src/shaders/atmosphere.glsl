@@ -58,6 +58,8 @@ layout(set = ATMOSPHERE_SET, binding = ATMOSPHERE_BINDING) uniform AtmosphereUBO
 
 	vec4 weather;	// weather.cpp: x = overcast, y = wetness, z = lightning flash, w = snow cover
 	vec4 weather2;	// x = rain, y = snowfall, z = sand, w = wind (0 calm .. 1 storm)
+	vec4 weather3;	// the weather field (clouds.glsl): x = instability, y = stratiform rain, z = shower rain
+	vec4 weather4;	// lightning: xy = the strike (world km, no wind), z = the flash at the bolt, w = seed
 } ubo;
 
 // the weather's dimming of the sky's light: an overcast sky is a grey lid, much darker than the clear sky LUT

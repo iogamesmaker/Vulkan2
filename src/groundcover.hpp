@@ -13,7 +13,7 @@ class Application;
 class GroundCover {
 public:
 	void init(Application* engine, TextureLoader& textures, const AllocatedImage& heightmap, const AllocatedImage& climateMap,
-			  VkSampler heightmapSampler, VkSampler textureSampler, VkFormat shadowFormat);
+			  VkSampler heightmapSampler, VkSampler textureSampler, VkFormat shadowFormat, VkBuffer interactionBuffer);
 	void destroy();
 
 	void update(VkCommandBuffer cmd, const FoliagePushConstants& pc); // outside rendering, before the shadow pass

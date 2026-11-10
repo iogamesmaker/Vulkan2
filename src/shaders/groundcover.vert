@@ -3,6 +3,9 @@
 // swaying in the same wind as the grass
 
 #include "groundcovercommon.glsl"
+#define INTERACTION_SET 0
+#define INTERACTION_BINDING 2
+#include "interaction.glsl" // trailInfo.z: the weather's wind
 
 layout(location = 0) in vec4 inPositionSpecies; // xyz mesh space (world units), w = species
 layout(location = 1) in vec4 inNormalHeight;	// xyz normal, w = height up the plant, 0 at the ground .. 1 at its top
@@ -38,8 +41,9 @@ void main() {
 	float height = inNormalHeight.w;
 	float phase = dot(inst.posScale.xz + pc.offsetWorld, normalize(vec2(0.8, 0.35))) * 2.5 + inst.params.z * 6.0;
 
-	vec3 pos = inst.posScale.xyz + local + windOffset(pc.time, local, height, phase, inst.params.w);
-	vec3 prev = inst.posScale.xyz + local + windOffset(pc.sundir.x, local, height, phase, inst.params.w); // last frame
+	float amount = inst.params.w * mix(0.5, 2.2, interaction.trailInfo.z); // the weather's wind
+	vec3 pos = inst.posScale.xyz + local + windOffset(pc.time, local, height, phase, amount);
+	vec3 prev = inst.posScale.xyz + local + windOffset(pc.sundir.x, local, height, phase, amount); // last frame
 	outPosition = pos;
 	outPrevPosition = prev;
 	outNormal = yaw * inNormalHeight.xyz;

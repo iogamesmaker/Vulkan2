@@ -48,7 +48,7 @@ void PlayerTrail::record(VkCommandBuffer cmd, glm::vec2 offsetWorld) {
 		if(m_Active && p.age < 0.05f && glm::distance(p.world, m_Current) < 1e-3f) continue;
 		data.points[count++] = glm::vec4(p.world - offset, p.age);
 	}
-	data.info = glm::vec4(static_cast<float>(count), m_BodyHeight, 0.0f, 0.0f);
+	data.info = glm::vec4(static_cast<float>(count), m_BodyHeight, m_Wind, 0.0f);
 
 	// the last frame's vertex shaders are done with it before it changes, this frame's wait for the new data
 	VkMemoryBarrier2 before{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };

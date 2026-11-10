@@ -14,7 +14,7 @@ public:
 	static constexpr int POINTS = 16; // INTERACTION_POINTS
 	struct Data {
 		glm::vec4 points[POINTS]; // xyz feet, terrain space, w = age (s)
-		glm::vec4 info;			  // x = count, y = body height
+		glm::vec4 info;			  // x = count, y = body height, z = the weather's wind (0 calm .. 1 storm)
 	};
 
 	void init(Application* engine);
@@ -27,6 +27,7 @@ public:
 
 	// how fast you're moving through the vegetation (world units / s), the audio's rustle
 	float speed() const { return m_Speed; }
+	float m_Wind = 0.3f; // the weather's wind (weather.hpp), how hard the grass, bushes and trees sway
 
 private:
 	Application* m_Engine = nullptr;

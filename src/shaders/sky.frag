@@ -79,7 +79,7 @@ float phaseHG(float cosTheta, float g) {
 
 // the cloud layer seen along dir: rgb = light it sends towards the camera, a = how much of the sky behind it hides
 vec4 clouds(vec3 dir, vec3 skyLuminance) {
-	if (ubo.clouds < 0.5 || ubo.cloudCoverage <= 0.0 || dir.y <= 0.0) return vec4(0.0);
+	if (ubo.clouds < 0.5 || (ubo.cloudCoverage <= 0.0 && ubo.weather3.x <= 0.0) || dir.y <= 0.0) return vec4(0.0);
 	bool fine = ubo.cloudQuality > 0.5; // graphics settings: fewer octaves / light samples on low
 	float layerRadius = ubo.radiusbottom + ubo.cloudAltitude;
 	float t = raySphereIntersectNearest(pc.camPos, dir, layerRadius); // from below, the exit through the layer

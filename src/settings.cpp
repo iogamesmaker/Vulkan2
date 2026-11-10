@@ -21,7 +21,10 @@ void Application::updateWeather(float dt) {
 	}
 	float terrainSize = static_cast<float>(m_WorldSize) * m_TerrainScale;
 	glm::vec2 p = worldgen::noisePosition(glm::vec2(m_Camera.position.x, m_Camera.position.z), terrainSize, static_cast<float>(m_HeightmapSize) / terrainSize, static_cast<float>(m_HeightmapSize));
-	m_Weather.update(dt, worldgen::climateAt(p));
+	// where the camera is in the clouds' space (the cloud map's): the weather field drifts with them
+	const AtmosphereUBO& atmosphere = m_AtmosphereManager.m_AtmosphereData;
+	glm::vec2 cameraKm = (glm::vec2(m_CameraPos.x, m_CameraPos.z) + glm::vec2(m_MapOffset) * (m_WorldSize * m_TerrainScale / static_cast<float>(m_HeightmapSize))) * atmosphere.worldScale;
+	m_Weather.update(dt, worldgen::climateAt(p), cameraKm, m_AtmosphereManager.getCloudWind());
 	m_AtmosphereManager.setWeather(m_Weather.state());
 }
 

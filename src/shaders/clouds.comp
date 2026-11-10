@@ -51,5 +51,5 @@ void main() {
 	vec2 camWorldKm = (pc.campos.xz + pc.mapOffset * (pc.terrainSize / 4096.0)) * ubo.worldScale; // pc.mapOffset's unit
 	float jitter = fract(52.9829189 * fract(dot(vec2(p) + pc.frame * 5.588238, vec2(0.06711056, 0.00583715))));
 	vec4 cloud = marchCumulus(transmittanceLUT, skyviewLUT, camKm, camWorldKm, pc.cloudWind, dir, tMax, pc.sundir, jitter);
-	imageStore(cloudImage, p, vec4(cloud.rgb * cloud.a, 1.0 - cloud.a));
+	imageStore(cloudImage, p, vec4(cloud.rgb, 1.0 - cloud.a)); // (marchCumulus returns it premultiplied)
 }

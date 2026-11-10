@@ -139,7 +139,8 @@ void main() {
 	vec2 windDir = normalize(vec2(0.8, 0.35));
 	vec2 worldXZ = root.xz + pc.offsetWorld;
 	float gustPhase = dot(worldXZ, windDir) * 2.5, flutterPhase = r.w * 40.0;
-	float leanScale = type == FOLIAGE_WHEAT ? 0.25 : 0.5; // grass arcs over, it doesn't stand like spikes
+	// grass arcs over, it doesn't stand like spikes. the weather's wind: barely moving on a calm day, flattened in a gale
+	float leanScale = (type == FOLIAGE_WHEAT ? 0.25 : 0.5) * mix(0.55, 1.9, interaction.trailInfo.z);
 	float lean = ((sin(pc.time * 1.3 + gustPhase) * 0.5 + 0.5) * 0.6 + sin(pc.time * 4.7 + flutterPhase) * 0.15 + 0.3) * leanScale;
 	float leanBefore = ((sin(pc.sundir.x * 1.3 + gustPhase) * 0.5 + 0.5) * 0.6 + sin(pc.sundir.x * 4.7 + flutterPhase) * 0.15 + 0.3) * leanScale; // last frame
 	vec3 bendDir = normalize(vec3(windDir.x, 0.0, windDir.y) + vec3(r.w - 0.5, 0.0, r.z - 0.5) * 0.8);

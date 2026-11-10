@@ -571,6 +571,9 @@ void Atmosphere::setWeather(const WeatherState& w) {
 	d.cloudDensity = w.density;
 	d.weather = glm::vec4(w.overcast, w.wetness, w.flash, w.snowCover);
 	d.weather2 = glm::vec4(w.rain, w.snow, w.sand, w.wind);
+	d.weather3 = glm::vec4(w.instability, w.rainDeck, w.rainCells, 0.0f);
+	d.weather4 = glm::vec4(w.strikeKm, w.strikeFlash, w.strikeSeed);
+	d.cloudAltitude = w.cloudBase; // low grey decks when it's damp (the mountains disappear into them), high in fair weather
 	m_CloudWindSpeed = 0.004f + w.wind * 0.03f; // km/s: a breeze .. a gale up at the clouds
 	updateUBO(d);
 }

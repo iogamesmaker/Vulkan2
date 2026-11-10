@@ -170,6 +170,7 @@ void Application::drawVolumetricFog(VkCommandBuffer cmd) {
 	const WeatherState& weather = m_Weather.state();
 	glm::vec3 dust = glm::mix(glm::vec3(0.95f), glm::vec3(0.85f, 0.6f, 0.36f), glm::clamp(weather.sand, 0.0f, 1.0f));
 	pc.weather = glm::vec4(dust, weather.haze);
+	pc.params.y = m_FogMist * weather.mist; // the weather's mist (a foggy morning) on top of the setting
 	VkDescriptorSet injectSets[] = { m_FogInjectSets[slot], m_AtmosphereManager.getRenderDescriptor(), m_Shadows.getDescriptor(m_FrameNumber) };
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_FogInjectEffect.pipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_FogInjectEffect.layout, 0, 3, injectSets, 0, nullptr);

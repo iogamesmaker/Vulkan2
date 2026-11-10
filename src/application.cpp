@@ -778,7 +778,7 @@ void Application::initDefaultData() {
 				 m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_Shadows.getFormat(), m_PlayerTrail.buffer());
 	// the props bring their own scanned textures, the moss on them is the grass
 	m_Props.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_AlbedoMaps[0].imageView, m_Sampler, m_Shadows.getFormat());
-	m_GroundCover.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Sampler, m_Shadows.getFormat());
+	m_GroundCover.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Sampler, m_Shadows.getFormat(), m_PlayerTrail.buffer());
 	m_Trees.setOcclusionSource(m_HiZ.getView(), m_HiZ.getSampler());
 	m_Precipitation.init(this, m_OutputImage.imageFormat, m_AtmosphereManager.getRenderDescriptorLayout());
 	m_Precipitation.setDepth(m_DepthBuffer.imageView, m_NearestSampler);
@@ -2153,6 +2153,7 @@ void Application::draw() {
 		float eye = m_Camera.eyeHeight / m_Camera.metersPerUnit;
 		glm::vec3 feet = m_Camera.position - glm::vec3(0.0f, eye, 0.0f);
 		m_PlayerTrail.update(feet, m_GrassInteraction && m_Camera.walking && m_Camera.onGround, eye, m_Deltatime);
+		m_PlayerTrail.m_Wind = m_Weather.state().wind; // the vegetation sways in the weather's wind
 		m_PlayerTrail.record(cmd, foliagePC.offsetWorld);
 	}
 	m_Foliage.update(cmd, foliagePC);

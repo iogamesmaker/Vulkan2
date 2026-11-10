@@ -115,6 +115,8 @@ void main() {
 	vec3 worldMetres = (pos + vec3(float(pc.mapOffset.x), 0.0, float(pc.mapOffset.y)) * (pc.terrainSize / hmSize.x)) * metres;
 	float n = fbm((worldMetres - drift) * 0.01);
 	mist *= smoothstep(0.3, 0.7, n) * 1.8;
+	// after the rain the wet valleys steam: more of it while the ground is wet (ubo.weather.y)
+	mist *= 1.0 + ubo.weather.y * 1.5;
 	// haze: thin everywhere close to the ground, fading over a few hundred metres up
 	float haze = exp(-above / 300.0);
 	// the weather thickens the haze near the ground: rain and snow to a kilometre or two of visibility, a sandstorm to a

@@ -46,6 +46,9 @@ void main() {
 	float sway = (sin(pc.time * 0.7 + phase) * 0.5 + 0.5) * 0.7 + sin(pc.time * 1.9 + phase * 1.7) * 0.3;
 	float swayBefore = (sin(pc.sundir.x * 0.7 + phase) * 0.5 + 0.5) * 0.7 + sin(pc.sundir.x * 1.9 + phase * 1.7) * 0.3; // last frame
 	float bend = inPositionWind.w * inPositionWind.w;
+	float gale = mix(0.5, 2.4, interaction.trailInfo.z); // the weather's wind (interaction.glsl)
+	sway *= gale;
+	swayBefore *= gale;
 	pos.xz += windDir * sway * bend * treeHeight * 0.012;
 	vec3 windBefore = vec3(0.0); // last frame's position = pos + windBefore
 	windBefore.xz = windDir * (swayBefore - sway) * bend * treeHeight * 0.012;

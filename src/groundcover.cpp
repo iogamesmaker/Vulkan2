@@ -34,7 +34,7 @@ namespace {
 }
 
 void GroundCover::init(Application* engine, TextureLoader& textures, const AllocatedImage& heightmap, const AllocatedImage& climateMap,
-					   VkSampler heightmapSampler, VkSampler textureSampler, VkFormat shadowFormat) {
+					   VkSampler heightmapSampler, VkSampler textureSampler, VkFormat shadowFormat, VkBuffer interactionBuffer) {
 	m_Device = engine->m_Device;
 	m_Allocator = engine->getAllocator();
 	m_TextureLoader = &textures;
@@ -170,6 +170,7 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 	DescriptorLayoutBuilder renderBuilder;
 	renderBuilder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);							   // instances
 	renderBuilder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, SPECIES * 2); // albedo, normal per species
+	renderBuilder.add_binding(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER); // the player's trail + the weather's wind (interaction.glsl)
 	m_RenderLayout = renderBuilder.build(m_Device, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 	m_RenderSet = engine->g_DescriptorAllocator.allocate(m_Device, m_RenderLayout);
 
@@ -182,7 +183,8 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 	VkDescriptorBufferInfo speciesInfo{ m_SpeciesBuffer.buffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorImageInfo textureInfos[SPECIES * 2];
 	for(uint32_t i = 0; i < SPECIES * 2; i++) textureInfos[i] = { textureSampler, m_Textures[i].imageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-	VkWriteDescriptorSet writes[7] = {};
+	VkDescriptorBufferInfo interactionInfo{ interactionBuffer, 0, VK_WHOLE_SIZE };
+	VkWriteDescriptorSet writes[8] = {};
 	for(auto& write : writes) { write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write.descriptorCount = 1; write.dstSet = m_ComputeSet; write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; }
 	writes[0].dstBinding = 0; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &mapInfos[0];
 	writes[1].dstBinding = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[1].pImageInfo = &mapInfos[1];
@@ -192,7 +194,8 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 	writes[5].dstSet = m_RenderSet; writes[5].dstBinding = 0; writes[5].pBufferInfo = &instanceInfo;
 	writes[6].dstSet = m_RenderSet; writes[6].dstBinding = 1; writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	writes[6].descriptorCount = SPECIES * 2; writes[6].pImageInfo = textureInfos;
-	vkUpdateDescriptorSets(m_Device, 7, writes, 0, nullptr);
+	writes[7].dstSet = m_RenderSet; writes[7].dstBinding = 2; writes[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[7].pBufferInfo = &interactionInfo;
+	vkUpdateDescriptorSets(m_Device, 8, writes, 0, nullptr);
 
 	// ---------------------------------------------------------------- pipelines
 	VkPushConstantRange computeRange{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FoliagePushConstants) };
