@@ -92,7 +92,9 @@ void main() {
 	vec3 pos = pc.campos + dir * dist;
 
 	// the ground under it and around it (~300m): lower than the surroundings is a hollow, where cold air and mist collect
-	float metres = 0.001 / ubo.worldScale; // per world unit
+	// (ubo.worldScale is km per world unit. this was 0.001 / worldScale, world units per metre: every height below came
+	// out 36x too small, the 300m haze reached ~11km up and hung in the sky over the clouds, in vertical stripes)
+	float metres = ubo.worldScale * 1000.0; // per world unit
 	vec2 hmSize = vec2(textureSize(heightmap, 0));
 	vec2 hmUV = (pos.xz + 0.5 * pc.terrainSize) / pc.terrainSize + vec2(pc.mapOffset) / hmSize;
 	float ground = terrainAt(hmUV);
@@ -119,7 +121,7 @@ void main() {
 	// few hundred metres (its dust hugs the ground a little more)
 	float weatherHaze = pc.weather.a * mix(1.0, exp(-above / 120.0) * 1.6, clamp(pc.weather.a / 5.0, 0.0, 1.0));
 	// (the haze ~6.5km of mean free path near the ground: at 4km it veiled every view, the distance haze is on top)
-	float extinction = (mist * 0.025 + haze * 0.00015 * (1.0 + weatherHaze * 10.0)) * pc.params.x / metres; // per world unit
+	float extinction = (mist * 0.025 + haze * 0.00015 * (1.0 + weatherHaze * 10.0)) * pc.params.x * metres; // per world unit
 
 	vec4 current = vec4(0.0);
 	if (extinction > 1e-8) {
