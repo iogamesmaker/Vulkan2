@@ -39,7 +39,7 @@ layout(set = ATMOSPHERE_SET, binding = ATMOSPHERE_BINDING) uniform AtmosphereUBO
 	float pomDistance;	   // world units, parallax occlusion mapping fades out over the last 40%, 0 = off
 	float pomDepth;		   // world units between the lowest and highest point of a height map
 	float pomSteps;		   // most steps down the view ray (looking along the surface)
-	float pomShadow;	   // strength of the parallax self shadowing, 0 = off
+	float cliffNoTile;	   // 1 = the cliffs' rock texture varied per patch instead of repeating
 
 	float cloudCoverage;   // 0 clear .. 1 overcast (clouds.glsl)
 	float cloudAltitude;   // km above the planet surface (same scale as baseAltitude)

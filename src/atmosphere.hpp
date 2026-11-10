@@ -40,7 +40,7 @@ struct AtmosphereUBO {
 	float pomDistance = 8.0f;	 // world units (~50m), parallax occlusion mapping fades out over the last 40%, 0 = off
 	float pomDepth = 0.045f;	 // world units (~25cm) between the lowest and highest point of a height map
 	float pomSteps = 16.0f;		 // most steps down the view ray (looking along the surface)
-	float pomShadow = 1.0f;		 // strength of the parallax self shadowing, 0 = off
+	float cliffNoTile = 1.0f;	 // 1 = the cliffs' rock texture varied per patch instead of repeating (terrainmaterial.glsl)
 
 	float cloudCoverage = 0.45f; // 0 clear .. 1 overcast (clouds.glsl)
 	float cloudAltitude = 2.2f;	 // km above the planet surface

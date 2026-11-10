@@ -17,9 +17,9 @@ struct GraphicsSettings {
 	bool triplanar = true;	 // cliffs textured from the side (2 more projections where it's steep)
 	bool detailBumps = true; // small procedural bumps in the shading normal up close
 	bool macroLayer = true;	 // a third, huge texture scale far away against tiling
+	bool cliffNoTile = true;  // cliffs' rock texture varied per patch instead of a visible 7m repeat (~1ms on a screen of cliffs)
 	float pomDistance = 35.0f; // metres, 0 = off
 	int pomSteps = 12;
-	bool pomShadows = true;
 
 	// shadows
 	bool shadows = true;
@@ -98,8 +98,8 @@ inline GraphicsSettings qualityPreset(Quality q) {
 	case Quality::Low:
 		s.renderScale = 0.75f;
 		s.tessellation = 3.0f;
-		s.triplanar = false; s.detailBumps = false; s.macroLayer = false;
-		s.pomDistance = 0.0f; s.pomShadows = false;
+		s.triplanar = false; s.detailBumps = false; s.macroLayer = false; s.cliffNoTile = false;
+		s.pomDistance = 0.0f;
 		s.softShadows = false; s.shadowSmoothing = 1; s.shadowResolution = 0;
 		s.grassShadows = false; s.cloudShadows = false;
 		s.grassRange = 0; s.treeDensity = 0.7f; s.groundCoverDensity = 0.5f;
@@ -110,7 +110,7 @@ inline GraphicsSettings qualityPreset(Quality q) {
 	case Quality::Medium:
 		s.volumetricFog = false;
 		s.tessellation = 4.0f;
-		s.pomDistance = 25.0f; s.pomSteps = 8; s.pomShadows = false;
+		s.pomDistance = 25.0f; s.pomSteps = 8;
 		s.cloudDetail = false; // volumetric clouds cost a few ms on integrated GPUs
 		s.shadowSmoothing = 2;
 		s.grassShadows = false;
@@ -135,8 +135,8 @@ inline GraphicsSettings qualityPreset(Quality q) {
 // every optional feature off (the "Everything off" button, VULKAN2_PRESET=off), resolution and vsync untouched
 inline GraphicsSettings everythingOff(GraphicsSettings s) {
 	s.taa = false; s.sharpening = 0.0f;
-	s.triplanar = false; s.detailBumps = false; s.macroLayer = false;
-	s.pomDistance = 0.0f; s.pomShadows = false;
+	s.triplanar = false; s.detailBumps = false; s.macroLayer = false; s.cliffNoTile = false;
+	s.pomDistance = 0.0f;
 	s.shadows = false; s.softShadows = false; s.shadowSmoothing = 0; s.grassShadows = false; s.cloudShadows = false;
 	s.foliage = false; s.trees = false; s.props = false; s.groundCover = false;
 	s.ssao = false; s.contactShadows = false; s.bounceLight = false; s.bloom = 0.0f;

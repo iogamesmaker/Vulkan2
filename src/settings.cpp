@@ -154,9 +154,10 @@ void Application::drawSettings() {
 	check("Detail bumps", &s.detailBumps);
 	ImGui::SameLine();
 	check("Anti-tiling layer", &s.macroLayer);
+	ImGui::SameLine();
+	check("Cliff anti-tiling", &s.cliffNoTile);
 	slider("Parallax distance (m)", &s.pomDistance, 0.0f, 150.0f, "%.0f");
 	changed |= ImGui::SliderInt("Parallax steps", &s.pomSteps, 2, 64);
-	check("Parallax self shadows", &s.pomShadows);
 
 	ImGui::SeparatorText("Shadows");
 	check("Shadows", &s.shadows);
@@ -307,12 +308,12 @@ void Application::applySettings() {
 	float metersPerUnit = ubo.worldScale * 1000.0f;
 	ubo.pomDistance = s.pomDistance / metersPerUnit;
 	ubo.pomSteps = static_cast<float>(s.pomSteps);
-	ubo.pomShadow = s.pomShadows ? 1.0f : 0.0f;
 	ubo.pomDepth = s.pomDepth * 0.01f / metersPerUnit;
 	ubo.terrainCache = s.terrainCache ? 1.0f : 0.0f;
 	ubo.terrainTriplanar = s.triplanar ? 1.0f : 0.0f;
 	ubo.terrainBumps = s.detailBumps ? 1.0f : 0.0f;
 	ubo.terrainMacro = s.macroLayer ? 1.0f : 0.0f;
+	ubo.cliffNoTile = s.cliffNoTile ? 1.0f : 0.0f;
 	m_TerrainCache.invalidate(); // the look it baked may have changed (triplanar, ...)
 	ubo.cloudShadows = s.cloudShadows ? 1.0f : 0.0f;
 	ubo.clouds = s.clouds ? 1.0f : 0.0f;

@@ -103,7 +103,7 @@ void main() {
 	}
 
 	TerrainSurface surface;
-	surface.albedo = vec3(0.0); surface.normal = vec3(0.0, 1.0, 0.0); surface.canopy = 0.0; surface.pomShadow = 1.0;
+	surface.albedo = vec3(0.0); surface.normal = vec3(0.0, 1.0, 0.0); surface.canopy = 0.0;
 	if (cacheWeight < 1.0) {
 		TerrainShading s;
 		s.position = fragPos;
@@ -132,13 +132,12 @@ void main() {
 		surface.albedo = mix(surface.albedo, cachedAlbedo.rgb, cacheWeight);
 		surface.normal = normalize(mix(surface.normal, normal, cacheWeight));
 		surface.canopy = mix(surface.canopy, cachedAlbedo.a, cacheWeight);
-		surface.pomShadow = mix(surface.pomShadow, 1.0, cacheWeight);
 	}
 
 	// the wind gusts rolling over the wheat canopy
 	if (surface.canopy > 0.0) surface.albedo *= mix(1.0, canopyGust(worldXZ, pc.time), surface.canopy);
 
 
-	// lit in lighting.comp. the POM self shadowing scales the direct light (it's too fine for the shadow blur)
-	writeGBuffer(surface.albedo, 1.0, surface.normal, MAT_TERRAIN, 1.0, surface.pomShadow);
+	// lit in lighting.comp
+	writeGBuffer(surface.albedo, 1.0, surface.normal, MAT_TERRAIN, 1.0, 1.0);
 }

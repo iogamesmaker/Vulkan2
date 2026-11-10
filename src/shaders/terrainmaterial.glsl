@@ -59,11 +59,43 @@ void addLayer(inout Material m, int index, DetailUV layer, float weight, bool ne
 	if (needHeight) m.height += textureGrad(pom[nonuniformEXT(index)], layer.uv, layer.dx, layer.dy).r * weight;
 }
 
-Material sampleMaterial(int index, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, bool needHeight) {
+// the near layer without its repeat on the cliffs' side projections (Quilez' "texture repetition", technique 3):
+// a 7m tile printed a lattice all over a rock face. a slow noise over the uv picks one of 8 random offsets into the
+// texture per patch, two neighbouring offsets cross fade where the noise moves from one to the next (the contrast
+// decides who wins there, less ghosting than a plain fade). the fade is narrow: outside it one offset is sampled,
+// only inside it both (~1ms on a screen full of cliffs; a wide fade, and the far / macro layers too, cost ~6)
+// not on the top projection: the parallax traces the near layer's height as it is. ubo.cliffNoTile turns it off
+// noiseScale: patches per tile, the noise has to repeat where the detail space wraps (TERRAIN_DETAIL_PERIOD, 875
+// near tiles): 0.6
+void sampleOffset(inout Material m, int index, DetailUV layer, vec2 offset, float weight, bool needHeight) {
+	addLayer(m, index, DetailUV(layer.uv + offset, layer.dx, layer.dy), weight, needHeight);
+}
+void addLayerNoTile(inout Material m, int index, DetailUV layer, float weight, bool needHeight, float noiseScale) {
+	float k = valueNoise(layer.uv * noiseScale) * 8.0;
+	float i = floor(k), f = fract(k);
+	vec2 offsetA = sin(vec2(3.0, 7.0) * i), offsetB = sin(vec2(3.0, 7.0) * (i + 1.0));
+	// (the contrast shifts the fade by up to 0.15 either way)
+	if (f < 0.25) { sampleOffset(m, index, layer, offsetA, weight, needHeight); return; }
+	if (f > 0.75) { sampleOffset(m, index, layer, offsetB, weight, needHeight); return; }
+	Material a, b;
+	a.albedo = vec3(0.0); a.normal = vec3(0.0); a.height = 0.0;
+	b = a;
+	sampleOffset(a, index, layer, offsetA, 1.0, needHeight);
+	sampleOffset(b, index, layer, offsetB, 1.0, needHeight);
+	float t = smoothstep(0.4, 0.6, f - 0.05 * dot(a.albedo - b.albedo, vec3(1.0)));
+	m.albedo += mix(a.albedo, b.albedo, t) * weight;
+	m.normal += mix(a.normal, b.normal, t) * weight;
+	m.height += mix(a.height, b.height, t) * weight;
+}
+
+Material sampleMaterial(int index, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, bool needHeight, bool nearNoTile) {
 	Material m;
 	m.albedo = vec3(0.0); m.normal = vec3(0.0); m.height = 0.0;
 	float wNear = 1.0 - farWeight, wFar = farWeight * (1.0 - macroWeight), wMacro = farWeight * macroWeight;
-	if (wNear > 0.0) addLayer(m, index, near, wNear, needHeight);
+	if (wNear > 0.0) {
+		if (nearNoTile) addLayerNoTile(m, index, near, wNear, needHeight, 0.6);
+		else addLayer(m, index, near, wNear, needHeight);
+	}
 	if (wFar > 0.0) addLayer(m, index, far, wFar, needHeight);
 	if (wMacro > 0.0) addLayer(m, index, macro, wMacro, needHeight);
 	return m;
@@ -96,14 +128,14 @@ float heightBlend(float h1, float h2, float wFirst) {
 }
 
 // the two materials of one projection, height blended. one alone where the other can't show (most pixels)
-void sampleBlend(int first, int second, float wA, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, out vec3 albedo, out vec3 normal) {
+void sampleBlend(int first, int second, float wA, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, bool nearNoTile, out vec3 albedo, out vec3 normal) {
 	if (wA > 1.0 - HEIGHT_BLEND_CUTOFF || wA < HEIGHT_BLEND_CUTOFF) {
-		Material m = sampleMaterial(wA > 0.5 ? first : second, near, far, macro, farWeight, macroWeight, false);
+		Material m = sampleMaterial(wA > 0.5 ? first : second, near, far, macro, farWeight, macroWeight, false, nearNoTile);
 		albedo = m.albedo; normal = normalize(m.normal);
 		return;
 	}
-	Material m1 = sampleMaterial(first, near, far, macro, farWeight, macroWeight, true);
-	Material m2 = sampleMaterial(second, near, far, macro, farWeight, macroWeight, true);
+	Material m1 = sampleMaterial(first, near, far, macro, farWeight, macroWeight, true, nearNoTile);
+	Material m2 = sampleMaterial(second, near, far, macro, farWeight, macroWeight, true, nearNoTile);
 	float blend = heightBlend(m1.height, m2.height, wA); // 0 = first, 1 = second
 	albedo = mix(m1.albedo, m2.albedo, blend);
 	normal = normalize(mix(m1.normal, m2.normal, blend));
@@ -157,23 +189,6 @@ vec2 parallaxOcclusion(int first, int second, float wFirst, DetailUV near, vec3 
 	return (uvAbove + uvBelow) * 0.5;
 }
 
-// soft self shadowing: march from the hit point towards the light, anything of the height field above the ray
-// darkens it, the closer and the further above the more
-float parallaxShadow(int first, int second, float wFirst, DetailUV near, vec2 uv, float depth, vec3 lightTS, float scale) {
-	if (lightTS.z <= 0.0) return 1.0;
-	const int STEPS = 6;
-	float startHeight = 1.0 - depth;
-	float layer = (1.0 - startHeight) / float(STEPS);
-	vec2 delta = lightTS.xy / max(lightTS.z, 0.1) * scale * layer;
-	float occlusion = 0.0;
-	for (int i = 1; i <= STEPS; i++) {
-		float rayHeight = startHeight + layer * float(i);
-		float h = blendedHeight(first, second, wFirst, near, uv + delta * float(i));
-		occlusion = max(occlusion, (h - rayHeight) * (1.0 - float(i) / float(STEPS + 1)));
-	}
-	return 1.0 - clamp(occlusion * 6.0 * ubo.pomShadow, 0.0, 1.0);
-}
-
 // ------------------------------------------------------------------ the surface
 
 struct TerrainShading {
@@ -196,7 +211,6 @@ struct TerrainSurface {
 	vec3 albedo;	 // linear
 	vec3 normal;	 // world space
 	float canopy;	 // the wheat canopy's share of the albedo (the caller animates its wind gusts)
-	float pomShadow; // the parallax self shadow
 };
 
 // bare rock: a photographed cliff face (Poly Haven CC0 cliff_side) at its real size over the base
@@ -233,7 +247,7 @@ DetailUV scaleUV(DetailUV d, float k) { return DetailUV(d.uv * k, d.dx * k, d.dy
 
 // the cliff photo, then the other rock, over one projection's base material. near = that projection's near layer
 // (uv = world / textureRepeatNear)
-void rockBlend(RockCover r, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, inout vec3 albedo, inout vec3 normal) {
+void rockBlend(RockCover r, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, bool nearNoTile, inout vec3 albedo, inout vec3 normal) {
 	if (r.cliffMix > 0.01) {
 		vec3 cAlbedo = vec3(0.0), cNormal = vec3(0.0);
 		for (int i = 0; i < 2; i++) {
@@ -243,7 +257,7 @@ void rockBlend(RockCover r, DetailUV near, DetailUV far, DetailUV macro, float f
 			DetailUV cliffNear = scaleUV(near, ubo.textureRepeatNear / size);
 			cliffNear.uv += i == 0 ? vec2(0.0) : vec2(0.37, 0.61); // a different part of the photo
 			DetailUV cliffFar = scaleUV(cliffNear, 1.0 / 1.6); // a bigger tile in the distance
-			Material m = sampleMaterial(TERRAIN_CLIFF, cliffNear, cliffFar, cliffFar, farWeight, 0.0, false);
+			Material m = sampleMaterial(TERRAIN_CLIFF, cliffNear, cliffFar, cliffFar, farWeight, 0.0, false, false); // (its two copies vary it already)
 			cAlbedo += m.albedo * w;
 			cNormal += normalize(m.normal) * w;
 		}
@@ -256,7 +270,7 @@ void rockBlend(RockCover r, DetailUV near, DetailUV far, DetailUV macro, float f
 		normal = normalize(mix(normal, normalize(cNormal), mixHere));
 	}
 	if (r.kindMix > 0.01) {
-		Material m = sampleMaterial(r.kind, near, far, macro, farWeight, macroWeight, false);
+		Material m = sampleMaterial(r.kind, near, far, macro, farWeight, macroWeight, false, false); // (a tint over patches)
 		vec3 rock = mix(vec3(dot(m.albedo, vec3(0.3, 0.59, 0.11))), m.albedo, 0.65); // weathered, less saturated
 		albedo = mix(albedo, rock, r.kindMix);
 		normal = normalize(mix(normal, normalize(m.normal), r.kindMix * 0.6)); // the cliff's relief stays
@@ -425,20 +439,15 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	float edgeNoise = valueNoise(s.worldXZ * 0.35) * 0.65 + valueNoise(s.worldXZ * 1.3 + 17.0) * 0.35;
 	wA = clamp(wA + (edgeNoise - 0.5) * 0.45 * smoothstep(0.0, 0.25, wA * (1.0 - wA)), 0.0, 1.0);
 	float pomMaterial = mix(POM_MATERIAL_DEPTH[second], POM_MATERIAL_DEPTH[first], wA);
-	// faded over the outer 70% of the range, the depth and the self shadowing go together
+	// faded over the outer 70% of the range
 	float pomFade = ubo.pomDistance > 0.0 && ubo.pomDepth > 0.0 ? 1.0 - smoothstep(ubo.pomDistance * 0.3, ubo.pomDistance, viewDistance) : 0.0;
 	pomFade *= wTop * smoothstep(0.02, 0.1, pomMaterial);
-	float pomShadow = 1.0;
 	if (pomFade > 0.0) {
 		vec3 toEye = normalize(s.campos - s.position);
 		vec3 viewTS = vec3(dot(toEye, va), dot(toEye, vb), dot(toEye, normal));
 		float scale = ubo.pomDepth * pomMaterial / ubo.textureRepeatNear * pomFade; // uv units
 		float depth;
 		near.uv = parallaxOcclusion(first, second, wA, near, viewTS, scale, pomFade, depth);
-
-		vec3 light = s.sundir.y > 0.0 ? s.sundir : -s.sundir;
-		vec3 lightTS = vec3(dot(light, va), dot(light, vb), dot(light, normal));
-		if (ubo.pomShadow > 0.0) pomShadow = mix(1.0, parallaxShadow(first, second, wA, near, near.uv, depth, lightTS, scale), pomFade);
 	}
 
 	RockCover rockDetail = rockCover(s.worldXZ, rock * smoothstep(0.2, 0.5, slope) * (1.0 - snowCap));
@@ -448,16 +457,16 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	float wSum = 0.0;
 	if (wTop > 0.02) {
 		vec3 a, n;
-		sampleBlend(first, second, wA, near, far, macroLayer, farWeight, macroWeight, a, n);
-		rockBlend(rockDetail, near, far, macroLayer, farWeight, macroWeight, a, n);
+		sampleBlend(first, second, wA, near, far, macroLayer, farWeight, macroWeight, false, a, n);
+		rockBlend(rockDetail, near, far, macroLayer, farWeight, macroWeight, false, a, n);
 		albedoSum += a * wTop;
 		normalSum += normalize(mat3(va, vb, normal) * n) * wTop;
 		wSum += wTop;
 	}
 	if (wX > 0.02) {
 		vec3 a, n;
-		sampleBlend(first, second, wA, sideXNear, sideXFar, sideXMacro, farWeight, macroWeight, a, n);
-		rockBlend(rockDetail, sideXNear, sideXFar, sideXMacro, farWeight, macroWeight, a, n);
+		sampleBlend(first, second, wA, sideXNear, sideXFar, sideXMacro, farWeight, macroWeight, ubo.cliffNoTile > 0.5, a, n);
+		rockBlend(rockDetail, sideXNear, sideXFar, sideXMacro, farWeight, macroWeight, ubo.cliffNoTile > 0.5, a, n);
 		n.x *= axisSign.x;
 		vec3 t = vec3(n.xy + normal.zy, abs(n.z) * normal.x);
 		albedoSum += a * wX;
@@ -466,8 +475,8 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	}
 	if (wZ > 0.02) {
 		vec3 a, n;
-		sampleBlend(first, second, wA, sideZNear, sideZFar, sideZMacro, farWeight, macroWeight, a, n);
-		rockBlend(rockDetail, sideZNear, sideZFar, sideZMacro, farWeight, macroWeight, a, n);
+		sampleBlend(first, second, wA, sideZNear, sideZFar, sideZMacro, farWeight, macroWeight, ubo.cliffNoTile > 0.5, a, n);
+		rockBlend(rockDetail, sideZNear, sideZFar, sideZMacro, farWeight, macroWeight, ubo.cliffNoTile > 0.5, a, n);
 		n.x *= -axisSign.z;
 		vec3 t = vec3(n.xy + normal.xy, abs(n.z) * normal.z);
 		albedoSum += a * wZ;
@@ -518,7 +527,6 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	surface.albedo = albedo;
 	surface.normal = normal;
 	surface.canopy = canopy;
-	surface.pomShadow = pomShadow;
 	return surface;
 }
 
