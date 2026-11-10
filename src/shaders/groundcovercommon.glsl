@@ -6,9 +6,9 @@
 #include "foliagecommon.glsl" // the same push constants as the grass (FoliagePushConstants), pc.interaction = density
 
 // must match GroundCover in groundcover.hpp
-#define GC_SPECIES 14
-#define GC_MAX_MESHES 96
-#define GC_CAPACITY 4096u
+#define GC_SPECIES 20
+#define GC_MAX_MESHES 128
+#define GC_CAPACITY 3072u // (more meshes, fewer per bin: the same ~38MB of instances)
 #define GC_LOD_PIXELS 45.0 // the full model above this radius on screen, the simplified one below (groundcover.comp)
 // species
 #define GC_FERN 0
@@ -25,6 +25,13 @@
 #define GC_EMPODIUM 11	 // little yellow star flowers
 #define GC_STINKKRUID 12 // yellow flowering tufts
 #define GC_ROOIBOS 13	 // a medium, twiggy bush
+// Poly Haven (CC0), more variety in the woods and meadows
+#define GC_MOSS 14		 // cushions of moss on the forest floor
+#define GC_CELANDINE 15	 // lesser celandine: glossy leaves, yellow star flowers, damp shade and forest edges
+#define GC_SHRUB_FLOWER 16 // a leafy flowering shrub
+#define GC_SHRUB_GREEN 17	 // a dense green bush
+#define GC_GRASS_CLUMP 18	 // tall grass tussocks
+#define GC_ROOTS 19		 // a tangle of exposed roots and old wood
 
 // three grids (consecutive thread ranges in groundcover.comp): small plants on a fine one close by, the medium ones,
 // and the big shrubs on a coarse one far out. must match GroundCover::SIDE

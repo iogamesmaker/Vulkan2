@@ -42,7 +42,7 @@ private:
 	struct Species { glm::uvec4 meshes; glm::vec4 size; }; // groundcovercommon.glsl
 
 	// must match groundcovercommon.glsl
-	static constexpr uint32_t SPECIES = 14, MAX_MESHES = 96, BINS = MAX_MESHES * 3, CAPACITY = 4096; // bins: camera lod 0, shadow casters, camera lod 1
+	static constexpr uint32_t SPECIES = 20, MAX_MESHES = 128, BINS = MAX_MESHES * 3, CAPACITY = 3072; // bins: camera lod 0, shadow casters, camera lod 1
 	static constexpr uint32_t SIDE[3] = { 140, 133, 166 }; // the small / medium / far grids, 2 * radius / cell
 	static constexpr uint32_t THREADS = SIDE[0] * SIDE[0] + SIDE[1] * SIDE[1] + SIDE[2] * SIDE[2];
 

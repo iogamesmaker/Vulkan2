@@ -17,6 +17,8 @@ namespace {
 		{ "periwinkle_plant", true }, { "shrub_sorrel_01", false }, { "weed_plant_02", false }, { "dandelion_01", false },
 		{ "flower_gazania", false }, { "flower_ursinia", false }, { "flower_empodium", false }, { "flower_stinkkruid", false },
 		{ "wild_rooibos_bush", false },
+		{ "moss_01", false }, { "celandine_01", false }, { "shrub_01", false }, { "shrub_04", false }, { "grass_medium_01", false },
+		{ "root_cluster_01", true },
 	};
 	constexpr size_t MAX_TRIANGLES = 9600; // the dense variants (some dandelions, a periwinkle) cost more than they show
 

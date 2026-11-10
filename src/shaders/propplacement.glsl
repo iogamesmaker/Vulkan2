@@ -9,19 +9,10 @@
 #include "propmeshes.glsl" // rocks, then logs, then stumps
 #include "proprotation.glsl"
 
-// mesh space collision shapes (times the scale), measured from the scans in the space Props::loadMesh puts them in.
-// rocks: an ellipsoid per rock, x / z half extents and the height above their base (they stand on y = 0, the
-// ellipsoid's centre is the base, its lower half underground)
-const vec3 ROCK_RADII[PROP_ROCKS] = vec3[](vec3(0.382, 0.603, 0.55), vec3(0.29, 0.494, 0.55), vec3(0.281, 0.25, 0.55),
-										   vec3(0.55, 0.384, 0.387), vec3(0.55, 0.513, 0.503), vec3(0.55, 0.412, 0.342));
+// (the walking collision uses each mesh's own baked shape, Props::bakeShape)
 #define ROCK_SINK 0.06 // rocks sit this far (times the scale) into the ground, over uneven ground too
-// logs (along x, -0.5 .. 0.5): the trunk's radius and the height of its axis above the ground
-const float LOG_RADII[PROP_LOGS] = float[](0.033, 0.051);
-const float LOG_AXIS[PROP_LOGS] = float[](0.039, 0.169);
 #define LOG_SINK 0.01
 #define LOG_HALF_LENGTH 0.45 // the log meshes run -0.5..0.5 along x (Props::loadMesh), the ends taper
-// stumps: the trunk's radius (before the roots flare out) and their height
-const float STUMP_RADII[PROP_STUMPS] = float[](0.08, 0.089);
 #define STUMP_HEIGHT 0.1
 
 struct PropPlacement {

@@ -24,8 +24,14 @@ namespace {
 		{ "rock_moss_set_02", "rock_moss_set_02_rock10", Kind::Rock, 2000, 300 },
 		{ "rock_moss_set_02", "rock_moss_set_02_rock12", Kind::Rock, 2000, 300 },
 		{ "rock_moss_set_02", "rock_moss_set_02_rock09", Kind::Rock, 2000, 300 },
+		// more variety, Poly Haven (CC0): the pine forest's mossy rocks, a stone
+		{ "rock_moss_set_01", "rock_moss_set_01_rock01", Kind::Rock, 2000, 300 },
+		{ "rock_moss_set_01", "rock_moss_set_01_rock03", Kind::Rock, 2000, 300 },
+		{ "rock_moss_set_01", "rock_moss_set_01_rock05", Kind::Rock, 2000, 300 },
+		{ "stone_01", nullptr, Kind::Rock, 2000, 300 },
 		{ "dead_tree_trunk", nullptr, Kind::Log, 5000, 700 },
 		{ "dead_tree_trunk_02", nullptr, Kind::Log, 5000, 700 },
+		{ "dead_quiver_trunk", nullptr, Kind::Log, 5000, 700 }, // a weathered grey dead trunk (Poly Haven, CC0)
 		{ "tree_stump_01", nullptr, Kind::Stump, 4000, 600 },
 		{ "tree_stump_02", nullptr, Kind::Stump, 4000, 600 },
 	};
@@ -95,6 +101,23 @@ bool Props::loadMesh(uint32_t mesh, std::vector<Vertex>& vertices, std::vector<u
 	glm::vec3 lo(1e9f), hi(-1e9f);
 	for(const Vertex& v : vertices) { lo = glm::min(lo, glm::vec3(v.positionMaterial)); hi = glm::max(hi, glm::vec3(v.positionMaterial)); }
 	if(file.kind == Kind::Log) {
+		// lying down along x first: some trunks are modelled standing (dead_quiver_trunk), turn the longest extent onto x
+		glm::vec3 extent = hi - lo;
+		if(extent.y > extent.x && extent.y >= extent.z) {
+			for(Vertex& v : vertices) {
+				glm::vec3 p(v.positionMaterial), n(v.normalAO);
+				v.positionMaterial = glm::vec4(p.y, -p.x, p.z, v.positionMaterial.w);
+				v.normalAO = glm::vec4(n.y, -n.x, n.z, v.normalAO.w);
+			}
+		} else if(extent.z > extent.x) {
+			for(Vertex& v : vertices) {
+				glm::vec3 p(v.positionMaterial), n(v.normalAO);
+				v.positionMaterial = glm::vec4(p.z, p.y, -p.x, v.positionMaterial.w);
+				v.normalAO = glm::vec4(n.z, n.y, -n.x, v.normalAO.w);
+			}
+		}
+		lo = glm::vec3(1e9f); hi = glm::vec3(-1e9f);
+		for(const Vertex& v : vertices) { lo = glm::min(lo, glm::vec3(v.positionMaterial)); hi = glm::max(hi, glm::vec3(v.positionMaterial)); }
 		// the scans lie on a slope of their own (one end on its root plate, the other end raised): stood on their
 		// lowest point, the far end hung in the air on flat ground. levelled about z so the lowest points near both
 		// ends (the outer 15% of the length) are at the same height

@@ -48,7 +48,7 @@ void main() {
 
 	// darker down inside the plant, where the leaves shade each other and the ground is close
 	float ao = mix(0.45, 1.0, smoothstep(0.0, 0.8, inHeight));
-	if (inSpecies == GC_BRANCHES) writeGBuffer(albedo, ao, normal, MAT_BARK, 0.85, mix(0.7, 1.0, ao));
+	if (inSpecies == GC_BRANCHES || inSpecies == GC_ROOTS) writeGBuffer(albedo, ao, normal, MAT_BARK, 0.85, mix(0.7, 1.0, ao));
 	else writeGBuffer(albedo, ao, normal, MAT_LEAF, 1.0, mix(0.6, 1.0, ao));
 	writeVelocity(pc.viewproj, inPosition, inPrevPosition);
 }

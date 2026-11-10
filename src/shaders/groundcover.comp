@@ -92,7 +92,11 @@ void main() {
 		chance[GC_SORREL] = (forest * 0.3 + meadow * 0.15) * mix(0.2, 1.8, patches(world, 0.6, 6.0));
 		chance[GC_WEED] = (meadow * 0.15 + forest * 0.05) * mix(0.3, 1.7, patches(world, 0.8, 7.0));
 		chance[GC_DANDELION] = meadow * 0.07 * smoothstep(0.4, 0.75, patches(world, 1.0, 8.0)) * 2.5;
+		chance[GC_MOSS] = forest * (0.12 + damp * 0.2) * smoothstep(0.35, 0.65, patches(world, 0.9, 14.0)) * 2.0;
 	} else if (grid == 1u) {
+		chance[GC_CELANDINE] = (forest * damp * 0.12 + edge * 0.08 + meadow * damp * 0.03) * smoothstep(0.4, 0.7, patches(world, 1.1, 15.0)) * 2.0;
+		chance[GC_GRASS_CLUMP] = (meadow * 0.12 + edge * 0.08) * mix(0.2, 1.8, patches(world, 1.3, 18.0));
+		chance[GC_ROOTS] = forest * 0.025;
 		chance[GC_FERN] = (forest * 0.55 + meadow * damp * 0.08 + edge * 0.15) * mix(0.15, 1.8, smoothstep(0.3, 0.7, patches(world, 2.0, 1.0)));
 		chance[GC_BRANCHES] = forest * 0.04;
 		chance[GC_BUSH] = (forest * 0.1 + meadow * 0.08 + edge * 0.1) * mix(0.2, 1.8, patches(world, 1.5, 3.0));
@@ -107,6 +111,8 @@ void main() {
 		// the big shrubs, far out: thickets at the forest edges, a few in the woods and out in the meadows
 		chance[GC_SHRUB] = (forest * 0.1 + meadow * 0.06 + edge * 0.3) * mix(0.2, 1.8, patches(world, 3.0, 2.0));
 		chance[GC_ROOIBOS] = (meadow * 0.15 + edge * 0.2 + forest * 0.03) * mix(0.2, 1.8, patches(world, 2.5, 13.0));
+		chance[GC_SHRUB_FLOWER] = (edge * 0.2 + meadow * damp * 0.06 + forest * 0.03) * mix(0.2, 1.8, patches(world, 2.8, 16.0));
+		chance[GC_SHRUB_GREEN] = (forest * 0.08 + edge * 0.2 + meadow * 0.04) * mix(0.2, 1.8, patches(world, 2.2, 17.0));
 	}
 
 	float total = 0.0;
@@ -129,7 +135,8 @@ void main() {
 	// gradually with distance. the dense variants (the upper half) reach half as far, they're small on screen
 	// out there and the triangles add up
 	const float reach[GC_SPECIES] = float[](8.0, 6.0, GC_RADIUS_FAR, 6.0, 5.0, 4.0, GC_RADIUS_SMALL, GC_RADIUS_SMALL, GC_RADIUS_SMALL,
-											 8.0, 7.0, 6.0, 7.0, 16.0); // (the flowers are cheap, their colour carries)
+											 8.0, 7.0, 6.0, 7.0, 16.0,
+											 GC_RADIUS_SMALL, 6.0, 16.0, 12.0, 6.0, 6.0); // (the flowers are cheap, their colour carries)
 	float keep = hash42(cellIndex * 0.83 + float(grid) * 7.0 + 5.0).x;
 	float plantReach = reach[kind] * mix(0.45, 1.0, keep * keep);
 	if (sp.meshes.y > 1u && variant >= (sp.meshes.y + 1u) / 2u) plantReach *= 0.5;
@@ -139,21 +146,22 @@ void main() {
 
 	// the models are real world size (metres, GroundCover::init converts to world units), a bit of variation
 	// on top. some are scaled up: the nettles, clover and some flowers in the downloads are seedlings
-	const float minScale[GC_SPECIES] = float[](1.8, 0.8, 1.2, 1.4, 2.6, 0.9, 1.6, 1.2, 1.0, 2.6, 3.6, 2.4, 3.6, 2.2);
-	const float maxScale[GC_SPECIES] = float[](3.2, 1.2, 2.0, 2.4, 4.0, 1.4, 2.4, 1.8, 1.3, 4.0, 5.0, 3.4, 5.0, 3.6);
+	const float minScale[GC_SPECIES] = float[](1.8, 0.8, 1.2, 1.4, 2.6, 0.9, 1.6, 1.2, 1.0, 2.6, 3.6, 2.4, 3.6, 2.2, 1.0, 1.4, 0.9, 0.9, 1.0, 0.8);
+	const float maxScale[GC_SPECIES] = float[](3.2, 1.2, 2.0, 2.4, 4.0, 1.4, 2.4, 1.8, 1.3, 4.0, 5.0, 3.4, 5.0, 3.6, 1.6, 2.2, 1.5, 1.5, 1.6, 1.2);
 	float scale = mix(minScale[kind], maxScale[kind], rnd2.x) * fade;
 
 	float groundY = terrainHeight(heightmap, uv, distXZ, terrainSpacing(distXZ, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
 	groundY -= meshSag(heightmap, uv, terrainSpacing(dist, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
 	GroundCoverInstance instance;
 	instance.posScale = vec4(xz.x, groundY - 0.002, xz.y, scale);
-	const float sway[GC_SPECIES] = float[](1.0, 0.0, 0.35, 0.5, 0.8, 0.4, 0.6, 1.0, 1.0, 0.8, 1.0, 0.9, 0.8, 0.4);
+	const float sway[GC_SPECIES] = float[](1.0, 0.0, 0.35, 0.5, 0.8, 0.4, 0.6, 1.0, 1.0, 0.8, 1.0, 0.9, 0.8, 0.4, 0.1, 0.8, 0.4, 0.45, 1.0, 0.0);
 	instance.params = vec4(rnd2.z * 6.2831853, clamp(data.g * 0.6 + rnd2.y * 0.4, 0.0, 1.0), rnd2.w, sway[kind]);
 
 	// shadows from the plants big enough to cast one that shows (each plant to its own distance, so the edge of
 	// the shadows doesn't move as a ring)
-	bool caster = kind == GC_FERN || kind == GC_SHRUB || kind == GC_BUSH || kind == GC_NETTLE || kind == GC_BRANCHES || kind == GC_ROOIBOS;
-	float shadowReach = GC_SHADOW_DISTANCE * (kind == GC_SHRUB || kind == GC_ROOIBOS ? 2.0 : 1.0) * mix(0.6, 1.0, keep);
+	bool caster = kind == GC_FERN || kind == GC_SHRUB || kind == GC_BUSH || kind == GC_NETTLE || kind == GC_BRANCHES || kind == GC_ROOIBOS
+			   || kind == GC_SHRUB_FLOWER || kind == GC_SHRUB_GREEN || kind == GC_ROOTS || kind == GC_GRASS_CLUMP;
+	float shadowReach = GC_SHADOW_DISTANCE * (kind == GC_SHRUB || kind == GC_ROOIBOS || kind == GC_SHRUB_FLOWER || kind == GC_SHRUB_GREEN ? 2.0 : 1.0) * mix(0.6, 1.0, keep);
 	if (caster && dist < shadowReach) append(uint(GC_MAX_MESHES) + mesh, instance);
 
 	float sphere = sp.size.x * scale;

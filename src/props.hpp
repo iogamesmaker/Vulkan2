@@ -12,7 +12,7 @@ class TextureLoader;
 // rocks, boulders, fallen logs and stumps: photoscans (Poly Haven, assets/props), two LODs each from meshoptimizer,
 // scattered on a world anchored grid around the camera every frame by props.comp, drawn per mesh / LOD with indexed
 // indirect draws into the G-buffer, plus shadow casters near the camera
-constexpr uint32_t PROP_MESH_COUNT = 10; // 6 rocks, 2 logs, 2 stumps (propscommon.glsl PROP_MESHES)
+constexpr uint32_t PROP_MESH_COUNT = 15; // 10 rocks, 3 logs, 2 stumps (propscommon.glsl PROP_MESHES)
 // per mesh albedo + normal, the moss, then the two ambientCG stones (albedo + normal each) the set rocks are textured
 // with (props.frag)
 constexpr uint32_t PROP_TEXTURES = PROP_MESH_COUNT * 2 + 1 + 4;
