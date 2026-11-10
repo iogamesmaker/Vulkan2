@@ -117,7 +117,10 @@ float contactShadow(vec3 position, vec3 normal, vec3 lightDir, float dist, vec2 
 
 // an effect texture (ssao.comp, clouds.comp) at this pixel. full resolution reads it directly; lower
 // resolution is upsampled depth aware: of the 4 nearest texels only the ones at this pixel's depth count (bilinear
-// blending across an edge put the occlusion of what's behind onto leaves)
+// blending across an edge put the occlusion of what's behind onto leaves). the sky passes SKY_VIEW_Z. when none of
+// the 4 match (a twig thinner than a texel) the closest in depth is used, not the fallback: that flickered as the
+// jitter moved the twig on and off the texels
+const float SKY_VIEW_Z = 0.02 / 1e-7; // what the reversed depth 0 (the sky) turns into below
 vec4 upsampleEffect(sampler2D tex, ivec2 p, vec2 screenUV, float viewZ, vec4 fallback) {
 	vec2 texSize = vec2(textureSize(tex, 0));
 	vec2 fullSize = vec2(textureSize(depthBuffer, 0));
@@ -126,18 +129,21 @@ vec4 upsampleEffect(sampler2D tex, ivec2 p, vec2 screenUV, float viewZ, vec4 fal
 	vec2 pos = screenUV * texSize - 0.5;
 	ivec2 base = ivec2(floor(pos));
 	vec2 f = pos - vec2(base);
-	vec4 sum = vec4(0.0);
-	float weightSum = 0.0;
+	vec4 sum = vec4(0.0), closest = fallback;
+	float weightSum = 0.0, closestDiff = 1e30;
 	for (int i = 0; i < 4; i++) {
 		ivec2 o = ivec2(i & 1, i >> 1);
 		ivec2 q = clamp(base + o, ivec2(0), ivec2(texSize) - 1);
 		float sampleZ = 0.02 / max(texelFetch(depthBuffer, q * ratio, 0).r, 1e-7);
 		float bilinear = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
-		float w = (bilinear + 1e-3) * exp(-abs(sampleZ - viewZ) / (viewZ * 0.03));
-		sum += texelFetch(tex, q, 0) * w;
+		float diff = abs(sampleZ - viewZ);
+		float w = (bilinear + 1e-3) * exp(-diff / (viewZ * 0.03));
+		vec4 c = texelFetch(tex, q, 0);
+		sum += c * w;
 		weightSum += w;
+		if (diff < closestDiff) { closestDiff = diff; closest = c; }
 	}
-	return weightSum > 1e-4 ? sum / weightSum : fallback;
+	return weightSum > 1e-4 ? sum / weightSum : closest;
 }
 
 // the SSAO (rg) denoised as it's upsampled: a depth aware 3x3 of its texels (6x6 pixels at half resolution) instead
@@ -189,7 +195,9 @@ void main() {
 		// the overcast sky: grey and dim behind the clouds. lightning lights it up
 		sky.rgb = overcastSky(sky.rgb / ubo.sunIlluminance) * ubo.sunIlluminance + vec3(0.75, 0.8, 1.0) * ubo.weather.z * ubo.sunIlluminance * 0.02;
 		if (volumetricClouds) {
-			vec4 cloud = texture(cloudTexture, uv);
+			// depth aware like the surfaces: plain bilinear pulled in the texels whose ray stopped at a tree or a
+			// ridge, a halo along every edge that crawled with the jitter
+			vec4 cloud = upsampleEffect(cloudTexture, p, uv, SKY_VIEW_Z, vec4(0.0, 0.0, 0.0, 1.0));
 			sky.rgb = sky.rgb * cloud.a + cloud.rgb + (1.0 - cloud.a) * lightningGlow(); // lit from inside by the flash
 		}
 		// the fog in front of the sky: the whole froxel column

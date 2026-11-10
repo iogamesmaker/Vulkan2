@@ -27,25 +27,35 @@ void main() {
 	vec4 now = texelFetch(current, p, 0);
 	if (pc.valid < 0.5) { imageStore(resolved, p, now); return; }
 
-	// the neighbourhood's spread: history outside of it is something that isn't there any more
+	vec2 fullSize = vec2(textureSize(depthBuffer, 0));
+	ivec2 ratio = max(ivec2(round(fullSize / vec2(size))), ivec2(1)); // half resolution, or full (Ultra)
+	ivec2 full = p * ratio;
+	vec2 uv = (vec2(full) + 0.5) / fullSize;
+	float depth = texelFetch(depthBuffer, full, 0).r;
+	float viewZ = 0.02 / max(depth, 1e-7); // reversed z, ~ view distance (the sky: huge)
+
+	// the neighbourhood's spread: history outside of it is something that isn't there any more. only the neighbours
+	// at this texel's depth: along an edge the sky's rays and the ones stopped by a tree or a ridge are very
+	// different, together they opened the box so wide the march's noise went straight through (the edges shimmered)
 	vec4 m1 = vec4(0.0), m2 = vec4(0.0);
+	float wSum = 0.0;
 	for (int y = -1; y <= 1; y++) {
 		for (int x = -1; x <= 1; x++) {
-			vec4 c = texelFetch(current, clamp(p + ivec2(x, y), ivec2(0), size - 1), 0);
-			m1 += c;
-			m2 += c * c;
+			ivec2 q = clamp(p + ivec2(x, y), ivec2(0), size - 1);
+			float z = 0.02 / max(texelFetch(depthBuffer, q * ratio, 0).r, 1e-7);
+			float w = (x == 0 && y == 0) ? 1.0 : exp(-abs(z - viewZ) / (viewZ * 0.03));
+			vec4 c = texelFetch(current, q, 0);
+			m1 += c * w;
+			m2 += c * c * w;
+			wSum += w;
 		}
 	}
-	m1 /= 9.0;
-	vec4 sigma = sqrt(max(m2 / 9.0 - m1 * m1, 0.0));
+	m1 /= wSum;
+	vec4 sigma = sqrt(max(m2 / wSum - m1 * m1, 0.0));
 	// wide: the march's noise is the spread here, a tight box would let it all through again
 	vec4 low = m1 - sigma * 1.75, high = m1 + sigma * 1.75;
 
 	// where this pixel's ray was last frame (the clouds sit kilometres away, the scene's depth where it's in front)
-	vec2 fullSize = vec2(textureSize(depthBuffer, 0));
-	ivec2 full = p * max(ivec2(round(fullSize / vec2(size))), ivec2(1)); // half resolution, or full (Ultra)
-	vec2 uv = (vec2(full) + 0.5) / fullSize;
-	float depth = texelFetch(depthBuffer, full, 0).r;
 	vec4 previousClip = pc.reproject * vec4(uv * 2.0 - 1.0, depth > 0.0 ? depth : 1e-5, 1.0);
 	vec2 previousUV = previousClip.xy / previousClip.w * 0.5 + 0.5;
 	if (previousClip.w <= 0.0 || any(lessThan(previousUV, vec2(0.0))) || any(greaterThan(previousUV, vec2(1.0)))) {
