@@ -1,4 +1,5 @@
 #include "application.hpp"
+#include <glm/gtc/matrix_transform.hpp> // glm::translate
 
 // volumetric fog (volfog.glsl): two compute passes over a froxel grid. the volumes stay in GENERAL for good, they're
 // written and sampled every frame, so only barriers between the passes
@@ -154,6 +155,16 @@ void Application::drawVolumetricFog(VkCommandBuffer cmd) {
 	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
 				  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
 
+	// the map re-centred since last frame (it does every few strips as you move): every terrain space position moved
+	// by the offset change. last frame's camera and view projection moved into this frame's space, so the history
+	// stays usable (thrown away, the fog came back from one noisy frame and took a while to settle again)
+	if(m_FogHistoryValid && m_MapOffset != m_FogPrevMapOffset) {
+		float offsetScale = m_TerrainScale / static_cast<float>(m_CoordinateMultiplier);
+		glm::vec2 d = glm::vec2(m_MapOffset - m_FogPrevMapOffset) * offsetScale;
+		m_FogPrevCampos -= glm::vec3(d.x, 0.0f, d.y);
+		m_FogPrevViewProj = m_FogPrevViewProj * glm::translate(glm::mat4(1.0f), glm::vec3(d.x, 0.0f, d.y));
+		m_FogPrevMapOffset = m_MapOffset;
+	}
 	FogInjectPushConstants pc{};
 	pc.invViewProj = glm::inverse(viewProj);
 	pc.prevViewProj = m_FogPrevViewProj;
@@ -170,7 +181,7 @@ void Application::drawVolumetricFog(VkCommandBuffer cmd) {
 	float flash = m_Weather.state().flash;
 	bool flashing = flash > 0.002f || m_FogFlashLastFrame > 0.002f;
 	m_FogFlashLastFrame = flash;
-	bool valid = m_FogHistoryValid && m_MapOffset == m_FogPrevMapOffset && !flashing; // re-centred: last frame's space is gone
+	bool valid = m_FogHistoryValid && !flashing;
 	pc.params = glm::vec4(m_FogDensity, m_FogMist, valid ? 1.0f : 0.0f, m_Time);
 	const WeatherState& weather = m_Weather.state();
 	glm::vec3 dust = glm::mix(glm::vec3(0.95f), glm::vec3(0.85f, 0.6f, 0.36f), glm::clamp(weather.sand, 0.0f, 1.0f));
