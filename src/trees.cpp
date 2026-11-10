@@ -426,6 +426,7 @@ void Trees::setOcclusionSource(VkImageView pyramid, VkSampler sampler) {
 void Trees::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 	m_PushConstants = pc;
 	m_PushConstants.extra = m_Density;
+	m_PushConstants.sundir.y = m_DetailDistance; // trees.comp: the impostor distance (the draws only read .x)
 	if(!m_Enabled) return;
 
 	const VkPipelineStageFlags2 drawStages = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;

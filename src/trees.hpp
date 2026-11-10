@@ -60,6 +60,7 @@ public:
 
 	bool m_Enabled = true;
 	float m_Density = 1.0f;
+	float m_DetailDistance = 1.0f; // multiplies LOD2_DISTANCE (the settings' tree detail distance)
 private:
 	// init's writes of the heightmap + climate map into the sets that sample them
 	void setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler);

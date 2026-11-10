@@ -73,7 +73,7 @@ layout(push_constant) uniform constants {
 	mat4 viewproj;
 	vec3 campos;	   // terrain space
 	float time;
-	vec3 sundir;	   // trees_bake: direction to the viewer. otherwise x = last frame's time (wind motion vectors)
+	vec3 sundir;	   // trees_bake: direction to the viewer. otherwise x = last frame's time (wind motion vectors), y = trees.comp's detail distance
 	float factor;	   // terrain height scale
 	vec2 offsetWorld;  // terrain space -> continuous world
 	ivec2 offset;	   // heightmap texel offset

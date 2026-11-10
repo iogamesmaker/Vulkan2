@@ -185,6 +185,8 @@ void Application::drawSettings() {
 	changed |= ImGui::Combo("Grass distance", &s.grassRange, ranges, 3);
 	check("Trees", &s.trees);
 	slider("Tree density", &s.treeDensity, 0.0f, 3.0f);
+	slider("Tree detail distance", &s.treeDetailDistance, 0.5f, 1.5f);
+	ImGui::SetItemTooltip("How far trees stay full meshes before they turn into flat impostors. Forests cost much less closer in");
 	check("Rocks + logs", &s.props);
 	check("Ground cover", &s.groundCover);
 	slider("Ground cover density", &s.groundCoverDensity, 0.0f, 2.0f);
@@ -292,6 +294,7 @@ void Application::applySettings() {
 	m_Foliage.m_CastShadows = s.grassShadows;
 	m_Trees.m_Enabled = s.trees;
 	m_Trees.m_Density = s.treeDensity;
+	m_Trees.m_DetailDistance = s.treeDetailDistance;
 	m_Props.m_Enabled = s.props;
 	m_GroundCover.m_Enabled = s.groundCover;
 	m_GroundCover.m_Density = s.groundCoverDensity;

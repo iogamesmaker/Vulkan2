@@ -810,6 +810,10 @@ void Application::initDefaultData() {
 	}
 	// VULKAN2_CLOUDRES=0/1/2: the clouds at quarter / half / full resolution (comparison captures)
 	if(const char* res = std::getenv("VULKAN2_CLOUDRES")) m_Settings.cloudResolution = std::atoi(res);
+	// VULKAN2_SCALE=<render scale>: (profiling captures: does a pass scale with the pixels or the geometry)
+	if(const char* scale = std::getenv("VULKAN2_SCALE")) m_Settings.renderScale = static_cast<float>(std::atof(scale));
+	// VULKAN2_TREEDIST=<x>: the tree detail distance (comparison captures)
+	if(const char* treeDist = std::getenv("VULKAN2_TREEDIST")) m_Settings.treeDetailDistance = static_cast<float>(std::atof(treeDist));
 	// VULKAN2_TAA=0: TAA off (flicker captures)
 	if(const char* taa = std::getenv("VULKAN2_TAA")) m_Settings.taa = std::atoi(taa) != 0;
 	// VULKAN2_GROUNDCOVER=<density>, 0 = off (comparison captures)
@@ -2132,6 +2136,9 @@ void Application::draw() {
 		m_DebugView.select(static_cast<int>(m_FrameNumber % debugTextures().size()));
 		m_ShowDrawStats = true;
 	}
+	// VULKAN2_DRAWSTATS=1: the draw counts on (printed with each capture)
+	static const bool drawStatsEnv = std::getenv("VULKAN2_DRAWSTATS") != nullptr;
+	if(drawStatsEnv) m_ShowDrawStats = true;
 	if(m_Resized) { resizeSwapchain(m_Vsync); m_FrameEvents |= FRAME_RESIZE; }
 	
 	// Wait for the GPU to finish, reset the fence

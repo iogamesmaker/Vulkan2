@@ -109,7 +109,9 @@ void main() {
 	if (dist < LOD1_DISTANCE * scale) { append(uint(TREE_MESHES) + mesh, instance); return; }
 
 	// mesh -> impostor: a dithered crossfade over a band instead of a hard switch, drawn as both inside it
-	float lod2 = LOD2_DISTANCE * (0.85 + 0.3 * jitter);
+	// (by size too, like the LODs above: a small tree is a few pixels of tiny leaf triangles long before 70m, which
+	// rasterise slowly; the big ones keep the full distance)
+	float lod2 = LOD2_DISTANCE * pc.sundir.y * clamp(treeHeight / 3.0, 0.35, 1.0) * (0.85 + 0.3 * jitter);
 	float toImpostor = smoothstep(lod2 * (1.0 - IMPOSTOR_BLEND), lod2, dist);
 	if (toImpostor < 1.0) {
 		TreeInstance meshInstance = instance;
