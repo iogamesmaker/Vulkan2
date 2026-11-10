@@ -71,24 +71,18 @@ void main() {
 		PropPlacement prop;
 		vec4 a = vec4(0.0), b = vec4(0.0);
 		if (placeProp(heightmap, climateMap, cell, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, prop)) {
+			// the prop as props.comp places it (its base, yaw, scale, tilt and mesh): collision.cpp walks on the
+			// mesh's baked top surface (Props::bakeShape) turned the same way, not a rough ellipsoid / capsule
 			float propGround = terrainHeight(heightmap, prop.uv, 0.0, 0.0, pc.factor, pc.terrainSize);
-			if (prop.mesh >= PROP_FIRST_STUMP) {
-				// stump: a squat dome over its footprint (root flare included), you can step onto the short ones
-				float r = STUMP_RADII[prop.mesh - PROP_FIRST_STUMP] * 1.3;
-				a = vec4(prop.xz.x + pc.offsetWorld.x, propGround - 0.01 * prop.scale, prop.xz.y + pc.offsetWorld.y, prop.yaw);
-				b = vec4(vec3(r, STUMP_HEIGHT * 1.05, r) * prop.scale, 1.0);
-			} else if (prop.mesh < PROP_FIRST_LOG) {
-				// rock: an ellipsoid around its base (yaw only, the small tilt doesn't matter for walking)
-				a = vec4(prop.xz.x + pc.offsetWorld.x, propGround - ROCK_SINK * prop.scale, prop.xz.y + pc.offsetWorld.y, prop.yaw);
-				b = vec4(ROCK_RADII[prop.mesh] * prop.scale, 1.0);
-			} else {
-				// log: a capsule along its (tilted, yawed) axis
-				uint log = prop.mesh - PROP_FIRST_LOG;
-				mat3 rotation = propRotation(prop.yaw, prop.tilt);
-				vec3 base = vec3(prop.xz.x + pc.offsetWorld.x, propGround - LOG_SINK * prop.scale, prop.xz.y + pc.offsetWorld.y);
-				a = vec4(base + rotation * vec3(-0.5, LOG_AXIS[log], 0.0) * prop.scale, LOG_RADII[log] * prop.scale);
-				b = vec4(base + rotation * vec3(0.5, LOG_AXIS[log], 0.0) * prop.scale, 2.0);
+			if (prop.mesh >= PROP_FIRST_LOG && prop.mesh < PROP_FIRST_STUMP) {
+				vec2 axisUV = vec2(cos(prop.yaw), -sin(prop.yaw)) * LOG_HALF_LENGTH * prop.scale / pc.terrainSize;
+				float endA = terrainHeight(heightmap, prop.uv - axisUV, 0.0, 0.0, pc.factor, pc.terrainSize);
+				float endB = terrainHeight(heightmap, prop.uv + axisUV, 0.0, 0.0, pc.factor, pc.terrainSize);
+				propGround = min(propGround, 0.5 * (endA + endB));
 			}
+			float sink = prop.mesh < PROP_FIRST_LOG ? ROCK_SINK : (prop.mesh < PROP_FIRST_STUMP ? LOG_SINK : 0.01);
+			a = vec4(prop.xz.x + pc.offsetWorld.x, propGround - sink * prop.scale, prop.xz.y + pc.offsetWorld.y, prop.yaw);
+			b = vec4(prop.scale, prop.tilt, float(prop.mesh), 1.0);
 		}
 		results[pc.slot].props[id * 2u] = a;
 		results[pc.slot].props[id * 2u + 1u] = b;

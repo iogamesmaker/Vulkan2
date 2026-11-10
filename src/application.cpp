@@ -792,6 +792,7 @@ void Application::initDefaultData() {
 				 m_AtmosphereManager.getRenderDescriptorLayout(), m_Shadows.getDescriptorLayout(), m_Shadows.getFormat(), m_PlayerTrail.buffer());
 	// the props bring their own scanned textures, the moss on them is the grass
 	m_Props.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_AlbedoMaps[0].imageView, m_Sampler, m_Shadows.getFormat());
+	m_Collision.setShapes(m_Props.collisionShapes()); // walking on the rocks / logs as they're shaped
 	m_GroundCover.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Sampler, m_Shadows.getFormat(), m_PlayerTrail.buffer());
 	m_Trees.setOcclusionSource(m_HiZ.getView(), m_HiZ.getSampler());
 	m_Precipitation.init(this, m_OutputImage.imageFormat, m_AtmosphereManager.getRenderDescriptorLayout());
@@ -2163,6 +2164,8 @@ void Application::draw() {
 		// the flying camera stays above the terrain
 		if(m_Collision.valid()) m_Camera.floorHeight = m_Collision.groundAt(glm::vec2(m_Camera.position.x, m_Camera.position.z));
 		m_LastProbe = glm::vec4(m_Camera.groundHeight, 0.0f, 0.0f, 0.0f);
+		static const bool collDump = std::getenv("VULKAN2_COLLDUMP") != nullptr;
+		if(collDump && m_Collision.valid() && m_FrameNumber % 60 == 0) m_Collision.dumpNearestProp(glm::vec2(m_Camera.position.x, m_Camera.position.z));
 	}
 
 	// Get a swapchain index for the next frame

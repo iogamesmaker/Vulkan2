@@ -143,6 +143,50 @@ bool Props::loadMesh(uint32_t mesh, std::vector<Vertex>& vertices, std::vector<u
 	return true;
 }
 
+// the walkable shape (collision.hpp PropShape): the highest point of the full resolution scan over each cell of its
+// footprint. the vertices and the triangles' centres and edge middles land in the cells (the scans are dense, a
+// cell is a few cm), the few cells nothing landed in take their highest neighbour's height
+void Props::bakeShape(uint32_t mesh, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
+	PropShape& s = m_Shapes[mesh];
+	glm::vec3 lo(1e9f), hi(-1e9f);
+	for(const Vertex& v : vertices) { lo = glm::min(lo, glm::vec3(v.positionMaterial)); hi = glm::max(hi, glm::vec3(v.positionMaterial)); }
+	s.lo = { lo.x, lo.z };
+	s.hi = { hi.x, hi.z };
+	for(float& t : s.top) t = -1.0f;
+	glm::vec2 cellSize = (s.hi - s.lo) / float(SHAPE_GRID);
+	auto splat = [&](glm::vec3 p) {
+		glm::ivec2 c = glm::clamp(glm::ivec2((glm::vec2(p.x, p.z) - s.lo) / glm::max(cellSize, glm::vec2(1e-6f))), glm::ivec2(0), glm::ivec2(SHAPE_GRID - 1));
+		float& t = s.top[c.y * SHAPE_GRID + c.x];
+		t = std::max(t, p.y);
+	};
+	for(const Vertex& v : vertices) splat(glm::vec3(v.positionMaterial));
+	for(size_t i = 0; i + 2 < indices.size(); i += 3) {
+		glm::vec3 a(vertices[indices[i]].positionMaterial), b(vertices[indices[i + 1]].positionMaterial), c(vertices[indices[i + 2]].positionMaterial);
+		splat((a + b + c) / 3.0f);
+		splat((a + b) * 0.5f); splat((b + c) * 0.5f); splat((c + a) * 0.5f);
+	}
+	for(int pass = 0; pass < 2; pass++) {
+		float filled[SHAPE_GRID * SHAPE_GRID];
+		std::copy(std::begin(s.top), std::end(s.top), filled);
+		for(int y = 0; y < SHAPE_GRID; y++)
+			for(int x = 0; x < SHAPE_GRID; x++) {
+				if(s.top[y * SHAPE_GRID + x] >= 0.0f) continue;
+				int around = 0;
+				float best = -1.0f;
+				for(int dy = -1; dy <= 1; dy++)
+					for(int dx = -1; dx <= 1; dx++) {
+						int nx = x + dx, ny = y + dy;
+						if(nx < 0 || ny < 0 || nx >= SHAPE_GRID || ny >= SHAPE_GRID || (dx == 0 && dy == 0)) continue;
+						float n = s.top[ny * SHAPE_GRID + nx];
+						if(n >= 0.0f) { around++; best = std::max(best, n); }
+					}
+				if(around >= 4) filled[y * SHAPE_GRID + x] = best; // inside the shape, not its outline
+			}
+		std::copy(std::begin(filled), std::end(filled), s.top);
+	}
+	s.valid = true;
+}
+
 // ---------------------------------------------------------------- setup
 
 void Props::init(Application* engine, TextureLoader& textures, const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler,
@@ -165,7 +209,7 @@ void Props::init(Application* engine, TextureLoader& textures, const AllocatedIm
 		if(!loadMesh(mesh, meshVertices, meshIndices)) {
 			meshVertices.assign(3, Vertex{});
 			meshIndices = { 0, 1, 2 };
-		}
+		} else bakeShape(mesh, meshVertices, meshIndices);
 		// the LODs from the scan: the simplifier keeps the uv seams and the silhouette. LOD0 within a small error
 		// (it stops early on simple shapes), LOD1 down to its budget whatever it costs (it's small on screen)
 		for(uint32_t lod = 0; lod < 2; lod++) {

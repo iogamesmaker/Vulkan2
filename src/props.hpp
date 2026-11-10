@@ -3,6 +3,7 @@
 
 #include <vk_types.h>
 #include "foliage.hpp" // FoliagePushConstants, the prop shaders use the same layout
+#include "collision.hpp" // PropShape
 
 class Application;
 
@@ -35,7 +36,10 @@ public:
 
 	bool m_Enabled = true;
 
+	const std::vector<PropShape>& collisionShapes() const { return m_Shapes; } // per mesh, collision.hpp
+
 private:
+	std::vector<PropShape> m_Shapes = std::vector<PropShape>(PROP_MESH_COUNT);
 	// init's writes of the heightmap + climate map into the sets that sample them
 	void setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler);
 	struct Vertex {
@@ -67,6 +71,7 @@ private:
 	VkPipelineLayout m_RenderPipelineLayout;
 	VkPipeline m_RenderPipeline, m_ShadowPipeline;
 	FoliagePushConstants m_PushConstants{};
+	void bakeShape(uint32_t mesh, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
 };
 
 #endif
