@@ -284,21 +284,27 @@ private:
 
 	// volumetric fog (volfog.cpp, volfog_inject.comp + volfog_integrate.comp): a froxel grid fitted to the view.
 	// the integrated result sits in the atmosphere's render set (binding 7) for lighting.comp
-	AllocatedImage m_FogFroxels[2]{};	// rgb in-scattered light, a = extinction; ping-pong, the other is last frame's
-	AllocatedImage m_FogIntegrated{}; // rgb scattered towards the camera so far, a = transmittance
+	struct FogVolumes {
+		AllocatedImage froxels[2]{}; // rgb in-scattered light, a = extinction; ping-pong, the other is last frame's
+		AllocatedImage integrated{}; // rgb scattered towards the camera so far, a = transmittance
+		VkDescriptorSet injectSets[2]{}, integrateSets[2]{};
+		glm::uvec3 grid{ 0 };		 // 0 = not created
+		bool historyValid = false;
+	};
+	FogVolumes m_Fog{};		   // the fog
+	FogVolumes m_FogCompare{}; // TEMPORARY: the same fog with m_FogSliceMultiplier times the slices (updateFogCompare)
+	float m_FogSliceMultiplier = 1.0f;
 	VkDescriptorSetLayout m_FogInjectLayout = VK_NULL_HANDLE, m_FogIntegrateLayout = VK_NULL_HANDLE;
-	VkDescriptorSet m_FogInjectSets[2]{}, m_FogIntegrateSets[2]{};
 	ComputeEffect m_FogInjectEffect, m_FogIntegrateEffect;
-	glm::uvec3 m_FogGrid{ 0 };
 	glm::mat4 m_FogPrevViewProj{ 1.0f };
 	glm::vec3 m_FogPrevCampos{ 0.0f };
 	glm::ivec2 m_FogPrevMapOffset{ 0 };
-	bool m_FogHistoryValid = false;
 	bool m_VolumetricFog = false;
 	float m_FogDensity = 1.0f, m_FogMist = 1.0f;
 	void initVolumetricFog();
-	void createFogVolumes(glm::uvec3 grid); // (re)creates the volumes at this grid size, the GPU has to be idle
-	void destroyFogVolumes();
+	void createFogVolumes(FogVolumes& fog, glm::uvec3 grid); // (re)creates the volumes at this grid size, the GPU has to be idle
+	void destroyFogVolumes(FogVolumes& fog);
+	void updateFogCompare(); // TEMPORARY: the comparison volume for m_FogSliceMultiplier, the GPU has to be idle
 	void drawVolumetricFog(VkCommandBuffer cmd);
 	VkDescriptorSetLayout m_SSAOLayout;
 	VkDescriptorSet m_SSAOSet = VK_NULL_HANDLE;

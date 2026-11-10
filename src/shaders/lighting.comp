@@ -26,6 +26,7 @@ layout(set = 1, binding = 0) uniform sampler2D transmittanceLUT;
 layout(set = 1, binding = 2) uniform sampler2D skyviewLUT;
 layout(set = 1, binding = 3) uniform sampler3D aerialLUT;
 layout(set = 1, binding = 7) uniform sampler3D volumetricFog;
+layout(set = 1, binding = 9) uniform sampler3D volumetricFogCompare; // TEMPORARY: the fog with other slices (ubo.fogCompare)
 layout(set = 1, binding = 8) uniform sampler3D aerialSunLUT; // aeriallut.comp: the sun's single scattering part of aerialLUT // volfog_integrate.comp: rgb in-scattered, a = transmittance
 
 #define ATMOSPHERE_SET 1
@@ -203,6 +204,11 @@ void main() {
 		// the fog in front of the sky: the whole froxel column
 		if (ubo.volumetricFog > 0.5) {
 			vec4 fog = sampleVolumetricFog(volumetricFog, uv, ubo.fogDistance, ubo.fogDistance);
+			if (ubo.fogCompare.x > 0.5) { // TEMPORARY: only the difference to the fog with the other slices
+				vec4 other = sampleVolumetricFog(volumetricFogCompare, uv, ubo.fogDistance, ubo.fogDistance);
+				imageStore(colorImage, p, vec4(abs((sky.rgb * other.a + other.rgb) - (sky.rgb * fog.a + fog.rgb)), sky.a));
+				return;
+			}
 			sky.rgb = sky.rgb * fog.a + fog.rgb;
 		}
 		imageStore(colorImage, p, sky);
@@ -377,7 +383,16 @@ void main() {
 		view.cloud = cloud;
 		view.clouds = volumetricClouds;
 		view.airLit = halfRes.g; // ssao.comp measures it
-		color = compositeAtmosphere(color, direct, view);
+		if (ubo.fogCompare.x > 0.5) {
+			// TEMPORARY slices comparison: the whole frame twice (the normal fog / the comparison fog), only the signed
+			// difference of both parts stored. shadowresolve.comp adds the shadowed direct light as always, which makes
+			// it the difference of the two complete frames, and takes its absolute value
+			vec3 directCompare = direct;
+			vec3 colorCompare = compositeAtmosphere(color, directCompare, view, true);
+			color = compositeAtmosphere(color, direct, view, false);
+			color = colorCompare - color;
+			direct = directCompare - direct;
+		} else color = compositeAtmosphere(color, direct, view, false);
 	}
 
 	imageStore(colorImage, p, vec4(color, 1.0));
