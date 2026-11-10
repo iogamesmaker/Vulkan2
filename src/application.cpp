@@ -1563,9 +1563,10 @@ void Application::initClouds() {
 	builder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // noise lookup table
 	builder.add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // coverage map
 	builder.add_binding(4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);		   // where the map is
+	builder.add_binding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // the heightmap (the far fog's ground)
 	m_CloudLayout = builder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_CloudSet = g_DescriptorAllocator.allocate(m_Device, m_CloudLayout);
-	VkPushConstantRange range{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4) + sizeof(glm::vec4) * 3 };
+	VkPushConstantRange range{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4) + sizeof(glm::vec4) * 4 };
 	VkDescriptorSetLayout layouts[] = { m_CloudLayout, m_AtmosphereManager.getRenderDescriptorLayout() };
 	VkPipelineLayoutCreateInfo layoutCI = vkinit::pipeline_layout_create_info();
 	layoutCI.setLayoutCount = 2;
@@ -1654,6 +1655,10 @@ void Application::writeLightingDescriptors() {
 	vkUpdateDescriptorSets(m_Device, 1, &climateWrite, 0, nullptr);
 
 	writeMap(m_CloudSet, 3);
+	if(m_CloudSet != VK_NULL_HANDLE) {
+		climateWrite.dstSet = m_CloudSet; climateWrite.dstBinding = 5; climateWrite.pImageInfo = &heightmapInfo;
+		vkUpdateDescriptorSets(m_Device, 1, &climateWrite, 0, nullptr);
+	}
 
 	if(m_CloudSet != VK_NULL_HANDLE) {
 		VkDescriptorImageInfo cloudInfos[3] = {
@@ -1806,12 +1811,14 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 	// over frames into m_CloudImage
 	vkutil::transition_image(cmd, m_CloudImage.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 	const AtmosphereUBO& atmosphere = m_AtmosphereManager.m_AtmosphereData;
-	bool marchClouds = atmosphere.clouds > 0.5f && atmosphere.cloudQuality > 0.5f;
+	// (also for the far fog alone: it's marched in the same pass, lighting.comp composites it with the clouds)
+	bool marchClouds = (atmosphere.clouds > 0.5f && atmosphere.cloudQuality > 0.5f) || atmosphere.volumetricFog > 0.5f;
 	if(!marchClouds) m_CloudHistoryValid = false;
 	if(marchClouds) {
 		vkutil::transition_image(cmd, m_CloudRaw.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 		struct {
 			glm::mat4 invViewProj; glm::vec3 campos; float frame; glm::vec3 sundir; float terrainSize; glm::vec2 cloudWind, mapOffset;
+			glm::vec4 fog; // the far fog: density, valley mist, the weather's haze, terrain height scale
 		} clouds;
 		clouds.invViewProj = glm::inverse(m_Projection * m_View);
 		clouds.campos = m_CameraPos;
@@ -1820,6 +1827,7 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 		clouds.terrainSize = m_WorldSize * m_TerrainScale;
 		clouds.cloudWind = m_AtmosphereManager.getCloudWind();
 		clouds.mapOffset = glm::vec2(m_MapOffset) * (4096.0f / static_cast<float>(m_HeightmapSize)); // texels of the 4096 map
+		clouds.fog = glm::vec4(m_FogDensity, m_FogMist * m_Weather.state().mist, m_Weather.state().haze, m_TerrainPC.factor);
 		VkDescriptorSet cloudSets[] = { m_CloudSet, m_AtmosphereManager.getRenderDescriptor() };
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudEffect.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudEffect.layout, 0, 2, cloudSets, 0, nullptr);
@@ -1831,7 +1839,11 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 		if(!m_CloudHistoryValid) vkutil::transition_image(cmd, m_CloudHistory.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		struct { glm::mat4 reproject; float valid, blend; glm::vec2 pad; } resolve{};
 		resolve.reproject = m_PreviousViewProj * glm::inverse(m_Projection * m_View); // as clouds.comp marched (jittered)
-		resolve.valid = m_CloudHistoryValid ? 1.0f : 0.0f;
+		// a lightning flash (and the frame after it): no history, or the strike's light lingered and smeared
+		float flash = m_Weather.state().strikeFlash;
+		bool flashing = flash > 0.002f || m_CloudFlashLastFrame > 0.002f;
+		m_CloudFlashLastFrame = flash;
+		resolve.valid = m_CloudHistoryValid && !flashing ? 1.0f : 0.0f;
 		resolve.blend = 0.1f;
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudResolveEffect.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudResolveEffect.layout, 0, 1, &m_CloudResolveSet, 0, nullptr);
@@ -2330,8 +2342,9 @@ void Application::parseShots() {
 		std::string field;
 		std::vector<std::string> parts;
 		while(std::getline(fields, field, ',')) parts.push_back(field);
-		if(parts.size() < 7) { fmt::print("VULKAN2_SHOT: skipping '{}' (x,z,height,yaw,pitch,hour,file)\n", entry); continue; }
-		m_Shots.push_back({ std::stof(parts[0]), std::stof(parts[1]), std::stof(parts[2]), std::stof(parts[3]), std::stof(parts[4]), std::stof(parts[5]), parts[6] });
+		if(parts.size() < 7) { fmt::print("VULKAN2_SHOT: skipping '{}' (x,z,height,yaw,pitch,hour,file[,weather[,dx:dz strike]])\n", entry); continue; }
+		m_Shots.push_back({ std::stof(parts[0]), std::stof(parts[1]), std::stof(parts[2]), std::stof(parts[3]), std::stof(parts[4]), std::stof(parts[5]), parts[6],
+							parts.size() > 7 ? parts[7] : "", parts.size() > 8 ? parts[8] : "" });
 	}
 	if(m_Shots.empty()) return;
 	const char* pair = std::getenv("VULKAN2_SHOT_PAIR");
@@ -2350,6 +2363,14 @@ void Application::parseShots() {
 bool Application::updateShots() {
 	if(m_ShotIndex >= m_Shots.size()) return false;
 	const Shot& shot = m_Shots[m_ShotIndex];
+	// a shot's own weather (fully set in), and a strike held in view (dx:dz km from the camera)
+	if(m_ShotFrames == 0) {
+		WeatherType type;
+		if(!shot.weather.empty() && Weather::fromName(shot.weather.c_str(), type)) { m_Weather.m_Auto = false; m_Weather.forceType(type); }
+		m_Weather.m_HoldStrike = m_Weather.m_PlaceStrike = !shot.strike.empty();
+		if(size_t colon = shot.strike.find(':'); colon != std::string::npos)
+			m_Weather.m_PlacedStrike = glm::vec2(std::stof(shot.strike.substr(0, colon)), std::stof(shot.strike.substr(colon + 1)));
+	}
 	// the ground height comes back from the probe a couple of frames late, keep following it while settling
 	m_Camera.walking = false;
 	m_Camera.velocity = glm::vec3(0.0f);

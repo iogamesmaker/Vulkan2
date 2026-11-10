@@ -187,7 +187,7 @@ void main() {
 	if (any(greaterThanEqual(p, size))) return;
 
 	float depth = texelFetch(depthBuffer, p, 0).r;
-	bool volumetricClouds = ubo.clouds > 0.5 && ubo.cloudQuality > 0.5; // clouds.comp ran
+	bool volumetricClouds = (ubo.clouds > 0.5 && ubo.cloudQuality > 0.5) || ubo.volumetricFog > 0.5; // clouds.comp ran (the far fog too)
 	if (depth <= 0.0) {
 		// sky (reversed z): the sky pass drew it, the cumulus go on top
 		vec2 uv = (vec2(p) + 0.5) / vec2(size);

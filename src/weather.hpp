@@ -51,6 +51,7 @@ public:
 	const WeatherState& state() const { return m_State; }
 	WeatherType type() const { return m_Type; }
 	static const char* name(WeatherType type);
+	static bool fromName(const char* name, WeatherType& type); // case insensitive ("thunderstorm")
 	// straight to a weather, fully set in (the captures): no minute of blending in
 	void forceType(WeatherType type);
 
@@ -58,6 +59,11 @@ public:
 	float m_Intensity = 1.0f;	 // how hard it rains / snows / blows
 	float m_Minutes = 4.0f;		 // auto: how long a weather lasts on average (real minutes)
 	float m_WindScale = 1.0f;
+	// automatic: every new weather rolls its own intensity and wind (times the sliders above), so no two rains are alike
+	float m_RolledIntensity = 1.0f, m_RolledWind = 1.0f;
+	// the captures: a strike held at its brightest, optionally at a fixed offset from the camera (km)
+	bool m_HoldStrike = false, m_PlaceStrike = false;
+	glm::vec2 m_PlacedStrike{ 0.0f };
 
 private:
 	WeatherType pick(glm::vec3 climate);

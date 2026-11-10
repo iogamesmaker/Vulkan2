@@ -11,11 +11,14 @@ void Application::updateWeather(float dt) {
 	static bool fixedFromEnv = false;
 	if(!fixedFromEnv) {
 		fixedFromEnv = true;
-		if(const char* env = std::getenv("VULKAN2_WEATHER")) {
-			for(int i = 0; i < static_cast<int>(WeatherType::Count); i++) {
-				std::string name = Weather::name(static_cast<WeatherType>(i));
-				std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-				if(name == env) { m_Weather.m_Auto = false; m_Weather.forceType(static_cast<WeatherType>(i)); }
+		WeatherType type;
+		if(const char* env = std::getenv("VULKAN2_WEATHER"); env && Weather::fromName(env, type)) { m_Weather.m_Auto = false; m_Weather.forceType(type); }
+		// VULKAN2_LIGHTNING=1: a strike held at its brightest, =dx,dz: placed that far from the camera (km)
+		if(const char* env = std::getenv("VULKAN2_LIGHTNING")) {
+			m_Weather.m_HoldStrike = true;
+			if(const char* comma = std::strchr(env, ',')) {
+				m_Weather.m_PlaceStrike = true;
+				m_Weather.m_PlacedStrike = glm::vec2(static_cast<float>(std::atof(env)), static_cast<float>(std::atof(comma + 1)));
 			}
 		}
 	}

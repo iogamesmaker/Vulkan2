@@ -157,8 +157,11 @@ vec3 lightningBolt(vec3 dir, float camAltKm, vec2 boltRel, float tMax) {
 // front to back through the cumulus slab, from the camera up to tMax km along the ray (the scene's depth, or far
 // for the sky). returns the in-scattered light (premultiplied) and the opacity. on the way the rain falling out of the clouds
 // (curtains under the showers and storms) and lightning
-vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, vec2 camWorldKm, vec2 wind, vec3 dir, float tMax, vec3 sunDir, float jitter) {
-	bool anyClouds = ubo.clouds > 0.5 && (ubo.cloudCoverage > 0.0 || ubo.weather3.x > 0.0);
+// cloudEnter: where the ray enters the cloud slab (km), -1 if it doesn't
+vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, vec2 camWorldKm, vec2 wind, vec3 dir, float tMax, vec3 sunDir, float jitter, out float cloudEnter) {
+	cloudEnter = -1.0;
+	// (the pass also runs for the far fog alone, volumetric clouds off: no slab then)
+	bool anyClouds = ubo.clouds > 0.5 && ubo.cloudQuality > 0.5 && (ubo.cloudCoverage > 0.0 || ubo.weather3.x > 0.0);
 	if (!anyClouds) return vec4(0.0);
 	float slab = cloudSlabThickness();
 	float bottom = ubo.radiusbottom + ubo.cloudAltitude, top = bottom + slab;
@@ -216,6 +219,7 @@ vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, 
 	// good, and a downward ray from below the slab "hits" its base again on the far side of the planet)
 	const float CLOUD_FADE_START = 40.0, CLOUD_FADE_END = 60.0; // km
 	float distanceFade = 1.0 - smoothstep(CLOUD_FADE_START, CLOUD_FADE_END, tEnter);
+	cloudEnter = tEnter;
 	tExit = min(min(tExit, tMax), tEnter + 24.0); // at most 24km through the slab at a grazing angle
 	vec3 cloudScattered = vec3(0.0);
 	float cloudTransmittance = 1.0;

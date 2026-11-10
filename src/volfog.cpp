@@ -165,7 +165,12 @@ void Application::drawVolumetricFog(VkCommandBuffer cmd) {
 	pc.factor = m_TerrainPC.factor;
 	pc.cloudWind = m_AtmosphereManager.getCloudWind();
 	pc.mapOffset = m_MapOffset;
-	bool valid = m_FogHistoryValid && m_MapOffset == m_FogPrevMapOffset; // re-centred: last frame's space is gone
+	// a lightning flash (and the frame after it) starts over: 90% of every froxel is last frame's, the flash's light
+	// hung in the fog for a second and moving the camera smeared it over the view as a white sheet
+	float flash = m_Weather.state().flash;
+	bool flashing = flash > 0.002f || m_FogFlashLastFrame > 0.002f;
+	m_FogFlashLastFrame = flash;
+	bool valid = m_FogHistoryValid && m_MapOffset == m_FogPrevMapOffset && !flashing; // re-centred: last frame's space is gone
 	pc.params = glm::vec4(m_FogDensity, m_FogMist, valid ? 1.0f : 0.0f, m_Time);
 	const WeatherState& weather = m_Weather.state();
 	glm::vec3 dust = glm::mix(glm::vec3(0.95f), glm::vec3(0.85f, 0.6f, 0.36f), glm::clamp(weather.sand, 0.0f, 1.0f));

@@ -48,6 +48,16 @@ const char* Weather::name(WeatherType type) {
 	}
 }
 
+bool Weather::fromName(const char* text, WeatherType& type) {
+	for(int i = 0; i < static_cast<int>(WeatherType::Count); i++) {
+		const char* n = name(static_cast<WeatherType>(i));
+		size_t k = 0;
+		while(n[k] && text[k] && std::tolower(static_cast<unsigned char>(n[k])) == std::tolower(static_cast<unsigned char>(text[k]))) k++;
+		if(!n[k] && !text[k]) { type = static_cast<WeatherType>(i); return true; }
+	}
+	return false;
+}
+
 const char* Weather::climateName(glm::vec3 c) const {
 	if(c.x < 0.22f) return "frozen (tundra)";
 	if(cold(c)) return "cold (taiga)";
@@ -113,8 +123,9 @@ WeatherState Weather::target(WeatherType type) const {
 	case WeatherType::Fog:			s.coverage = 0.45f; s.density = 1.2f; s.overcast = 0.35f; s.wind = 0.08f; s.haze = 0.9f; s.instability = 0.0f; s.cloudBase = 0.7f; s.mist = 6.0f; break;
 	default: break;
 	}
-	s.rainDeck *= m_Intensity; s.rainCells *= m_Intensity; s.sand *= m_Intensity; s.haze *= m_Intensity;
-	s.wind = std::min(s.wind * m_WindScale, 1.0f);
+	float intensity = m_Intensity * (m_Auto ? m_RolledIntensity : 1.0f), windScale = m_WindScale * (m_Auto ? m_RolledWind : 1.0f);
+	s.rainDeck *= intensity; s.rainCells *= intensity; s.sand *= intensity; s.haze *= intensity;
+	s.wind = std::min(s.wind * windScale, 1.0f);
 	return s;
 }
 
@@ -175,8 +186,7 @@ void Weather::localWeather(float dt, glm::vec3 climate, glm::vec2 cameraKm, glm:
 void Weather::lightning(float dt, glm::vec2 cameraKm, glm::vec2 windKm) {
 	WeatherState& s = m_State;
 	m_StrikeAge += dt;
-	static const char* placed = std::getenv("VULKAN2_LIGHTNING"); // (the captures: one strike, placed below)
-	if(m_Regional.instability > 0.8f && m_Regional.rainCells > 0.3f && !(placed && std::strchr(placed, ','))) {
+	if(m_Regional.instability > 0.8f && m_Regional.rainCells > 0.3f && !m_PlaceStrike) {
 		m_StrikeIn -= dt;
 		if(m_StrikeIn <= 0.0f) {
 			// somewhere in a cell: random spots around the camera, the first inside a storm core wins
@@ -195,18 +205,16 @@ void Weather::lightning(float dt, glm::vec2 cameraKm, glm::vec2 windKm) {
 			m_StrikeIn = std::uniform_real_distribution<float>(2.0f, 10.0f)(m_Random) / std::max(m_Intensity, 0.3f);
 		}
 	}
-	// VULKAN2_LIGHTNING (the captures): strikes right away and holds the first one at its brightest
-	// (=dx,dz: at that offset from the camera, km: a strike in view)
-	static const char* frozenEnv = std::getenv("VULKAN2_LIGHTNING");
-	static const bool frozen = frozenEnv != nullptr;
-	if(frozen && std::strchr(frozenEnv, ',')) { // (kept at that offset: the capture moves the camera to its spot first)
-		s.strikeKm = cameraKm + glm::vec2(static_cast<float>(std::atof(frozenEnv)), static_cast<float>(std::atof(std::strchr(frozenEnv, ',') + 1)));
-		m_StrikeDistance = glm::length(s.strikeKm - cameraKm);
+	// the captures (m_HoldStrike / m_PlaceStrike): strikes right away and holds it at its brightest, optionally at a
+	// fixed offset from the camera (kept there: the capture moves the camera to its spot first)
+	if(m_PlaceStrike) {
+		s.strikeKm = cameraKm + m_PlacedStrike;
+		m_StrikeDistance = glm::length(m_PlacedStrike);
 		s.strikeSeed = 37.0f;
-		if(m_StrikeAge > 1e8f) m_StrikeAge = 0.0f;
+		if(m_StrikeAge > 0.5f) m_StrikeAge = 0.0f; // (a new one: the last shot's may have run out)
 	}
-	if(frozen) {
-		if(m_StrikeAge > 1e8f) m_StrikeIn = std::min(m_StrikeIn, 0.0f);
+	if(m_HoldStrike || m_PlaceStrike) {
+		if(m_StrikeAge > 0.5f && !m_PlaceStrike) m_StrikeIn = std::min(m_StrikeIn, 0.0f); // the next one right away
 		else m_StrikeAge = std::min(m_StrikeAge, 0.01f);
 	}
 	float pulse = 0.0f;
@@ -232,6 +240,9 @@ void Weather::update(float dt, glm::vec3 climate, glm::vec2 cameraKm, glm::vec2 
 		// travelled somewhere it can't happen (snow in the desert): change now, it blends over
 		if(m_Timer <= 0.0f || !fits(m_Type, climate)) {
 			m_Type = pick(climate);
+			// how hard this one is: a drizzle or a downpour, a calm grey day or a windy one
+			m_RolledIntensity = std::uniform_real_distribution<float>(0.55f, 1.45f)(m_Random);
+			m_RolledWind = std::uniform_real_distribution<float>(0.5f, 1.6f)(m_Random);
 			float minutes = std::uniform_real_distribution<float>(0.6f, 1.4f)(m_Random) * m_Minutes;
 			m_Timer = minutes * 60.0f;
 		}
@@ -276,6 +287,7 @@ void Weather::drawImGui() {
 	ImGui::TextDisabled("overhead: %s, rain %.0f%%, cell %.0f%%", m_State.rain + m_State.snow > 0.05f ? "precipitation" : "dry",
 						(m_State.rain + m_State.snow) * 100.0f, m_State.cellsHere * 100.0f);
 	ImGui::Checkbox("Automatic", &m_Auto);
+	if(m_Auto) { ImGui::SameLine(); ImGui::TextDisabled("(this one: intensity %.1fx, wind %.1fx)", m_RolledIntensity, m_RolledWind); }
 	ImGui::SetItemTooltip("Picks the weather by itself from where you are: rain, showers and storms in temperate and tropical land, snow where it's cold, sandstorms in deserts, fog in damp places");
 	int current = static_cast<int>(m_Type);
 	const char* names[] = { "Clear", "Cloudy", "Overcast", "Rain", "Showers", "Thunderstorm", "Snow", "Sandstorm", "Fog" };

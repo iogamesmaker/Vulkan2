@@ -1,13 +1,16 @@
 #version 450
 // the volumetric cumulus at half resolution (they're soft anyway, TAA smooths the jittered march): one ray per 2x2
 // pixels, up to the scene's depth (or the sky). lighting.comp upsamples it depth aware and composites it over the
-// lit scene and the sky. rgb = the light scattered towards the camera, a = how much of what's behind gets through
+// lit scene and the sky. rgb = the light scattered towards the camera, a = how much of what's behind gets through.
+// past the volumetric fog's froxels (ubo.fogDistance, ~2.4km) the same fog goes on here, ray marched per pixel out to
+// ~40km (the way RDR2 carries its fog past its froxel volume): valley mist and haze in the distant valleys too
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform sampler2D depthBuffer;
 layout(rgba16f, set = 0, binding = 1) uniform writeonly image2D cloudImage;
 layout(set = 0, binding = 2) uniform sampler3D cloudNoiseLUT; // cloudnoise.comp, tiles
+layout(set = 0, binding = 5) uniform sampler2D heightmap;		  // a = height (terrainheight.glsl), repeating
 
 layout(set = 1, binding = 0) uniform sampler2D transmittanceLUT;
 layout(set = 1, binding = 2) uniform sampler2D skyviewLUT;
@@ -20,6 +23,7 @@ layout(std140, set = 0, binding = 4) uniform CloudMapInfo { vec4 cloudMapInfo; }
 #include "clouds.glsl"
 #define CLOUD_NOISE_LUT cloudNoiseLUT
 #include "volclouds.glsl"
+#include "volfog.glsl"
 
 layout(push_constant) uniform constants {
 	mat4 invViewProj; // terrain space
@@ -29,7 +33,67 @@ layout(push_constant) uniform constants {
 	float terrainSize;
 	vec2 cloudWind;
 	vec2 mapOffset; // texels of the 4096 heightmap (heightmapscale.glsl), whatever its size
+	vec4 fog;		// the volumetric fog's inputs: x = density, y = valley mist, z = the weather's haze, w = terrain height scale
 } pc;
+
+// the volumetric fog past its froxels: from ubo.fogDistance out to tMax (km, capped at 40), 12 samples spread
+// exponentially (dense near the froxels' end, where it has to join up). the same fog (volfog.glsl fogExtinction), lit
+// by the sun / moon through the cloud shadows (the shadow maps don't reach this far) and the sky. premultiplied out
+vec4 marchFarFog(vec3 dir, float tMaxKm, float jitter) {
+	if (ubo.volumetricFog < 0.5) return vec4(0.0);
+	float km = ubo.worldScale; // km per world unit
+	float start = ubo.fogDistance * km, end = min(tMaxKm, 40.0);
+	if (end <= start) return vec4(0.0);
+	float metres = km * 1000.0;
+	vec2 hmSize = vec2(textureSize(heightmap, 0));
+	vec2 offsetUV = pc.mapOffset / 4096.0; // (its unit: texels of the 4096 map)
+	vec2 offsetWorld = pc.mapOffset * (pc.terrainSize / 4096.0);
+	FogInputs inputs = FogInputs(pc.fog.x, pc.fog.y, pc.fog.z, 0.0, pc.cloudWind, pc.sundir.y, ubo.weather.y);
+	vec3 sunDir = pc.sundir, moonDir = -pc.sundir;
+	vec3 lightDir = sunDir.y > 0.0 ? sunDir : moonDir;
+	vec3 albedo = mix(vec3(0.95), vec3(0.85, 0.6, 0.36), clamp(ubo.weather2.z, 0.0, 1.0)); // droplets .. the sandstorm's dust
+	float phaseSun = fogPhase(dot(dir, sunDir)), phaseMoon = fogPhase(dot(dir, moonDir));
+	vec3 camKm = vec3(0.0, ubo.radiusbottom + max(ubo.baseAltitude + pc.campos.y * km, PLANET_RADIUS_OFFSET), 0.0);
+	vec3 skyUp = textureLod(skyviewLUT, skyviewUV(camKm, vec3(0.0, 1.0, 0.0), sunDir), 0.0).rgb;
+	vec3 skyAround = 0.5 * (textureLod(skyviewLUT, vec2(0.25, 0.6), 0.0).rgb + textureLod(skyviewLUT, vec2(0.75, 0.6), 0.0).rgb);
+	vec3 ambient = overcastSky((skyUp + skyAround) * 0.5) * ubo.sunIlluminance * 0.75 + vec3(0.75, 0.8, 1.0) * ubo.weather.z * ubo.sunIlluminance * 0.05;
+
+	const int STEPS = 10;
+	bool moonUp = sunDir.y < 0.1; // (the moon's light only matters once the sun is low)
+	float ratio = end / start;
+	float previous = start;
+	vec3 scattered = vec3(0.0);
+	float transmittance = 1.0;
+	for (int i = 0; i < STEPS; i++) {
+		float t = start * pow(ratio, (float(i) + jitter) / float(STEPS));
+		float next = start * pow(ratio, (float(i) + 1.0) / float(STEPS));
+		float dt = next - previous; // km this sample stands for
+		previous = next;
+		vec3 pos = pc.campos + dir * (t / km);
+		vec2 uv = (pos.xz + 0.5 * pc.terrainSize) / pc.terrainSize + offsetUV;
+		float ground = (textureLod(heightmap, uv, 1.0).a - 0.5) * pc.fog.w; // (a smoothed ground: these are kilometres away)
+		if ((pos.y - ground) * metres > 2500.0) {
+			if (dir.y > 0.0) break; // above the haze and still climbing: nothing more on this ray (most of the sky)
+			continue;
+		}
+		// the ground around (~300m): a far mip of the heightmap is the average over about that much, one lookup
+		// instead of the froxels' four
+		float around = (textureLod(heightmap, uv, 5.0).a - 0.5) * pc.fog.w;
+		vec3 worldMetres = (pos + vec3(offsetWorld.x, 0.0, offsetWorld.y)) * metres;
+		float sigma = fogExtinction(pos.y, ground, around, worldMetres, metres, inputs) / km; // per km
+		if (sigma <= 1e-6) continue;
+		float altKm = ubo.baseAltitude + pos.y * km;
+		vec3 posKm = vec3(0.0, ubo.radiusbottom + max(altKm, PLANET_RADIUS_OFFSET), 0.0);
+		float shadow = ubo.cloudShadows > 0.5 ? cloudShadow((pos.xz + offsetWorld) * km + pc.cloudWind, altKm, lightDir) : 1.0;
+		vec3 direct = sunTransmittance(transmittanceLUT, posKm, sunDir) * ubo.sunIlluminance * phaseSun * (sunDir.y > 0.0 ? shadow : 1.0);
+		if (moonUp) direct += sunTransmittance(transmittanceLUT, posKm, moonDir) * ubo.moonIlluminance * phaseMoon * (moonDir.y > 0.0 ? shadow : 1.0);
+		float stepT = exp(-sigma * dt);
+		scattered += transmittance * albedo * (direct + ambient) * (1.0 - stepT);
+		transmittance *= stepT;
+		if (transmittance < 0.02) break;
+	}
+	return vec4(scattered, 1.0 - transmittance);
+}
 
 void main() {
 	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
@@ -50,6 +114,12 @@ void main() {
 	vec3 camKm = vec3(0.0, ubo.radiusbottom + ubo.baseAltitude + pc.campos.y * ubo.worldScale, 0.0);
 	vec2 camWorldKm = (pc.campos.xz + pc.mapOffset * (pc.terrainSize / 4096.0)) * ubo.worldScale; // pc.mapOffset's unit
 	float jitter = fract(52.9829189 * fract(dot(vec2(p) + pc.frame * 5.588238, vec2(0.06711056, 0.00583715))));
-	vec4 cloud = marchCumulus(transmittanceLUT, skyviewLUT, camKm, camWorldKm, pc.cloudWind, dir, tMax, pc.sundir, jitter);
-	imageStore(cloudImage, p, vec4(cloud.rgb, 1.0 - cloud.a)); // (marchCumulus returns it premultiplied)
+	float cloudEnter;
+	vec4 cloud = marchCumulus(transmittanceLUT, skyviewLUT, camKm, camWorldKm, pc.cloudWind, dir, tMax, pc.sundir, jitter, cloudEnter);
+	vec4 fog = marchFarFog(dir, tMax, jitter);
+	// in order of distance: the far fog starts where the froxels end, a cloud nearer than that is in front of it
+	bool cloudFirst = cloudEnter >= 0.0 && cloudEnter < ubo.fogDistance * ubo.worldScale;
+	vec4 front = cloudFirst ? cloud : fog, back = cloudFirst ? fog : cloud;
+	vec4 both = vec4(front.rgb + (1.0 - front.a) * back.rgb, 1.0 - (1.0 - front.a) * (1.0 - back.a)); // premultiplied
+	imageStore(cloudImage, p, vec4(both.rgb, 1.0 - both.a));
 }

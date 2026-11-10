@@ -144,6 +144,9 @@ void main() {
 	// below the horizon the LUT has hazy ground, the terrain fog fades into the same thing
 	vec2 uv = skyviewUV(pc.camPos, dir, pc.sunDir);
 	vec3 luminance = texture(skyview, uv).rgb * ubo.sunIlluminance;
+	// the night sky a little darker (the moonlight is far brighter than the real thing so the land stays readable at
+	// night, the sky it lit came out a pale blue grey): ~20% less once the sun is 6 degrees under, dusk untouched
+	luminance *= 1.0 - 0.2 * smoothstep(-0.1, -0.2, pc.sunDir.y);
 
 	if (uv.y > 0.5) {
 		vec3 viewTransmittance = sampleTransmittance(transmittance, pc.camPos, dir);

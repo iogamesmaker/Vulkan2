@@ -294,6 +294,8 @@ private:
 	glm::vec3 m_FogPrevCampos{ 0.0f };
 	glm::ivec2 m_FogPrevMapOffset{ 0 };
 	bool m_FogHistoryValid = false;
+	float m_FogFlashLastFrame = 0.0f; // the lightning flash: the fog's history starts over (drawVolumetricFog)
+	float m_CloudFlashLastFrame = 0.0f; // and the clouds' (their accumulation, drawLighting)
 	bool m_VolumetricFog = false;
 	float m_FogDensity = 1.0f, m_FogMist = 1.0f;
 	void initVolumetricFog();
@@ -392,7 +394,8 @@ private:
 
 	// VULKAN2_SHOT="x,z,height,yaw,pitch,hour,file.png;..." renders each shot from a fixed camera (height above
 	// the ground, angles in radians, hour of the day), lets it settle, writes the image + the GPU timers, then quits
-	struct Shot { float x, z, height, yaw, pitch, hour; std::string file; };
+	// VULKAN2_SHOT entries: x,z,height,yaw,pitch,hour,file[,weather[,strike dx:dz km]] (many per launch, ';' between)
+	struct Shot { float x, z, height, yaw, pitch, hour; std::string file; std::string weather; std::string strike; };
 	std::vector<Shot> m_Shots;
 	size_t m_ShotIndex = 0;
 	int m_ShotFrames = 0;

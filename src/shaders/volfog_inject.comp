@@ -43,36 +43,6 @@ layout(push_constant) uniform constants {
 	vec4 weather;	   // weather.cpp: rgb = the haze's colour (droplets .. sandstorm dust), a = extra haze (0 clear .. ~5 sandstorm)
 } pc;
 
-float hash13(vec3 p) {
-	p = fract(p * 0.1031);
-	p += dot(p, p.zyx + 31.32);
-	return fract((p.x + p.y) * p.z);
-}
-
-float valueNoise(vec3 p) {
-	vec3 i = floor(p), f = fract(p);
-	vec3 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(mix(hash13(i), hash13(i + vec3(1, 0, 0)), u.x), mix(hash13(i + vec3(0, 1, 0)), hash13(i + vec3(1, 1, 0)), u.x), u.y),
-			   mix(mix(hash13(i + vec3(0, 0, 1)), hash13(i + vec3(1, 0, 1)), u.x), mix(hash13(i + vec3(0, 1, 1)), hash13(i + vec3(1, 1, 1)), u.x), u.y), u.z);
-}
-
-float fbm(vec3 p) {
-	return valueNoise(p) * 0.55 + valueNoise(p * 2.03 + 17.1) * 0.3 + valueNoise(p * 4.11 - 5.7) * 0.15;
-}
-
-// henyey-greenstein
-float hg(float cosTheta, float g) {
-	float g2 = g * g;
-	return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * cosTheta, 1e-4), 1.5));
-}
-
-// water droplets scatter mostly forward (the glow around the sun, beams brightest looking into the light), a little back.
-// toned down from g 0.65 at 3/4 (~13x the light towards the sun as sideways): into a low sun the whole view went
-// under a bright veil, beautiful but you couldn't see anything. ~5x now, the beams still read
-float fogPhase(float cosTheta) {
-	return mix(hg(cosTheta, -0.2), hg(cosTheta, 0.55), 0.6);
-}
-
 float terrainAt(vec2 uv) {
 	return (textureLod(heightmap, uv, 0.0).a - 0.5) * pc.factor;
 }
@@ -100,30 +70,9 @@ void main() {
 	float ground = terrainAt(hmUV);
 	float r = 50.0 / pc.terrainSize;
 	float around = 0.25 * (terrainAt(hmUV + vec2(r, 0.0)) + terrainAt(hmUV - vec2(r, 0.0)) + terrainAt(hmUV + vec2(0.0, r)) + terrainAt(hmUV - vec2(0.0, r)));
-	float hollow = clamp((around - ground) * metres / 25.0, 0.0, 1.0); // 25m below the surroundings: a proper valley
-	float above = max(pos.y - ground, 0.0) * metres; // metres above the ground
-
-	// mist: a thick layer in the valleys, a thin one elsewhere, heaviest from night through sunrise
-	// (it burns off quicker than it did: thick from 0.1 to 0.55 of sun height, the evening sun brought it back too and
-	// the low sun views went under a milky veil. and outside the valleys only a trace: 6% of the valley's density was
-	// still ~10x the haze, every ray skimming a slope went through it)
-	float dawn = 1.0 - 0.85 * smoothstep(0.03, 0.3, pc.sundir.y);
-	float mistHeight = mix(5.0, 40.0, hollow); // metres
-	float mist = pc.params.y * dawn * mix(0.02, 1.0, hollow * hollow) * exp(-above / mistHeight);
-	// broken up into banks and wisps that drift with the wind (~100m features)
-	vec3 drift = vec3(pc.cloudWind.x, 0.0, pc.cloudWind.y) * 1000.0 * 0.4 + vec3(0.0, pc.params.w * 0.15, 0.0);
 	vec3 worldMetres = (pos + vec3(float(pc.mapOffset.x), 0.0, float(pc.mapOffset.y)) * (pc.terrainSize / hmSize.x)) * metres;
-	float n = fbm((worldMetres - drift) * 0.01);
-	mist *= smoothstep(0.3, 0.7, n) * 1.8;
-	// after the rain the wet valleys steam: more of it while the ground is wet (ubo.weather.y)
-	mist *= 1.0 + ubo.weather.y * 1.5;
-	// haze: thin everywhere close to the ground, fading over a few hundred metres up
-	float haze = exp(-above / 300.0);
-	// the weather thickens the haze near the ground: rain and snow to a kilometre or two of visibility, a sandstorm to a
-	// few hundred metres (its dust hugs the ground a little more)
-	float weatherHaze = pc.weather.a * mix(1.0, exp(-above / 120.0) * 1.6, clamp(pc.weather.a / 5.0, 0.0, 1.0));
-	// (the haze ~6.5km of mean free path near the ground: at 4km it veiled every view, the distance haze is on top)
-	float extinction = (mist * 0.025 + haze * 0.00015 * (1.0 + weatherHaze * 10.0)) * pc.params.x * metres; // per world unit
+	FogInputs inputs = FogInputs(pc.params.x, pc.params.y, pc.weather.a, pc.params.w, pc.cloudWind, pc.sundir.y, ubo.weather.y);
+	float extinction = fogExtinction(pos.y, ground, around, worldMetres, metres, inputs); // per world unit
 
 	vec4 current = vec4(0.0);
 	if (extinction > 1e-8) {
