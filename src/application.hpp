@@ -2,6 +2,7 @@
 #ifndef APPLICATION_HPP
 #define APPLICATION_HPP
 
+#include <set>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -405,6 +406,12 @@ private:
 	std::vector<GpuTimer> m_GpuTimers; // every feature that ran lately, in frame order, smoothed
 	void markStart(VkCommandBuffer cmd);
 	void mark(VkCommandBuffer cmd, const char* name);
+	// the pass switches (performance window): the passes switched off, and last frame's marks in order. a section's
+	// name is only known at its end (its mark), so what's recorded after mark i is taken to be last frame's mark i + 1
+	std::set<std::string> m_DisabledPasses;
+	std::vector<const char*> m_LastMarkOrder;
+	void predictPass(size_t index);
+	static bool passSwitchable(const char* name);
 	float gpuTotalMs() const { float total = 0.0f; for(const GpuTimer& t : m_GpuTimers) total += t.ms; return total; }
 	uint32_t m_ShadowCascadesRendered[FRAME_OVERLAP] = {}; // per frame slot, for the shadow timer
 	float m_ShadowRenderMs = 0.0f; // smoothed over the frames that re-rendered cascades only

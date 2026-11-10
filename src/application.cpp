@@ -1344,6 +1344,19 @@ void Application::drawTerrain(VkCommandBuffer cmd, const glm::mat4& viewproj, co
 
 void Application::markStart(VkCommandBuffer cmd) {
 	vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_TimestampPool, (m_FrameNumber % FRAME_OVERLAP) * GPU_QUERIES);
+	predictPass(0);
+}
+
+// the passes that can't be switched off: the ones the window itself needs, and the ones that keep state across frames
+// (a skipped terrain strip or cache level would stay a hole after it's switched back on)
+bool Application::passSwitchable(const char* name) {
+	for(const char* fixed : { "terrain streaming", "terrain cache", "present copy", "UI", "debug view", "draw counts", "capture readback", "G-buffer pass (breakdown off)" })
+		if(std::strcmp(name, fixed) == 0) return false;
+	return true;
+}
+
+void Application::predictPass(size_t index) {
+	passdebug::g_Skip = !m_DisabledPasses.empty() && index < m_LastMarkOrder.size() && m_DisabledPasses.count(m_LastMarkOrder[index]) > 0;
 }
 
 void Application::mark(VkCommandBuffer cmd, const char* name) {
@@ -1351,6 +1364,7 @@ void Application::mark(VkCommandBuffer cmd, const char* name) {
 	if(names.size() >= GPU_MAX_MARKS) return;
 	names.push_back(name);
 	vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_TimestampPool, (m_FrameNumber % FRAME_OVERLAP) * GPU_QUERIES + static_cast<uint32_t>(names.size()));
+	predictPass(names.size());
 }
 
 void Application::drawGeometry(VkCommandBuffer cmd) {
@@ -2136,6 +2150,22 @@ void Application::draw() {
 		m_DebugView.select(static_cast<int>(m_FrameNumber % debugTextures().size()));
 		m_ShowDrawStats = true;
 	}
+	// VULKAN2_PASSOFF=a,b,c: those passes switched off from the start (captures of the pass switches).
+	// VULKAN2_PASSCYCLE=1: a different pass off every frame, so one run puts every switch through the validation layer
+	static bool passOffRead = false;
+	if(!passOffRead) {
+		passOffRead = true;
+		if(const char* off = std::getenv("VULKAN2_PASSOFF")) {
+			std::stringstream list(off);
+			for(std::string name; std::getline(list, name, ',');) if(!name.empty()) m_DisabledPasses.insert(name);
+		}
+	}
+	static const bool passCycle = std::getenv("VULKAN2_PASSCYCLE") != nullptr;
+	if(passCycle && !m_LastMarkOrder.empty()) {
+		m_DisabledPasses.clear();
+		const char* name = m_LastMarkOrder[m_FrameNumber % m_LastMarkOrder.size()];
+		if(passSwitchable(name)) m_DisabledPasses.insert(name);
+	}
 	// VULKAN2_DRAWSTATS=1: the draw counts on (printed with each capture)
 	static const bool drawStatsEnv = std::getenv("VULKAN2_DRAWSTATS") != nullptr;
 	if(drawStatsEnv) m_ShowDrawStats = true;
@@ -2381,6 +2411,8 @@ void Application::draw() {
 		mark(cmd, "UI");
 	}
 
+	passdebug::g_Skip = false;
+	m_LastMarkOrder = m_MarkNames[m_FrameNumber % FRAME_OVERLAP]; // next frame's pass switches go by this order
 	vkutil::transition_image(cmd, m_SwapchainImages[swapchainImageIndex], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 	VK_CHECK(vkEndCommandBuffer(cmd));
 	
@@ -2983,13 +3015,37 @@ void Application::drawPerformanceWindow(float deltatimeMs) {
 		ImGui::SameLine();
 		ImGui::Checkbox("opaque breakdown", &m_DetailedOpaqueTimings);
 		ImGui::SetItemTooltip("Splits the G-buffer pass into one rendering per part (terrain, trees, grass, ...) to time each (Intel reports ~0 inside a pass). Costs a little. Off: one G-buffer bar");
+		// the pass switches: untick a pass to skip its draws and dispatches (barriers and layouts stay, so the frame
+		// stays valid) and see what the image looks like without it. what reads its output gets whatever is left
+		// in there: stale results from before, garbage, black
+		if(!m_DisabledPasses.empty()) {
+			ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "%d pass%s off", static_cast<int>(m_DisabledPasses.size()), m_DisabledPasses.size() == 1 ? "" : "es");
+			ImGui::SameLine();
+			if(ImGui::SmallButton("all back on")) m_DisabledPasses.clear();
+		}
 		auto passLine = [&](const char* name, float ms, int depth) {
-			if(m_HideSmallPasses && ms < 0.05f) return;
+			bool off = m_DisabledPasses.count(name) > 0;
+			if(m_HideSmallPasses && ms < 0.05f && !off) return;
 			if(depth > 0) ImGui::Indent(depth * 12.0f);
+			ImGui::PushID(name);
+			if(passSwitchable(name)) {
+				bool on = !off;
+				if(ImGui::Checkbox("##on", &on)) { if(on) m_DisabledPasses.erase(name); else m_DisabledPasses.insert(name); }
+				ImGui::SetItemTooltip("Untick to skip this pass's draws and dispatches");
+			} else {
+				ImGui::BeginDisabled();
+				bool on = true;
+				ImGui::Checkbox("##on", &on);
+				ImGui::EndDisabled();
+				ImGui::SetItemTooltip("Can't be switched off (the window needs it, or skipping it would leave holes that stay)");
+			}
+			ImGui::PopID();
+			ImGui::SameLine();
 			float share = total > 0.0f ? ms / total : 0.0f;
 			// red for the big ones, yellow for the noticeable ones
 			ImVec4 colour = share > 0.2f ? ImVec4(0.85f, 0.35f, 0.3f, 1.0f) : (share > 0.08f ? ImVec4(0.85f, 0.65f, 0.3f, 1.0f) : ImVec4(0.4f, 0.65f, 0.4f, 1.0f));
-			ImGui::Text("%-30s %6.2f ms", name, ms);
+			if(off) ImGui::TextDisabled("%-30s    off   ", name);
+			else ImGui::Text("%-30s %6.2f ms", name, ms);
 			ImGui::SameLine();
 			ImGui::PushStyleColor(ImGuiCol_PlotHistogram, colour);
 			char percent[16];
