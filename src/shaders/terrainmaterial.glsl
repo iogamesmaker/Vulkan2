@@ -141,6 +141,20 @@ float heightBlend(float h1, float h2, float wFirst) {
 // rim around every patch. against snow the other material's own bumps decide (tufts and stone tops poke out first)
 // and the band is narrow, so a pixel is snow or ground, not a see-through mix of both
 float materialBlend(int first, int second, float h1, float h2, float wFirst) {
+	// turf against bare rock: a deep blend where the rock's relief decides (its bumps come up through thinning turf,
+	// the turf holds on in its cracks) over the whole band, instead of a cut edge with an outline
+	if ((first == BIOME_MOUNTAINS) != (second == BIOME_MOUNTAINS) && first != BIOME_SNOW && second != BIOME_SNOW) {
+		float hRock = first == BIOME_MOUNTAINS ? h1 : h2, hOther = first == BIOME_MOUNTAINS ? h2 : h1;
+		float wRock = first == BIOME_MOUNTAINS ? wFirst : 1.0 - wFirst;
+		float a1 = hRock * 0.9 + wRock, a2 = hOther * 0.3 + 1.0 - wRock;
+		float level = max(a1, a2) - 0.45;
+		float bRock = max(a1 - level, 0.0), bOther = max(a2 - level, 0.0);
+		float rockShare = bRock / max(bRock + bOther, 1e-4);
+		// (back to the plain winner towards the cutoff: past it only one of the two is sampled, no pop at the switch)
+		float inBand = smoothstep(HEIGHT_BLEND_CUTOFF, HEIGHT_BLEND_CUTOFF + 0.12, wRock) * smoothstep(HEIGHT_BLEND_CUTOFF, HEIGHT_BLEND_CUTOFF + 0.12, 1.0 - wRock);
+		rockShare = mix(step(0.5, wRock), rockShare, inBand);
+		return first == BIOME_MOUNTAINS ? 1.0 - rockShare : rockShare;
+	}
 	if (first != BIOME_SNOW && second != BIOME_SNOW) return heightBlend(h1, h2, wFirst);
 	if (first == BIOME_SNOW) h1 = mix(0.45, h1, 0.2); else h2 = mix(0.45, h2, 0.2);
 	const float blendDepth = 0.06;
@@ -431,8 +445,11 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// were all rock streaks), the mountains from a gentler slope
 	// (a finer world noise on the slope too and a wider ramp: the grass patches between the rock had the smooth
 	// outline of the slope's contour, lime blobs painted on the scree)
-	float rockFray = valueNoise(s.worldXZ * 0.9 + 3.0) * 0.6 + valueNoise(s.worldXZ * 3.3 - 11.0) * 0.4;
-	float steepRock = smoothstep(mix(0.7, 0.28, mountains), mix(1.35, 0.85, mountains), slope + (lineNoise - 0.5) * 0.3 + (rockFray - 0.5) * 0.35);
+	// (slow noise only, and a wide ramp: noise added to the slope makes the threshold flip over a short distance, a
+	// fine one cut the grass out of the rock like paper; the wide ramp gives the material blend room to fade)
+	float rockFray = valueNoise(s.worldXZ * 0.35 + 3.0);
+	float rockSlope = slope + (lineNoise - 0.5) * 0.25 + (rockFray - 0.5) * 0.2;
+	float steepRock = smoothstep(mix(0.55, 0.2, mountains), mix(1.6, 1.0, mountains), rockSlope);
 	steepRock *= 1.0 - weights[BIOME_DESERT] * (1.0 - mountains); // dune and wadi walls are sand, not stone
 	float rockline = 0.58 + (lineNoise - 0.5) * 0.12;
 	float highRock = smoothstep(rockline, rockline + 0.06, terrainHeight) * mountains;
@@ -545,10 +562,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	float edgeNoise = valueNoise(s.worldXZ * 0.35) * 0.65 + valueNoise(s.worldXZ * 1.3 + 17.0) * 0.35;
 	// grass against bare rock: frayed harder and finer (tongues and islands of turf in the scree), a smooth line
 	// read as a painted lime blob on the mountainside
-	bool rockEdge = (first == BIOME_MOUNTAINS) != (second == BIOME_MOUNTAINS);
-	float fray = rockEdge ? 0.85 : 0.45;
-	if (rockEdge) edgeNoise = edgeNoise * 0.6 + valueNoise(s.worldXZ * 4.1 - 7.0) * 0.4;
-	wA = clamp(wA + (edgeNoise - 0.5) * fray * smoothstep(0.0, 0.25, wA * (1.0 - wA)), 0.0, 1.0);
+	wA = clamp(wA + (edgeNoise - 0.5) * 0.45 * smoothstep(0.0, 0.25, wA * (1.0 - wA)), 0.0, 1.0);
 	float pomMaterial = mix(mix(mix(POM_MATERIAL_DEPTH[second], POM_MATERIAL_DEPTH[first], wA), 0.5, g_LitterOver), POM_MATERIAL_DEPTH[BIOME_SNOW], g_SnowOver);
 	// faded over the outer 70% of the range
 	float pomFade = ubo.pomDistance > 0.0 && ubo.pomDepth > 0.0 ? 1.0 - smoothstep(ubo.pomDistance * 0.3, ubo.pomDistance, viewDistance) : 0.0;
@@ -624,13 +638,6 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// the meadow ground leans towards the grass blades' own colour, so where the grass rings thin out (or end) the
 	// ground underneath doesn't show as a paler band
 	albedo = mix(albedo, vec3(0.085, 0.15, 0.035) * (0.7 + 0.6 * dot(albedo, vec3(0.3, 0.59, 0.11)) / 0.12), grassiness * 0.35);
-	// up on the mountains the turf is alpine: short, dry, an olive grey green that sits with the rock around it
-	// (the lowland meadow's green on a scree slope was lime paint)
-	{
-		float l = dot(albedo, vec3(0.3, 0.59, 0.11));
-		float alpine = max(mountains, smoothstep(0.25, 0.75, slope)); // (and on steep ground anywhere, among the rock)
-		albedo = mix(albedo, mix(vec3(l), albedo, 0.55) * vec3(1.02, 0.97, 0.82) * 0.88, grassiness * alpine * 0.8);
-	}
 	float dryPatches = smoothstep(0.45, 0.8, valueNoise(snowPos * 0.08 + 31.0) * 0.7 + valueNoise(snowPos * 0.4) * 0.3);
 	albedo *= mix(vec3(1.0), vec3(1.12, 1.04, 0.72), dryPatches * grassiness * 0.6);
 	// the meadows from afar were one smooth green, a golf course: break them up at every scale. slow drifts between
