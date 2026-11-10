@@ -2,6 +2,7 @@
 // rocks, boulders, logs and stumps (the photoscans, Props::loadMesh), instanced from props.comp's bins
 
 #include "propscommon.glsl"
+#include "proprotation.glsl"
 
 layout(location = 0) in vec4 inPositionMaterial; // xyz mesh space (~unit size), w = the mesh (its textures)
 layout(location = 1) in vec4 inNormalAO;		 // xyz normal, w = ambient occlusion (Props::loadMesh)
@@ -21,12 +22,8 @@ layout(location = 6) flat out float outSeed;
 
 void main() {
 	PropInstance inst = instances[gl_InstanceIndex];
-	// tilt about the mesh's z axis first (logs run along x, so they follow the slope), then the yaw
-	float ct = cos(inst.params.y), st = sin(inst.params.y);
-	float cy = cos(inst.params.x), sy = sin(inst.params.x);
-	mat3 tilt = mat3(ct, st, 0.0, -st, ct, 0.0, 0.0, 0.0, 1.0);
-	mat3 yaw = mat3(cy, 0.0, -sy, 0.0, 1.0, 0.0, sy, 0.0, cy);
-	mat3 rotation = yaw * tilt;
+	// laid on the ground's slope (the packed tilt), then the yaw
+	mat3 rotation = propRotation(inst.params.x, inst.params.y);
 
 	vec3 pos = inst.posScale.xyz + rotation * inPositionMaterial.xyz * inst.posScale.w;
 	outPosition = pos;

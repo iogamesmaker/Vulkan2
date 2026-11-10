@@ -27,7 +27,9 @@ layout(location = 9) flat out float outTint;	// unused (was the procedural trees
 
 void main() {
 	TreeInstance inst = instances[gl_InstanceIndex];
-	float yaw = inst.params.x;
+	float yaw;
+	vec2 lean;
+	unpackYawLean(inst.params.x, yaw, lean);
 	float c = cos(yaw), s = sin(yaw);
 	mat2 rotation = mat2(c, s, -s, c);
 
@@ -35,6 +37,10 @@ void main() {
 	local.xz = rotation * local.xz;
 	vec3 normal = inNormalMaterial.xyz;
 	normal.xz = rotation * normal.xz;
+	// the lean (trees_place.comp): sheared off vertical by height, the foot stays put. the normals the inverse way
+	local.xz += lean * local.y;
+	normal.y -= dot(normal.xz, lean);
+	normal = normalize(normal);
 
 	float treeHeight = inst.posScale.w;
 	vec3 pos = inst.posScale.xyz + local * treeHeight;

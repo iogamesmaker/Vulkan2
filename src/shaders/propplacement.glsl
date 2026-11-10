@@ -7,6 +7,7 @@
 #define PROP_CELL 0.9 // world units (~5m) per placement cell
 
 #include "propmeshes.glsl" // rocks, then logs, then stumps
+#include "proprotation.glsl"
 
 // mesh space collision shapes (times the scale), measured from the scans in the space Props::loadMesh puts them in.
 // rocks: an ellipsoid per rock, x / z half extents and the height above their base (they stand on y = 0, the
@@ -79,8 +80,14 @@ bool placeProp(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld
 	p.yaw = rnd2.z * 6.2831853;
 	// logs lie along the slope under their own axis (the yaw turns the mesh's x axis to (cos, -sin) in xz)
 	vec2 gradient = vec2(hR - hL, hT - hB) * factor / (2.0 * terrainSize / size.x); // height per world unit
+	// and every way across it: on the ground's normal (packTilt). rocks most of the way plus a random wobble,
+	// logs all the way, stumps (a tree's foot, it grew upright) only a little
 	float along = dot(gradient, vec2(cos(p.yaw), -sin(p.yaw)));
-	p.tilt = p.mesh >= PROP_FIRST_STUMP ? 0.0 : (p.mesh >= PROP_FIRST_LOG ? atan(along) : (rnd2.y - 0.5) * 0.4); // stumps stand upright
+	float across = dot(gradient, vec2(sin(p.yaw), cos(p.yaw)));
+	vec2 onGround = vec2(atan(along), -atan(across));
+	vec2 wobble = (vec2(rnd2.y, fract(rnd2.y * 7.31 + rnd2.w)) - 0.5) * 0.4;
+	vec2 tilt = p.mesh >= PROP_FIRST_STUMP ? onGround * 0.25 : (p.mesh >= PROP_FIRST_LOG ? onGround : onGround * 0.8 + wobble);
+	p.tilt = packTilt(tilt);
 	p.seed = rnd2.w;
 	p.moss = clamp(data.g * 1.3 - 0.3 + weights[BIOME_TAIGA] * 0.3, 0.0, 1.0) * (1.0 - weights[BIOME_DESERT]) * (1.0 - weights[BIOME_SNOW]);
 	// snow on them where the ground is snowy: the snow biome and above the snowline (the same lines as the terrain's
@@ -92,10 +99,6 @@ bool placeProp(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld
 	return true;
 }
 
-// the rotation props.vert applies (tilt about the mesh's z axis, then the yaw)
-mat3 propRotation(float yaw, float tilt) {
-	float ct = cos(tilt), st = sin(tilt), cy = cos(yaw), sy = sin(yaw);
-	return mat3(cy, 0.0, -sy, 0.0, 1.0, 0.0, sy, 0.0, cy) * mat3(ct, st, 0.0, -st, ct, 0.0, 0.0, 0.0, 1.0);
-}
+// (propRotation: proprotation.glsl, props.vert turns them the same way)
 
 #endif

@@ -39,5 +39,12 @@ void main() {
 	uint slot = atomicAdd(placedCount, 1u);
 	if (slot >= MAX_PLACED_TREES) return;
 	placed[slot].posScale = vec4(t.xz + pc.offsetWorld, y, t.height).xzyw; // world xz
-	placed[slot].params = vec4(t.rnd2.z * 6.2831853, t.dryness, t.rnd2.w * 1000.0, float(t.mesh));
+	// not perfectly plumb: trees on a slope lean out over it a little (towards the light down the valley), and every
+	// one a touch at random. a few degrees, the trunk's foot stays where it is
+	vec2 gradient = t.gradientTexels * pc.factor / (2.0 * pc.terrainSize / size.x); // height per world unit
+	float slopeLen = length(gradient);
+	vec2 downhill = slopeLen > 1e-4 ? -gradient / slopeLen : vec2(0.0);
+	vec2 randomDir = vec2(cos(t.rnd.z * 6.2831853), sin(t.rnd.z * 6.2831853));
+	vec2 lean = downhill * min(atan(slopeLen) * 0.15, 0.06) + randomDir * 0.025 * t.rnd.w;
+	placed[slot].params = vec4(packYawLean(t.rnd2.z * 6.2831853, lean), t.dryness, t.rnd2.w * 1000.0, float(t.mesh));
 }

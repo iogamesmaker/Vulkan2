@@ -131,6 +131,21 @@ float bayer4(vec2 p) {
 
 // dithered fade. the meshes keep the pixels below the threshold, the impostors the ones above it (inverted), so
 // where a tree is drawn as both during the LOD crossfade every pixel comes from exactly one of them
+// a tree's yaw and its lean in one float (TreeInstance params.x): the lean is a small shear of the trunk off vertical
+// (x / z per unit of height, up to +-0.12, about 7 degrees), 33 steps each, as an integer code * 8 on top of the
+// yaw (0..2pi < 8). a plain number so it survives every copy exactly enough (~0.001 of yaw resolution). code 0 is
+// no lean (a bare yaw, the impostor bake's instance), the steps count from 1
+float packYawLean(float yaw, vec2 lean) {
+	vec2 q = floor(clamp(lean / 0.12 * 0.5 + 0.5, 0.0, 1.0) * 32.0 + 0.5) + 1.0;
+	return yaw + 8.0 * (q.x + 34.0 * q.y);
+}
+void unpackYawLean(float packed, out float yaw, out vec2 lean) {
+	float code = floor(packed / 8.0);
+	yaw = packed - code * 8.0;
+	float qy = floor(code / 34.0);
+	lean = code < 0.5 ? vec2(0.0) : ((vec2(code - qy * 34.0, qy) - 1.0) / 32.0 * 2.0 - 1.0) * 0.12;
+}
+
 bool treeFaded(float fade, vec2 fragCoord, bool impostor) {
 	float threshold = bayer4(fragCoord);
 	return fade < (impostor ? 1.0 - threshold : threshold);
@@ -168,6 +183,7 @@ struct TreePlacement {
 	uint mesh;	   // which of the imported trees (treemeshes.glsl)
 	float height;  // the tree's size in world units (TreeInstance posScale.w: the mesh's natural size, a bit varied)
 	float slope;   // squared heightmap gradient, see terrain.frag
+	vec2 gradientTexels; // the heightmap's height difference across two texels in x / z (trees_place.comp leans the tree with it)
 	float dryness;
 	vec4 rnd, rnd2;
 };
@@ -187,6 +203,7 @@ bool placeTree(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld
 	float hT = textureLodOffset(hm, t.uv, 0.0, ivec2(0, 1)).a;
 	float hB = textureLodOffset(hm, t.uv, 0.0, ivec2(0, -1)).a;
 	t.slope = pow((hR - hL) * heightmapSlopeScale(size.x), 2.0) + pow((hT - hB) * heightmapSlopeScale(size.x), 2.0);
+	t.gradientTexels = vec2(hR - hL, hT - hB);
 	if (t.slope > 0.35) return false; // nothing on cliffs
 
 	float temperature = data.r, moisture = data.g, height = data.a;

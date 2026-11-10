@@ -13,6 +13,7 @@ layout(local_size_x = 64) in;
 #include "groundcovercommon.glsl"
 #include "biometools.glsl"
 #include "terrainheight.glsl"
+#include "culling.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
 layout(set = 0, binding = 1) uniform sampler2D climateMap; // half resolution
@@ -156,9 +157,7 @@ void main() {
 	if (caster && dist < shadowReach) append(uint(GC_MAX_MESHES) + mesh, instance);
 
 	float sphere = sp.size.x * scale;
-	vec4 clip = pc.viewproj * vec4(instance.posScale.xyz + vec3(0.0, sphere * 0.5, 0.0), 1.0);
-	float margin = sphere * 1.5 + 0.02; // (+ the wind's sway)
-	if (clip.w < -margin || abs(clip.x) > clip.w + margin || abs(clip.y) > clip.w + margin) return;
+	if (sphereOutsideView(pc.viewproj, instance.posScale.xyz + vec3(0.0, sphere * 0.5, 0.0), sphere + 0.015)) return; // (+ the wind's sway)
 	// the full model only while it's big on screen, the simplified one (~30% of the triangles) below that
 	float radiusPixels = sphere * pc.projScale / max(dist, 1e-3);
 	append(radiusPixels > GC_LOD_PIXELS ? mesh : uint(GC_MAX_MESHES * 2) + mesh, instance);

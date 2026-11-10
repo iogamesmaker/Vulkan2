@@ -6,6 +6,7 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 #include "treecommon.glsl"
+#include "culling.glsl"
 
 layout(std430, set = 0, binding = 0) writeonly buffer Instances { TreeInstance instances[]; };
 
@@ -97,9 +98,7 @@ void main() {
 	if (dist < SHADOW_DISTANCE) append(BIN_SHADOW + mesh, instance);
 
 	// frustum cull with a sphere around the tree
-	vec4 clip = pc.viewproj * vec4(pos + vec3(0.0, treeHeight * 0.5, 0.0), 1.0);
-	float radius = treeHeight * 0.6 * 1.5; // * projection scale
-	if (clip.w < -treeHeight || abs(clip.x) > clip.w + radius || abs(clip.y) > clip.w + radius) return;
+	if (sphereOutsideView(pc.viewproj, pos + vec3(0.0, treeHeight * 0.5, 0.0), treeHeight * 0.6)) return;
 	// behind a hill / ridge / other trees (last frame's depth): no mesh, no impostor. the shadow casters above stay
 	if (occluded(pos + vec3(0.0, treeHeight * 0.5, 0.0), treeHeight * 0.6)) return;
 

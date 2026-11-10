@@ -127,28 +127,76 @@ float heightBlend(float h1, float h2, float wFirst) {
 	return b2 / max(b1 + b2, 1e-4);
 }
 
-// the two materials of one projection, height blended. one alone where the other can't show (most pixels)
+// heightBlend for a pair of materials. snow is the exception: it has no relief of its own (it lies smooth and fills
+// the cracks), and the soft band showed the grass / rock through it like frosted glass, a milky film with a bright
+// rim around every patch. against snow the other material's own bumps decide (tufts and stone tops poke out first)
+// and the band is narrow, so a pixel is snow or ground, not a see-through mix of both
+float materialBlend(int first, int second, float h1, float h2, float wFirst) {
+	if (first != BIOME_SNOW && second != BIOME_SNOW) return heightBlend(h1, h2, wFirst);
+	if (first == BIOME_SNOW) h1 = mix(0.45, h1, 0.2); else h2 = mix(0.45, h2, 0.2);
+	const float blendDepth = 0.06;
+	float a1 = h1 * 0.6 + wFirst;
+	float a2 = h2 * 0.6 + 1.0 - wFirst;
+	float level = max(a1, a2) - blendDepth;
+	float b1 = max(a1 - level, 0.0);
+	float b2 = max(a2 - level, 0.0);
+	return b2 / max(b1 + b2, 1e-4);
+}
+
+// snow is a layer over the ground, not one of the two ranked materials: ranked, it won outright wherever the two
+// ground materials under it swapped places (both had the third strongest taken off, the ground went to zero), a
+// thin white line along every such swap, rings and ovals in the grass at the snowline. 0..1, terrainSurface sets it
+float g_SnowOver = 0.0;
+
+// the two ground materials of one projection, height blended (one alone where the other can't show, most pixels),
+// then the snow over them, height blended against the ground's relief
 void sampleBlend(int first, int second, float wA, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, bool nearNoTile, out vec3 albedo, out vec3 normal) {
-	if (wA > 1.0 - HEIGHT_BLEND_CUTOFF || wA < HEIGHT_BLEND_CUTOFF) {
-		Material m = sampleMaterial(wA > 0.5 ? first : second, near, far, macro, farWeight, macroWeight, false, nearNoTile);
+	float snow = g_SnowOver;
+	if (snow > 1.0 - HEIGHT_BLEND_CUTOFF) {
+		Material m = sampleMaterial(BIOME_SNOW, near, far, macro, farWeight, macroWeight, false, nearNoTile);
 		albedo = m.albedo; normal = normalize(m.normal);
 		return;
 	}
-	Material m1 = sampleMaterial(first, near, far, macro, farWeight, macroWeight, true, nearNoTile);
-	Material m2 = sampleMaterial(second, near, far, macro, farWeight, macroWeight, true, nearNoTile);
-	float blend = heightBlend(m1.height, m2.height, wA); // 0 = first, 1 = second
-	albedo = mix(m1.albedo, m2.albedo, blend);
-	normal = normalize(mix(m1.normal, m2.normal, blend));
+	bool snowEdge = snow >= HEIGHT_BLEND_CUTOFF;
+	float groundHeight;
+	if (wA > 1.0 - HEIGHT_BLEND_CUTOFF || wA < HEIGHT_BLEND_CUTOFF) {
+		Material m = sampleMaterial(wA > 0.5 ? first : second, near, far, macro, farWeight, macroWeight, snowEdge, nearNoTile);
+		albedo = m.albedo; normal = normalize(m.normal);
+		groundHeight = m.height;
+	} else {
+		Material m1 = sampleMaterial(first, near, far, macro, farWeight, macroWeight, true, nearNoTile);
+		Material m2 = sampleMaterial(second, near, far, macro, farWeight, macroWeight, true, nearNoTile);
+		float blend = materialBlend(first, second, m1.height, m2.height, wA); // 0 = first, 1 = second
+		albedo = mix(m1.albedo, m2.albedo, blend);
+		normal = normalize(mix(m1.normal, m2.normal, blend));
+		groundHeight = mix(m1.height, m2.height, blend);
+	}
+	if (snowEdge) {
+		Material s = sampleMaterial(BIOME_SNOW, near, far, macro, farWeight, macroWeight, true, nearNoTile);
+		float blend = materialBlend(-1, BIOME_SNOW, groundHeight, s.height, 1.0 - snow);
+		albedo = mix(albedo, s.albedo, blend);
+		normal = normalize(mix(normal, s.normal, blend));
+	}
 }
 
 // the height of the blended surface here, with exactly the blend the textures get, so the parallax traces the
 // same surface that ends up textured
-float blendedHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) {
+float groundHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) {
 	if (wFirst > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[nonuniformEXT(first)], uv, near.dx, near.dy).r;
 	if (wFirst < HEIGHT_BLEND_CUTOFF) return textureGrad(pom[nonuniformEXT(second)], uv, near.dx, near.dy).r;
 	float h1 = textureGrad(pom[nonuniformEXT(first)], uv, near.dx, near.dy).r;
 	float h2 = textureGrad(pom[nonuniformEXT(second)], uv, near.dx, near.dy).r;
-	return mix(h1, h2, heightBlend(h1, h2, wFirst));
+	return mix(h1, h2, materialBlend(first, second, h1, h2, wFirst));
+}
+float blendedHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) {
+	float snow = g_SnowOver;
+	if (snow > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[BIOME_SNOW], uv, near.dx, near.dy).r;
+	float h = groundHeight(first, second, wFirst, near, uv);
+	if (snow >= HEIGHT_BLEND_CUTOFF) {
+		float hs = textureGrad(pom[BIOME_SNOW], uv, near.dx, near.dy).r;
+		h = mix(h, hs, materialBlend(-1, BIOME_SNOW, h, hs, 1.0 - snow));
+	}
+	return h;
 }
 
 // steps down the view ray (tangent space, towards the eye) through the height field until it's below the surface,
@@ -364,6 +412,9 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 
 	float materials[BIOME_COUNT];
 	for (int i = 0; i < BIOME_COUNT; i++) materials[i] = weights[i];
+	// the snow goes over the two ground materials (sampleBlend), it isn't ranked with them
+	g_SnowOver = materials[BIOME_SNOW];
+	materials[BIOME_SNOW] = 0.0;
 
 	// only the two strongest materials get sampled. the third strongest is taken off both weights, so a material
 	// has faded out completely by the time it swaps places with the next one (otherwise every swap is a seam)
@@ -438,7 +489,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// so it meanders organically instead of following the smooth climate / slope gradient as a clean line
 	float edgeNoise = valueNoise(s.worldXZ * 0.35) * 0.65 + valueNoise(s.worldXZ * 1.3 + 17.0) * 0.35;
 	wA = clamp(wA + (edgeNoise - 0.5) * 0.45 * smoothstep(0.0, 0.25, wA * (1.0 - wA)), 0.0, 1.0);
-	float pomMaterial = mix(POM_MATERIAL_DEPTH[second], POM_MATERIAL_DEPTH[first], wA);
+	float pomMaterial = mix(mix(POM_MATERIAL_DEPTH[second], POM_MATERIAL_DEPTH[first], wA), POM_MATERIAL_DEPTH[BIOME_SNOW], g_SnowOver);
 	// faded over the outer 70% of the range
 	float pomFade = ubo.pomDistance > 0.0 && ubo.pomDepth > 0.0 ? 1.0 - smoothstep(ubo.pomDistance * 0.3, ubo.pomDistance, viewDistance) : 0.0;
 	pomFade *= wTop * smoothstep(0.02, 0.1, pomMaterial);
