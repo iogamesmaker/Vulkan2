@@ -18,8 +18,9 @@ layout(set = 0, binding = 0) uniform sampler2D heightmap;
 layout(set = 0, binding = 1) uniform sampler2D climateMap; // half resolution
 layout(std430, set = 0, binding = 2) writeonly buffer Instances { GroundCoverInstance instances[]; };
 struct DrawCommand { uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset; uint firstInstance; };
-// [0, GC_MAX_MESHES) what the camera sees, per mesh, then the same for the shadow casters
-layout(std430, set = 0, binding = 3) buffer Commands { DrawCommand commands[GC_MAX_MESHES * 2]; };
+// [0, GC_MAX_MESHES) what the camera sees, per mesh, then the same for the shadow casters (simplified), then what the
+// camera sees small on screen (simplified)
+layout(std430, set = 0, binding = 3) buffer Commands { DrawCommand commands[GC_MAX_MESHES * 3]; };
 layout(std430, set = 0, binding = 4) readonly buffer Species { GroundCoverSpecies species[GC_SPECIES]; };
 
 void append(uint bin, GroundCoverInstance instance) {
@@ -158,5 +159,7 @@ void main() {
 	vec4 clip = pc.viewproj * vec4(instance.posScale.xyz + vec3(0.0, sphere * 0.5, 0.0), 1.0);
 	float margin = sphere * 1.5 + 0.02; // (+ the wind's sway)
 	if (clip.w < -margin || abs(clip.x) > clip.w + margin || abs(clip.y) > clip.w + margin) return;
-	append(mesh, instance);
+	// the full model only while it's big on screen, the simplified one (~30% of the triangles) below that
+	float radiusPixels = sphere * pc.projScale / max(dist, 1e-3);
+	append(radiusPixels > GC_LOD_PIXELS ? mesh : uint(GC_MAX_MESHES * 2) + mesh, instance);
 }

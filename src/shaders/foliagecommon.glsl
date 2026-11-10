@@ -53,6 +53,11 @@ layout(push_constant) uniform constants {
 // two are drawn with BLADE_SEGMENTS per blade (curved blades up close), the first with one card per blade: the extra
 // segments of every far clump went through the vertex shader only to be clipped, it doubled the cost of the grass
 #define FOLIAGE_SEGMENTED_FROM MAX_FOLIAGE_INSTANCES
+// then [the outer rings], drawn with only FOLIAGE_LITE_CARDS cards per clump: their grass has 3 blades, flowers and
+// the mid ring's wheat 6. with all 10 the other cards' vertices ran just to be thrown away, 40% of the grass' vertex
+// work (the first range is the near ring's flat cards now, ~15-27m)
+#define FOLIAGE_LITE_FROM (MAX_FOLIAGE_INSTANCES + MAX_FOLIAGE_SHADOW_INSTANCES + MAX_FOLIAGE_NEAR_INSTANCES)
+#define FOLIAGE_LITE_CARDS 6
 
 float hash11(float p) {
 	p = fract(p * 0.1031);

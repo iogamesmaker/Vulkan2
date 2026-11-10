@@ -43,10 +43,11 @@ public:
 	// grass near the camera into a shadow cascade
 	void drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj);
 	// the "GPU draw counts" window (drawstats.hpp)
-	std::vector<DrawStatBuffer> drawStatBuffers() const { return { { m_Indirect.buffer, sizeof(VkDrawIndirectCommand) * 3 } }; }
+	std::vector<DrawStatBuffer> drawStatBuffers() const { return { { m_Indirect.buffer, sizeof(VkDrawIndirectCommand) * 4 } }; }
 	void drawStats(const std::vector<const uint8_t*>& data, std::vector<DrawStat>& out) const {
 		out.push_back(sumNonIndexed("grass, near ring (curved blades)", data[0], 2, 1));
-		out.push_back(sumNonIndexed("grass, outer rings", data[0], 0, 1));
+		out.push_back(sumNonIndexed("grass, near ring (flat cards)", data[0], 0, 1));
+		out.push_back(sumNonIndexed("grass, outer rings", data[0], 3, 1));
 		out.push_back(sumNonIndexed("grass, shadow casters", data[0], 1, 1));
 	}
 
@@ -69,6 +70,7 @@ private:
 	static constexpr uint32_t MAX_SHADOW_INSTANCES = 24000; // must match foliagecommon.glsl
 	static constexpr uint32_t MAX_NEAR_INSTANCES = RING_SIDE_NEAR * RING_SIDE_NEAR; // foliagecommon.glsl
 	static constexpr uint32_t VERTICES_PER_INSTANCE = 10 * 6;				// BLADES_PER_CLUMP * 6, one card per blade
+	static constexpr uint32_t LITE_VERTICES_PER_INSTANCE = 6 * 6;			// FOLIAGE_LITE_CARDS: the outer rings
 	static constexpr uint32_t SEGMENTED_VERTICES_PER_INSTANCE = 10 * 3 * 6; // * BLADE_SEGMENTS: the near ring, shadow casters
 
 	AllocatedBuffer m_Instances;

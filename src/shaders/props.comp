@@ -59,5 +59,11 @@ void main() {
 	vec4 clip = pc.viewproj * vec4(instance.posScale.xyz + vec3(0.0, scale * 0.3, 0.0), 1.0);
 	float radius = scale * 1.2;
 	if (clip.w < -radius || abs(clip.x) > clip.w + radius * 1.5 || abs(clip.y) > clip.w + radius * 1.5) return;
-	append(mesh * 2u + (dist < PROP_LOD_DISTANCE * max(scale * 3.0, 1.0) ? 0u : 1u), instance);
+	// by how big it is on screen, not how far: the detailed scan (2-5k triangles) only where its triangles are
+	// still bigger than a few pixels, the cheap one (300-700) below that, and nothing once it's a speck. by distance
+	// a log kept its 5000 triangles out to ~450m and the cheap LOD went on to the edge of the ring: millions of
+	// triangles on rocks a pixel wide, ~4ms of a forest frame on an integrated GPU
+	float radiusPixels = radius * pc.projScale / max(dist, 1e-3);
+	if (radiusPixels < 1.5) return;
+	append(mesh * 2u + (radiusPixels > PROP_LOD_PIXELS ? 0u : 1u), instance);
 }

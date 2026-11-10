@@ -9,6 +9,7 @@
 #define GC_SPECIES 14
 #define GC_MAX_MESHES 96
 #define GC_CAPACITY 4096u
+#define GC_LOD_PIXELS 45.0 // the full model above this radius on screen, the simplified one below (groundcover.comp)
 // species
 #define GC_FERN 0
 #define GC_BRANCHES 1 // dead branches lying on the forest floor (opaque bark)

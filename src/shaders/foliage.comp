@@ -15,7 +15,7 @@ layout(std430, set = 0, binding = 1) writeonly buffer Instances { FoliageInstanc
 struct DrawCommand { uint vertexCount; uint instanceCount; uint firstVertex; uint firstInstance; };
 // [0] = what the camera sees (outer rings), [1] = shadow casters near the camera (not frustum culled), stored after
 // the first, [2] = what the camera sees in the near ring (curved blades, foliagecommon.glsl), after those
-layout(std430, set = 0, binding = 2) buffer Indirect { DrawCommand commands[3]; };
+layout(std430, set = 0, binding = 2) buffer Indirect { DrawCommand commands[4]; }; // [3] = the outer rings (foliagecommon.glsl)
 
 // the far terrain cache (terraincache.hpp, terrain.frag): the finished ground colour, the grass takes its colour from it
 #define TERRAIN_CACHE_LEVELS 5
@@ -173,7 +173,9 @@ void main() {
 	float margin = ring == 3u ? 1.6 : 0.6; // clump radius (~0.4, the wheat ring's ~1.1) times the projection scale (~1.4), in clip units
 	if (clip.w < -0.4 || abs(clip.x) > clip.w + margin || abs(clip.y) > clip.w + margin) return;
 
-	// (curved blades within ~15m, further away a blade is a few pixels tall and its bend doesn't show)
-	if (ring == 0u && dist < 2.5) append(2u, MAX_FOLIAGE_NEAR_INSTANCES, instance);
-	else append(0u, MAX_FOLIAGE_INSTANCES, instance);
+	// (curved blades within ~9m, further away a blade is a few pixels tall and its bend doesn't show: out to ~15m
+	// they were ~1.5ms of a meadow at 1080p on an integrated GPU, 3x the vertices of a flat card each)
+	if (ring == 0u && dist < 1.5) append(2u, MAX_FOLIAGE_NEAR_INSTANCES, instance);
+	else if (ring == 0u) append(0u, MAX_FOLIAGE_NEAR_INSTANCES, instance);
+	else append(3u, MAX_FOLIAGE_INSTANCES, instance); // the outer rings: FOLIAGE_LITE_CARDS cards each
 }

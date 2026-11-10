@@ -50,7 +50,7 @@ void main() {
 	float moisture;
 	outGroundAlbedo = unpackGround(inst.params.w, moisture);
 	// (the near ring and the shadow casters are drawn with BLADE_SEGMENTS quads per blade, the rest with one)
-	bool segmentLayout = uint(gl_InstanceIndex) >= FOLIAGE_SEGMENTED_FROM;
+	bool segmentLayout = uint(gl_InstanceIndex) >= FOLIAGE_SEGMENTED_FROM && uint(gl_InstanceIndex) < FOLIAGE_LITE_FROM;
 	int blade = gl_VertexIndex / (segmentLayout ? 6 * BLADE_SEGMENTS : 6);
 	int segment = segmentLayout ? (gl_VertexIndex / 6) % BLADE_SEGMENTS : 0;
 	vec2 corner = CORNERS[gl_VertexIndex % 6];

@@ -13,7 +13,7 @@
 
 // PROP_CELL: propplacement.glsl
 #define PROP_RADIUS 160.0  // ~1km
-#define PROP_LOD_DISTANCE 25.0
+#define PROP_LOD_PIXELS 70.0 // the detailed LOD above this radius on screen (props.comp)
 #define PROP_SHADOW_DISTANCE 90.0
 
 struct PropInstance {

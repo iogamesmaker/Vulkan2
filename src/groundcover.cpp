@@ -7,6 +7,7 @@
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <meshoptimizer.h>
 
 namespace {
 	// in GC_* order (groundcovercommon.glsl). opaque: no cutout map, the plain albedo
@@ -102,6 +103,7 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 				fastgltf::iterateAccessor<uint32_t>(gltf, gltf.accessors[*p.indicesAccessor], [&](uint32_t index) { indices.push_back(index + offset); });
 			}
 			mesh.indexCount = static_cast<uint32_t>(indices.size()) - mesh.firstIndex;
+			mesh.vertexCount = static_cast<uint32_t>(vertices.size() - first);
 			// standing on its lowest point, the height up the plant for the wind and the AO
 			float bottom = 1e9f, top = -1e9f, radius = 0.0f;
 			for(size_t i = first; i < vertices.size(); i++) {
@@ -123,6 +125,20 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 		std::sort(m_Meshes.begin() + species[s].meshes.x, m_Meshes.end(), [](const Mesh& a, const Mesh& b) { return a.indexCount < b.indexCount; });
 
 	}
+	// the simplified LOD of every plant: ~30% of the triangles within a small error (it stops early where leaves would
+	// go missing), for the plants that are small on screen (groundcover.comp) and for the shadows. drawn at full
+	// detail out to their reach, ~190k triangles over thousands of plants were a good part of a meadow's frame
+	for(Mesh& mesh : m_Meshes) {
+		std::vector<uint32_t> simplified(mesh.indexCount);
+		size_t target = std::max<size_t>(mesh.indexCount * 3 / 10 / 3 * 3, 3);
+		float error = 0.0f;
+		simplified.resize(meshopt_simplify(simplified.data(), indices.data() + mesh.firstIndex, mesh.indexCount, &vertices[mesh.vertexOffset].positionSpecies.x,
+										   mesh.vertexCount, sizeof(Vertex), target, 0.02f, 0, &error));
+		if(simplified.empty()) simplified.assign(indices.begin() + mesh.firstIndex, indices.begin() + mesh.firstIndex + mesh.indexCount);
+		mesh.firstIndex1 = static_cast<uint32_t>(indices.size());
+		mesh.indexCount1 = static_cast<uint32_t>(simplified.size());
+		indices.insert(indices.end(), simplified.begin(), simplified.end());
+	}
 	if(vertices.empty()) vertices.resize(1), indices.resize(3, 0); // nothing found: keep the buffers valid
 
 	size_t vertexBytes = vertices.size() * sizeof(Vertex), indexBytes = indices.size() * sizeof(uint32_t);
@@ -142,7 +158,9 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 		vkCmdCopyBuffer(cmd, staging.buffer, m_SpeciesBuffer.buffer, 1, &speciesCopy);
 	});
 	engine->destroyBuffer(staging);
-	fmt::print("ground cover: {} meshes, {} vertices, {} triangles\n", m_Meshes.size(), vertices.size(), indices.size() / 3);
+	size_t lod1 = 0;
+	for(const Mesh& mesh : m_Meshes) lod1 += mesh.indexCount1 / 3;
+	fmt::print("ground cover: {} meshes, {} vertices, {} triangles ({} simplified)\n", m_Meshes.size(), vertices.size(), indices.size() / 3 - lod1, lod1);
 
 	// bins: one per mesh for the camera, then one per mesh for the shadow casters
 	m_Instances = engine->createBuffer(BINS * CAPACITY * sizeof(glm::vec4) * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
@@ -152,8 +170,9 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 		uint32_t mesh = bin % MAX_MESHES;
 		m_CommandTemplate[bin].firstInstance = bin * CAPACITY;
 		if(mesh >= m_Meshes.size()) continue;
-		m_CommandTemplate[bin].indexCount = m_Meshes[mesh].indexCount;
-		m_CommandTemplate[bin].firstIndex = m_Meshes[mesh].firstIndex;
+		bool simple = bin >= MAX_MESHES; // the shadow casters and the camera's lod 1
+		m_CommandTemplate[bin].indexCount = simple ? m_Meshes[mesh].indexCount1 : m_Meshes[mesh].indexCount;
+		m_CommandTemplate[bin].firstIndex = simple ? m_Meshes[mesh].firstIndex1 : m_Meshes[mesh].firstIndex;
 		m_CommandTemplate[bin].vertexOffset = m_Meshes[mesh].vertexOffset;
 	}
 
@@ -304,6 +323,7 @@ void GroundCover::draw(VkCommandBuffer cmd) {
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &offset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, 0, static_cast<uint32_t>(m_Meshes.size()), sizeof(VkDrawIndexedIndirectCommand));
+	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, MAX_MESHES * 2 * sizeof(VkDrawIndexedIndirectCommand), static_cast<uint32_t>(m_Meshes.size()), sizeof(VkDrawIndexedIndirectCommand)); // lod 1
 }
 
 void GroundCover::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {

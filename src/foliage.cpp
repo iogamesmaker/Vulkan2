@@ -11,8 +11,8 @@ void Foliage::init(Application* engine, const AllocatedImage& heightmap, const A
 
 	// buffers: instances written by the compute pass and read by the vertex shader, the indirect draw arguments
 	// get their instance count from the compute pass too
-	m_Instances = engine->createBuffer((MAX_INSTANCES + MAX_SHADOW_INSTANCES + MAX_NEAR_INSTANCES) * sizeof(glm::vec4) * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-	m_Indirect = engine->createBuffer(sizeof(VkDrawIndirectCommand) * 3,  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_Instances = engine->createBuffer((MAX_INSTANCES * 2 + MAX_SHADOW_INSTANCES + MAX_NEAR_INSTANCES) * sizeof(glm::vec4) * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+	m_Indirect = engine->createBuffer(sizeof(VkDrawIndirectCommand) * 4,  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 
 	// compute set
 	DescriptorLayoutBuilder computeBuilder;
@@ -192,8 +192,9 @@ void Foliage::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 				  VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
 	// (outer rings, shadow casters, near ring: see foliagecommon.glsl for the instance ranges)
-	VkDrawIndirectCommand reset[3] = { { VERTICES_PER_INSTANCE, 0, 0, 0 }, { SEGMENTED_VERTICES_PER_INSTANCE, 0, 0, MAX_INSTANCES },
-									   { SEGMENTED_VERTICES_PER_INSTANCE, 0, 0, MAX_INSTANCES + MAX_SHADOW_INSTANCES } };
+	VkDrawIndirectCommand reset[4] = { { VERTICES_PER_INSTANCE, 0, 0, 0 }, { SEGMENTED_VERTICES_PER_INSTANCE, 0, 0, MAX_INSTANCES },
+									   { SEGMENTED_VERTICES_PER_INSTANCE, 0, 0, MAX_INSTANCES + MAX_SHADOW_INSTANCES },
+									   { LITE_VERTICES_PER_INSTANCE, 0, 0, MAX_INSTANCES + MAX_SHADOW_INSTANCES + MAX_NEAR_INSTANCES } };
 	vkCmdUpdateBuffer(cmd, m_Indirect.buffer, 0, sizeof(reset), reset);
 
 	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
@@ -223,6 +224,7 @@ void Foliage::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescrip
 	vkCmdPushConstants(cmd, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
 	vkCmdDrawIndirect(cmd, m_Indirect.buffer, 0, 1, sizeof(VkDrawIndirectCommand));
 	vkCmdDrawIndirect(cmd, m_Indirect.buffer, sizeof(VkDrawIndirectCommand) * 2, 1, sizeof(VkDrawIndirectCommand)); // the near ring
+	vkCmdDrawIndirect(cmd, m_Indirect.buffer, sizeof(VkDrawIndirectCommand) * 3, 1, sizeof(VkDrawIndirectCommand)); // the outer rings
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipeline);
 	VkDescriptorSet sets[] = { m_RenderSet, atmosphereSet, shadowSet };
@@ -230,6 +232,7 @@ void Foliage::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescrip
 	vkCmdPushConstants(cmd, m_RenderPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
 	vkCmdDrawIndirect(cmd, m_Indirect.buffer, 0, 1, sizeof(VkDrawIndirectCommand));
 	vkCmdDrawIndirect(cmd, m_Indirect.buffer, sizeof(VkDrawIndirectCommand) * 2, 1, sizeof(VkDrawIndirectCommand)); // the near ring
+	vkCmdDrawIndirect(cmd, m_Indirect.buffer, sizeof(VkDrawIndirectCommand) * 3, 1, sizeof(VkDrawIndirectCommand)); // the outer rings
 }
 
 void Foliage::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {
