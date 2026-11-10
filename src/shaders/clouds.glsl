@@ -111,15 +111,6 @@ float cloudCoverage3(vec2 worldKm) {
 #endif
 	return cloudDensity(worldKm, 3);
 }
-float cloudCoverage4(vec2 worldKm) {
-#ifdef CLOUD_COVERAGE_MAP
-	if (cloudMapCovers(worldKm)) {
-		vec4 t = textureLod(cloudCoverageMap, cloudMapUV(worldKm), 0.0);
-		return cloudShapeDensity(t.g, t.a, localCoverage(t.b));
-	}
-#endif
-	return cloudDensity(worldKm, 4);
-}
 // the weather field at a place (the map's b channel where there is one)
 float cloudWeatherCells(vec2 worldKm) {
 #ifdef CLOUD_COVERAGE_MAP

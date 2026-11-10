@@ -254,7 +254,8 @@ private:
 	bool m_SSAO = true;
 	bool m_BounceLight = true;
 	// full instead of half resolution (Ultra): the images are recreated with the swapchain when these change
-	bool m_FullResSSAO = false, m_FullResClouds = false;
+	bool m_FullResSSAO = false;
+	int m_CloudResolution = 1; // 0 quarter, 1 half, 2 full (GraphicsSettings::cloudResolution)
 	float m_BounceStrength = 1.0f;
 	bool m_DenoiseEffects = true;
 	// SSAO (ssao.comp), half resolution, recreated with the swapchain
@@ -275,6 +276,11 @@ private:
 	AllocatedBuffer m_CloudMapInfo;
 	VkDescriptorSet m_CloudMapSet = VK_NULL_HANDLE;
 	ComputeEffect m_CloudMapEffect;
+	// the clouds' shadow baked into the map's g channel every frame, around the camera (cloudshadow.comp)
+	VkDescriptorSet m_CloudShadowSet = VK_NULL_HANDLE;
+	ComputeEffect m_CloudShadowEffect;
+	struct CloudShadowPushConstants { glm::ivec2 start, size; glm::vec4 sun; float texel; float pad[3]; };
+	static constexpr int CLOUD_SHADOW_WINDOW = 512; // texels across (48km)
 	struct CloudMapPushConstants { glm::ivec2 start, size; float texel; };
 	glm::ivec2 m_CloudMapOrigin{ 0 }; // global texel (world km / texel) of the map's lowest corner, it wraps (cloudmap.comp)
 	bool m_CloudMapValid = false;

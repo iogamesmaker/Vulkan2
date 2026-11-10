@@ -283,7 +283,8 @@ void Application::initSwapchain(bool vsync) {
 	{
 		VkExtent3D half = { std::max(drawImageExtent.width / 2, 1u), std::max(drawImageExtent.height / 2, 1u), 1 };
 		VkExtent3D ssaoExtent = m_FullResSSAO ? drawImageExtent : half;
-		VkExtent3D cloudExtent = m_FullResClouds ? drawImageExtent : half;
+		VkExtent3D quarter = { std::max(drawImageExtent.width / 4, 1u), std::max(drawImageExtent.height / 4, 1u), 1 };
+		VkExtent3D cloudExtent = m_CloudResolution >= 2 ? drawImageExtent : (m_CloudResolution == 1 ? half : quarter);
 		m_SSAOImage.imageFormat = VK_FORMAT_R8G8_UNORM; // AO + light shaft visibility
 		m_SSAOImage.imageExtent = ssaoExtent;
 		VkImageCreateInfo ssaoCI = vkinit::image_create_info(m_SSAOImage.imageFormat, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, ssaoExtent);
@@ -807,6 +808,8 @@ void Application::initDefaultData() {
 		m_Settings = qualityPreset(m_Quality);
 		if(name == "off") { m_Settings = everythingOff(m_Settings); m_Quality = Quality::Custom; }
 	}
+	// VULKAN2_CLOUDRES=0/1/2: the clouds at quarter / half / full resolution (comparison captures)
+	if(const char* res = std::getenv("VULKAN2_CLOUDRES")) m_Settings.cloudResolution = std::atoi(res);
 	// VULKAN2_TAA=0: TAA off (flicker captures)
 	if(const char* taa = std::getenv("VULKAN2_TAA")) m_Settings.taa = std::atoi(taa) != 0;
 	// VULKAN2_GROUNDCOVER=<density>, 0 = off (comparison captures)
@@ -1529,7 +1532,7 @@ void Application::initClouds() {
 		vkDestroyDescriptorSetLayout(m_Device, noiseLayout, nullptr);
 	}
 
-	// the coverage map: RGBA16F (r 3 octaves, g 4 octaves, b base noise), GENERAL for good (written + sampled)
+	// the coverage map: RGBA16F (r 3 octaves, g the cloud shadow, b weather field, a billows), GENERAL for good (written + sampled)
 	m_CloudMap.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 	m_CloudMap.imageExtent = { 1024, 1024, 1 };
 	VkImageCreateInfo mapCI = vkinit::image_create_info(m_CloudMap.imageFormat, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, m_CloudMap.imageExtent);
@@ -1562,7 +1565,35 @@ void Application::initClouds() {
 		VkPipelineLayout layout;
 		VK_CHECK(vkCreatePipelineLayout(m_Device, &mapLayoutCI, nullptr, &layout));
 		m_CloudMapEffect = loadComputeShader("src/shaders/bin/cloudmap.comp.spv", "cloud coverage map", layout);
-		m_DeletionQueue.push([this, mapLayout]() {
+		// the shadow bake: the same map written (g) and read (the clouds' shape), and where it is
+		DescriptorLayoutBuilder shadowBuilder;
+		shadowBuilder.add_binding(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);
+		shadowBuilder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER);
+		shadowBuilder.add_binding(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+		VkDescriptorSetLayout shadowLayout = shadowBuilder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
+		m_CloudShadowSet = g_DescriptorAllocator.allocate(m_Device, shadowLayout);
+		VkDescriptorImageInfo shadowImage{ VK_NULL_HANDLE, m_CloudMap.imageView, VK_IMAGE_LAYOUT_GENERAL };
+		VkDescriptorImageInfo shadowSampled{ m_HeightmapSampler, m_CloudMap.imageView, VK_IMAGE_LAYOUT_GENERAL }; // linear, repeating
+		VkDescriptorBufferInfo shadowWhere{ m_CloudMapInfo.buffer, 0, sizeof(glm::vec4) };
+		VkWriteDescriptorSet shadowWrites[3] = {};
+		for(uint32_t i = 0; i < 3; i++) { shadowWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; shadowWrites[i].dstSet = m_CloudShadowSet; shadowWrites[i].dstBinding = i; shadowWrites[i].descriptorCount = 1; }
+		shadowWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; shadowWrites[0].pImageInfo = &shadowImage;
+		shadowWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; shadowWrites[1].pImageInfo = &shadowSampled;
+		shadowWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; shadowWrites[2].pBufferInfo = &shadowWhere;
+		vkUpdateDescriptorSets(m_Device, 3, shadowWrites, 0, nullptr);
+		VkPushConstantRange shadowRange{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CloudShadowPushConstants) };
+		VkDescriptorSetLayout shadowLayouts[] = { shadowLayout, m_AtmosphereManager.getRenderDescriptorLayout() };
+		VkPipelineLayoutCreateInfo shadowLayoutCI = vkinit::pipeline_layout_create_info();
+		shadowLayoutCI.setLayoutCount = 2;
+		shadowLayoutCI.pSetLayouts = shadowLayouts;
+		shadowLayoutCI.pushConstantRangeCount = 1;
+		shadowLayoutCI.pPushConstantRanges = &shadowRange;
+		VkPipelineLayout shadowPipelineLayout;
+		VK_CHECK(vkCreatePipelineLayout(m_Device, &shadowLayoutCI, nullptr, &shadowPipelineLayout));
+		m_CloudShadowEffect = loadComputeShader("src/shaders/bin/cloudshadow.comp.spv", "cloud shadow bake", shadowPipelineLayout);
+		m_DeletionQueue.push([this, mapLayout, shadowLayout]() {
+			vkDestroyPipelineLayout(m_Device, m_CloudShadowEffect.layout, nullptr);
+			vkDestroyDescriptorSetLayout(m_Device, shadowLayout, nullptr);
 			vkDestroyPipelineLayout(m_Device, m_CloudMapEffect.layout, nullptr);
 			vkDestroyDescriptorSetLayout(m_Device, mapLayout, nullptr);
 			vkDestroyImageView(m_Device, m_CloudMap.imageView, nullptr);
@@ -1799,6 +1830,35 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 			barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
 			barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 			barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_UNIFORM_READ_BIT;
+			vkCmdPipelineBarrier2(cmd, &dependency);
+		}
+
+		// the cloud shadow, baked into g for the window around the camera: every frame (the sun moves, the weather
+		// eases in), one dispatch instead of 4 density samples in every lit pixel, froxel and far fog step
+		if(m_CloudMapValid && atmosphere.clouds > 0.5f && atmosphere.cloudShadows > 0.5f && m_SunDir.y > 0.03f) {
+			VkMemoryBarrier2 barrier{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+			VkDependencyInfo dependency{ .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+			dependency.memoryBarrierCount = 1;
+			dependency.pMemoryBarriers = &barrier;
+			barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT; // last frame's readers, the map / info just written
+			barrier.srcAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+			barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+			barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_UNIFORM_READ_BIT;
+			vkCmdPipelineBarrier2(cmd, &dependency);
+			CloudShadowPushConstants shadow{};
+			shadow.size = glm::ivec2(CLOUD_SHADOW_WINDOW);
+			shadow.start = glm::ivec2(glm::floor(camWorldKm / texel)) - CLOUD_SHADOW_WINDOW / 2;
+			shadow.sun = glm::vec4(m_SunDir, 0.0f);
+			shadow.texel = texel;
+			VkDescriptorSet shadowSets[] = { m_CloudShadowSet, m_AtmosphereManager.getRenderDescriptor() };
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudShadowEffect.pipeline);
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudShadowEffect.layout, 0, 2, shadowSets, 0, nullptr);
+			vkCmdPushConstants(cmd, m_CloudShadowEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(shadow), &shadow);
+			vkCmdDispatch(cmd, (CLOUD_SHADOW_WINDOW + 7) / 8, (CLOUD_SHADOW_WINDOW + 7) / 8, 1);
+			barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+			barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+			barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+			barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT;
 			vkCmdPipelineBarrier2(cmd, &dependency);
 		}
 	}

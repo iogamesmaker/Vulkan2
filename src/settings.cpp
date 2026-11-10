@@ -204,15 +204,18 @@ void Application::drawSettings() {
 	ImGui::TextDisabled("Full resolution (Ultra):");
 	ImGui::SameLine();
 	check("SSAO##full", &s.fullResSSAO);
-	ImGui::SameLine();
-	check("Clouds##full", &s.fullResClouds);
-	ImGui::SetItemTooltip("Rendered at full instead of half resolution: sharper, no halos around thin objects, ~4x the cost each");
+	ImGui::SetItemTooltip("Rendered at full instead of half resolution: sharper, no halos around thin objects, ~4x the cost");
 	slider("Bloom", &s.bloom, 0.0f, 0.2f, "%.3f");
 
 	ImGui::SeparatorText("Sky");
 	check("Clouds", &s.clouds);
 	ImGui::SameLine();
 	check("Atmospheric haze", &s.aerialPerspective);
+	{
+		const char* resolutions[] = { "Quarter", "Half", "Full" };
+		if(ImGui::Combo("Cloud resolution", &s.cloudResolution, resolutions, 3)) changed = true;
+		ImGui::SetItemTooltip("The volumetric clouds and the far fog. Quarter: ~3x cheaper than half, a little softer (the clouds are soft anyway, thin things in front of them get a slightly wider halo). Full: ~4x the cost of half");
+	}
 	check("Volumetric fog", &s.volumetricFog);
 	ImGui::SetItemTooltip("Mist pooling in the valleys (thickest around sunrise), haze, and light shafts through the trees");
 	ImGui::BeginDisabled(!s.volumetricFog);
@@ -249,9 +252,9 @@ void Application::applySettings() {
 
 	if(s.vsync != m_Vsync || s.renderScale != m_RenderScale) m_Resized = true;
 	// the effect images are recreated at their new resolution along with the swapchain
-	if(s.fullResSSAO != m_FullResSSAO || s.fullResClouds != m_FullResClouds) m_Resized = true;
+	if(s.fullResSSAO != m_FullResSSAO || s.cloudResolution != m_CloudResolution) m_Resized = true;
 	m_FullResSSAO = s.fullResSSAO;
-	m_FullResClouds = s.fullResClouds;
+	m_CloudResolution = s.cloudResolution;
 	m_Vsync = s.vsync;
 	m_RenderScale = s.renderScale;
 	m_TAA = s.taa;

@@ -1,8 +1,8 @@
 #version 450
 // the cloud coverage as a lookup table around the camera (clouds.glsl, CLOUD_COVERAGE_MAP): the warped fbm the
 // cumulus, their shadows and the light shafts all evaluate many times per pixel, once per texel instead.
-// the shape before the coverage threshold (clouds.glsl's cloudShape): r = 3 octaves (the cumulus), g = 4 octaves (the
-// shadows), b = the weather field (weatherCells), a = the billows (also the cumulus' uneven bases). wraps (a torus): when the camera / wind moved, only
+// the shape before the coverage threshold (clouds.glsl's cloudShape): r = 3 octaves (the cumulus), g = the clouds' shadow
+// (cloudshadow.comp bakes it every frame, 1 here), b = the weather field (weatherCells), a = the billows (also the cumulus' uneven bases). wraps (a torus): when the camera / wind moved, only
 // the strips it moved into are redone (Application::drawLighting), the coverage changing needs nothing
 
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -29,6 +29,5 @@ void main() {
 	vec2 worldKm = (vec2(global) + 0.5) * pc.texel;
 	vec2 p;
 	float shape3 = cloudShape(worldKm, 3, p);
-	float shape4 = cloudShape(worldKm, 4, p);
-	imageStore(coverageMap, physical, vec4(shape3, shape4, weatherCells(worldKm), cloudBillowNoise(p)));
+	imageStore(coverageMap, physical, vec4(shape3, 1.0, weatherCells(worldKm), cloudBillowNoise(p)));
 }

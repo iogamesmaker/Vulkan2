@@ -48,7 +48,7 @@ struct GraphicsSettings {
 	// full instead of half resolution: sharper AO in grass / under trees, no halo around thin things. each roughly
 	// 4x its half resolution cost (the clouds are the expensive one, ~1-3ms more at 1080p on an RTX 4060)
 	bool fullResSSAO = false;
-	bool fullResClouds = false;
+	int cloudResolution = 1; // the volumetric clouds (and the far fog): 0 = quarter, 1 = half, 2 = full resolution
 	float bloom = 0.015f; // the mix of the bloom chain, energy conserving
 
 	// sky
@@ -104,6 +104,7 @@ inline GraphicsSettings qualityPreset(Quality q) {
 		s.grassRange = 0; s.treeDensity = 0.7f; s.groundCoverDensity = 0.5f;
 		s.ssao = false; s.contactShadows = false; s.bounceLight = false;
 		s.volumetricFog = false;
+		s.cloudResolution = 0; // quarter: the clouds are soft, the temporal resolve hides most of it
 		break;
 	case Quality::Medium:
 		s.volumetricFog = false;
@@ -121,7 +122,7 @@ inline GraphicsSettings qualityPreset(Quality q) {
 		s.shadowSmoothing = 4;
 		s.shadowResolution = 2; // 4096: ~4cm texels around the player
 		s.treeDensity = 1.3f;
-		s.fullResSSAO = true; s.fullResClouds = true;
+		s.fullResSSAO = true; s.cloudResolution = 2;
 		s.fogQuality = 1;
 		break;
 	default: break;

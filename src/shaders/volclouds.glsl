@@ -106,35 +106,51 @@ float cumulusDensity(vec2 worldKm, float hKm, vec2 wind, int detail) {
 	return max(cloudRemap(d, billows * 0.52, 1.0, 0.0, 1.0), cloudRemap(sheet, billows * 0.3, 1.0, 0.0, 1.0));
 }
 
-// the clouds' shadow on whatever is at worldKm (the cloud wind included, like cumulusDensity's), altitudeKm above
-// the ground: the sun ray from there up through the same clouds clouds.comp marches, the dome as tall as the
+// the light that comes through the clouds above underKm (a point on the cloud base, the cloud wind included like
+// cumulusDensity's): the sun ray from there up through the same clouds clouds.comp marches, the dome as tall as the
 // weather grows it here (a storm tower shades far more than a fair weather puff), 4 samples up through it. the lobes
-// carve the march's clouds smaller than their dome, their average carving is taken off here. (the shadows were a
-// 2D layer of a different noise at the cloud base: they didn't line up with the clouds above them)
-float cloudShadow(vec2 worldKm, float altitudeKm, vec3 sunDir) {
+// carve the march's clouds smaller than their dome, their average carving is taken off here. cloudshadow.comp bakes
+// it into the coverage map for the window around the camera
+float cloudShadowRay(vec2 underKm, vec3 sunDir) {
 	if (ubo.clouds < 0.5 || (ubo.cloudCoverage <= 0.0 && ubo.weather3.x <= 0.0) || sunDir.y <= 0.03) return 1.0;
-	// where the sun ray crosses the clouds: towards sunset that point runs off to infinity (1 / sun height) and the
-	// shadows swept across the land as fast as the sun sank. capped at ~9 degrees, faded out under ~9: at sunset the
-	// light comes through so much air that it's soft anyway
 	float slant = max(sunDir.y, 0.15);
 	vec2 drift = sunDir.xz / slant; // km sideways per km up
-	float up = max(ubo.cloudAltitude - altitudeKm, 0.0);
-	vec2 under = worldKm + drift * up;
-	float core = weatherCellCore(cloudWeatherCells(under)) * ubo.weather3.x;
+	float core = weatherCellCore(cloudWeatherCells(underKm)) * ubo.weather3.x;
 	float thickness = min(CUMULUS_THICKNESS * (1.0 + core * STORM_TOWER), cloudSlabThickness());
 	const int SAMPLES = 4;
 	float dh = thickness / float(SAMPLES);
 	float column = 0.0;
 	for (int i = 0; i < SAMPLES; i++) {
 		float h = (float(i) + 0.5) * dh;
-		float d = cumulusDensity(under + drift * h, h, vec2(0.0), 0);
+		float d = cumulusDensity(underKm + drift * h, h, vec2(0.0), 0);
 		column += cloudRemap(d, 0.25, 1.0, 0.0, 1.0) * dh;
 	}
 	float tau = column * ubo.cloudDensity * 28.0 / slant; // the way through along the sun ray
 	// beer, plus the light the cloud scatters down through itself and out of its sides: under a cloud it's dim, not
 	// black (beer alone left hard edged pools of night that read as lakes), and a thin one lets a soft glow through
 	float beer = exp(-tau);
-	float through = beer + (1.0 - beer) * 0.18 * exp(-tau * 0.05);
+	return beer + (1.0 - beer) * 0.18 * exp(-tau * 0.05);
+}
+
+// how far from the coverage map's centre (~ the camera) the bake reaches, km (cloudshadow.comp's window is 48km
+// across, the map re-centres every km)
+const float CLOUD_SHADOW_REACH = 22.5;
+
+// the clouds' shadow on whatever is at worldKm (the cloud wind included), altitudeKm above the ground
+float cloudShadow(vec2 worldKm, float altitudeKm, vec3 sunDir) {
+	if (ubo.clouds < 0.5 || (ubo.cloudCoverage <= 0.0 && ubo.weather3.x <= 0.0) || sunDir.y <= 0.03) return 1.0;
+	// where the sun ray crosses the cloud base: towards sunset that point runs off to infinity (1 / sun height) and
+	// the shadows swept across the land as fast as the sun sank. capped at ~9 degrees, faded out under ~9: at sunset
+	// the light comes through so much air that it's soft anyway
+	float slant = max(sunDir.y, 0.15);
+	vec2 under = worldKm + sunDir.xz / slant * max(ubo.cloudAltitude - altitudeKm, 0.0);
+	float through;
+#ifdef CLOUD_COVERAGE_MAP
+	if (cloudMapInfo.w > 0.5 && all(lessThan(abs(under - cloudMapInfo.xy), vec2(CLOUD_SHADOW_REACH))))
+		through = textureLod(cloudCoverageMap, cloudMapUV(under), 0.0).g; // baked (cloudshadow.comp)
+	else
+#endif
+		through = cloudShadowRay(under, sunDir);
 	return mix(1.0, through, smoothstep(0.03, 0.15, sunDir.y));
 }
 

@@ -1,0 +1,39 @@
+#version 450
+// the clouds' shadow baked into the coverage map's g channel (cloudmap.comp leaves it at 1), every frame for a
+// window around the camera: the sun ray from the cloud base up through the cumulus (volclouds.glsl's
+// cloudShadowRay, 4 density samples). the lighting, the volumetric fog and the far fog then read it with one lookup
+// instead of each marching it again per pixel / froxel / step (it cost ~1.5ms in the lighting alone at 1080p)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba16f, set = 0, binding = 0) uniform image2D coverageImage; // the same map, written (g only)
+layout(set = 0, binding = 1) uniform sampler2D cloudCoverageMap;	  // and read (r, b, a: the clouds' shape)
+layout(std140, set = 0, binding = 2) uniform CloudMapInfo { vec4 cloudMapInfo; };
+
+#define ATMOSPHERE_SET 1
+#define ATMOSPHERE_BINDING 4
+#include "atmosphere.glsl"
+#define CLOUD_COVERAGE_MAP
+#include "clouds.glsl"
+#include "volclouds.glsl"
+
+layout(push_constant) uniform constants {
+	ivec2 start; // the window's first texel, in global texel coordinates (world km / texel, floored)
+	ivec2 size;
+	vec4 sun;	 // xyz = the sun's direction
+	float texel; // km per texel
+} pc;
+
+void main() {
+	ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(id, pc.size))) return;
+	ivec2 global = pc.start + id;
+	ivec2 mapSize = imageSize(coverageImage);
+	ivec2 physical = (global % mapSize + mapSize) % mapSize; // a torus, like cloudmap.comp
+	vec2 underKm = (vec2(global) + 0.5) * pc.texel;
+	// (r, b and a are written back unchanged: other texels' rays read them through the sampler at the same time,
+	// the same bits either way)
+	vec4 t = imageLoad(coverageImage, physical);
+	t.g = cloudShadowRay(underKm, pc.sun.xyz);
+	imageStore(coverageImage, physical, t);
+}

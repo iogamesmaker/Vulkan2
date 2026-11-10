@@ -62,33 +62,39 @@ ShadowLookup shadowLookup(int set, int cascade, vec3 worldPos, vec3 normal, floa
 }
 
 // PCSS blocker search: the average depth of whatever is between us and the light, over a fixed area. gathers 4
-// texels per tap, 32 depths in total, so the estimate (and the penumbra size) doesn't flicker between pixels.
-// returns the penumbra width in world units (sun's angular size * blocker distance), < 0 when nothing's in the way
-float penumbraWidth(ShadowLookup s, mat2 rotation) {
+// texels per tap, 24 depths in total, so the estimate (and the penumbra size) doesn't flicker between pixels.
+// returns the penumbra width in world units (sun's angular size * blocker distance), < 0 when nothing's in the way.
+// umbra: every depth in the search area blocks, deep in the shade (a forest floor, most of it): the filter would
+// only find shadow too, it's skipped
+float penumbraWidth(ShadowLookup s, mat2 rotation, out bool umbra) {
 	const float searchWorld = 2.5;
 	float searchUV = max(searchWorld, s.texelWorld * 3.0) / s.width;
 	float bias = 2.0 * s.texelWorld / s.depthRange;
 	float sum = 0.0, count = 0.0;
-	for (int i = 0; i < 8; i++) {
-		vec4 d = textureGather(shadowDepth, vec3(s.coord.xy + rotation * vogelDisk(i, 8) * searchUV, s.layer), 0);
+	const int TAPS = 6;
+	for (int i = 0; i < TAPS; i++) {
+		vec4 d = textureGather(shadowDepth, vec3(s.coord.xy + rotation * vogelDisk(i, TAPS) * searchUV, s.layer), 0);
 		vec4 blocking = step(d, vec4(s.coord.z - bias));
 		sum += dot(d, blocking);
 		count += dot(blocking, vec4(1.0));
 	}
+	umbra = count >= float(TAPS * 4);
 	if (count == 0.0) return -1.0;
 	float blockerDistance = (s.coord.z - sum / count) * s.depthRange; // world units
 	const float sunRadius = 0.0093; // the sun's angular radius for the penumbras (~2x real), the sky draws it bigger
 	return blockerDistance * tan(sunRadius) * 2.0 * shadowData.params.x;
 }
 
-// every tap is a hardware 2x2 bilinear comparison, so 10 taps already blend 40 texels
+// every tap is a hardware 2x2 bilinear comparison, so 8 taps already blend 32 texels (the screen space shadow
+// filter, shadowresolve.comp, smooths the rest)
 float filterShadow(ShadowLookup s, float penumbra, float minRadius, mat2 rotation) {
 	float radiusUV = clamp(max(penumbra, minRadius), s.texelWorld * 1.5, 6.0) / s.width;
 	float lit = 0.0;
-	for (int i = 0; i < 10; i++) {
-		lit += texture(shadowMap, vec4(s.coord.xy + rotation * vogelDisk(i, 10) * radiusUV, s.layer, s.coord.z));
+	const int TAPS = 8;
+	for (int i = 0; i < TAPS; i++) {
+		lit += texture(shadowMap, vec4(s.coord.xy + rotation * vogelDisk(i, TAPS) * radiusUV, s.layer, s.coord.z));
 	}
-	return lit / 10.0;
+	return lit / float(TAPS);
 }
 
 // one cascade, crossfaded between the two keyframe sets by how far the sun has travelled between them. dithered:
@@ -110,8 +116,10 @@ float sampleCascade(int cascade, vec3 worldPos, vec3 normal, float NdotL, mat2 r
 		return lit * 0.25;
 	}
 
-	float penumbra = penumbraWidth(s, rotation);
+	bool umbra;
+	float penumbra = penumbraWidth(s, rotation, umbra);
 	if (penumbra < 0.0) return 1.0; // nothing in the way
+	if (umbra && penumbra <= 2.5) return 0.0; // all of the search area in shadow, and the penumbra fits inside it
 	return filterShadow(s, penumbra, minRadius, rotation);
 }
 
