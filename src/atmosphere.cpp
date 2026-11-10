@@ -429,9 +429,10 @@ void Atmosphere::setDefaults() {
 	AtmosphereUBO& d = m_AtmosphereData;
 
 	d.rayleighscale	   = 8.0f;
-	d.miescale		   = 1.2f;
+	d.miescale		   = 1.4f;
 	d.rayleigh		   = glm::vec3(5.802, 13.558, 33.100) * glm::vec3(0.001);
-	d.mie			   = glm::vec3(0.003996); // scattering, extinction is 1.11x this
+	d.mie			   = glm::vec3(0.0055); // scattering, extinction is 1.11x this. ~1.7x the textbook clear day: a humid
+											   // summer haze, distance reads as layers of softer, warmer air
 	d.mieg			   = 0.8f;
 	d.absorbtion	   = glm::vec3(0.000650,0.001881,0.000085);
 	d.groundAlbedo	   = glm::vec3(0.16f, 0.17f, 0.12f); // roughly the terrain, it's what you see past the edge of the world
@@ -634,6 +635,7 @@ void Atmosphere::update(VkCommandBuffer cmd, const glm::mat4& view, const glm::m
 	m_PostPushConstants.exposure = std::exp2(m_ExposureEV);
 	m_PostPushConstants.deltaTime = m_Deltatime;
 	m_PostPushConstants.bloomStrength = m_BloomStrength;
+	m_PostPushConstants.time = std::fmod(m_PostPushConstants.time + m_Deltatime, 60.0f);
 
 	// sky view
 	vkutil::transition_image(cmd, skyview.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);

@@ -76,6 +76,32 @@ vec3 barkBRDF(vec3 N, vec3 V, vec3 L, vec3 albedo, float roughness) {
 }
 
 
+// GGX specular (height correlated Smith, Schlick fresnel) for the non-metal materials, cosine included
+float specularGGX(vec3 N, vec3 V, vec3 L, float roughness, float F0) {
+	float NdotL = max(dot(N, L), 0.0);
+	if (NdotL <= 0.0) return 0.0;
+	vec3 H = normalize(V + L);
+	float NdotV = max(dot(N, V), 1e-4), NdotH = max(dot(N, H), 0.0);
+	float a = roughness * roughness;
+	float a2 = a * a;
+	float d = NdotH * NdotH * (a2 - 1.0) + 1.0;
+	float D = a2 / (PI * d * d);
+	float visibility = 0.5 / (NdotL * sqrt(NdotV * NdotV * (1.0 - a2) + a2) + NdotV * sqrt(NdotL * NdotL * (1.0 - a2) + a2));
+	float F = F0 + (1.0 - F0) * pow(1.0 - max(dot(H, V), 0.0), 5.0);
+	return D * visibility * F * NdotL;
+}
+
+// the split sum's pre-integrated environment BRDF, analytic (Karis' mobile fit): how much of the surroundings a
+// surface of this roughness reflects at this view angle
+float environmentBRDF(float roughness, float NdotV, float F0) {
+	const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+	const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+	vec4 r = roughness * c0 + c1;
+	float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+	vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;
+	return F0 * ab.x + ab.y;
+}
+
 // diffuse with a wrap: 0 = lambert (terrain, rocks), thin translucent things let some light round the terminator
 // (grass a little, leaf canopies more). the same model for all, so the ground, the grass on it and the trees
 // next to it react to the sun the same way
@@ -225,6 +251,13 @@ void main() {
 	int material = int(materialData.r * 255.0 + 0.5);
 	float roughness = materialData.g;
 	float directScale = materialData.b;
+	// the specular every material gets now (nothing was shiny but bark: the land looked matte, painted): the leaves'
+	// wax and the grass blades are glossy, the bare ground rough, snow in between (a soft sheen towards the sun).
+	// terrain.frag writes 1 (its cache has no room for it), so the snow is told apart by its albedo
+	if (material == MAT_LEAF) roughness = min(roughness, 0.55);
+	else if (material == MAT_IMPOSTOR) roughness = 0.65;
+	else if (material == MAT_GRASS) roughness = 0.5;
+	else if (material == MAT_TERRAIN && roughness > 0.99) roughness = mix(0.85, 0.5, smoothstep(0.4, 0.65, min(albedo.r, min(albedo.g, albedo.b))));
 
 	// the weather on the ground (weather.cpp): fresh snow settling on what faces up, in patches that grow together as
 	// it builds up; rain darkening everything it soaks and filling the flat spots with puddles
@@ -284,16 +317,23 @@ void main() {
 		direct = albedo / PI * (sunLight * (wrapDiffuse(normal, sunDir, 0.5) + backlit) + moonLight * wrapDiffuse(normal, moonDir, 0.5));
 	} else if (material == MAT_GRASS) {
 		// the normal is mostly the ground's (foliage.frag), a small wrap for the thin blades, the same light through
-		// them as leaves when backlit (weaker, they're thin) and a soft sheen of their own colour towards the sun
+		// them as leaves when backlit (weaker, they're thin). their sheen is the GGX highlight below
 		// light through the blades when the sun is behind them: wider and stronger than before, and tinted like light
 		// through a leaf (brighter yellow green), so backlit meadows glow
 		float backlit = pow(max(dot(viewDir, sunDir), 0.0), 4.0) * 0.4;
-		float sheen = pow(max(dot(normal, normalize(sunDir - viewDir)), 0.0), 24.0) * 0.2;
 		vec3 transmitted = albedo * vec3(1.1, 1.35, 0.6);
-		direct = albedo / PI * (sunLight * (wrapDiffuse(normal, sunDir, 0.25) + sheen) + moonLight * wrapDiffuse(normal, moonDir, 0.25))
+		direct = albedo / PI * (sunLight * wrapDiffuse(normal, sunDir, 0.25) + moonLight * wrapDiffuse(normal, moonDir, 0.25))
 			   + transmitted / PI * sunLight * backlit;
 	} else { // terrain
 		direct = albedo / PI * (sunLight * wrapDiffuse(normal, sunDir, 0.0) + moonLight * wrapDiffuse(normal, moonDir, 0.0));
+	}
+	// the sun's (and moon's) highlight on everything that isn't bark (barkBRDF has its own)
+	float specularF0 = 0.04;
+	if (material != MAT_BARK) {
+		float sheenScale = material == MAT_GRASS || material == MAT_LEAF ? 0.8 : 1.0;
+		// (only the one that's up: the other one's light is zero, its GGX was wasted work)
+		vec3 lightUp = sunDir.y > 0.0 ? sunLight : moonLight;
+		direct += lightUp * specularGGX(normal, -viewDir, shadowDir, roughness, specularF0) * sheenScale;
 	}
 	direct *= directScale; // * shadow in shadowresolve.comp
 	// the sun / moon handover: the shadow map switches lights while one is right at the horizon (its shadows fade
@@ -337,13 +377,18 @@ void main() {
 	vec2 skySize = vec2(textureSize(skyviewLUT, 0));
 	vec3 zenith  = texture(skyviewLUT, vec2(0.5, 1.0 - 0.5 / skySize.y)).rgb;
 	vec3 horizon = texture(skyviewLUT, vec2(0.25, 0.6)).rgb;
-	vec3 skyLight = overcastSky(mix(horizon, zenith, normal.y * 0.5 + 0.5)) * PI * ubo.sunIlluminance; // a grey lid when it's overcast
+	// plus the sky the way this surface faces: the side towards a low sun gets its warm glow, the other side the
+	// cool blue (the fixed horizon sample 90 degrees off the sun gave every shaded side the same blue-grey)
+	vec3 facing = normalize(vec3(normal.x, max(normal.y, 0.0) + 0.3, normal.z));
+	vec3 skyFacing = texture(skyviewLUT, skyviewUV(camKm, facing, sunDir)).rgb;
+	vec3 skyLight = overcastSky(mix(mix(horizon, zenith, normal.y * 0.5 + 0.5), skyFacing, 0.5)) * PI * ubo.sunIlluminance; // a grey lid when it's overcast
 	// one bounce off the sunlit ground: whatever faces down / sideways picks up the ground's colour, not just sky
 	// (the irradiance from a lambert ground with albedo ~0.2 lit by the sun, over the lower hemisphere)
 	float facingDown = 0.5 - 0.5 * normal.y;
 	// (analytic, the far field: open terrain barely bounces onto itself on screen, most of this comes from ground off
 	// screen or far away)
-	skyLight += sunLight * max(sunDir.y, 0.0) * vec3(0.2, 0.2, 0.15) * facingDown * pc.effects.w;
+	// (the land's colour: grassy green-brown, a bit stronger than before, the shade under things was only sky)
+	skyLight += sunLight * max(sunDir.y, 0.0) * vec3(0.26, 0.27, 0.16) * (facingDown * 0.8 + 0.1) * pc.effects.w;
 	// the moonlit sky: the sky LUT has next to nothing at night, so moon shadows went pitch black. a faint bluish fill
 	skyLight += moonLight * max(moonDir.y, 0.0) * vec3(0.1, 0.12, 0.18) * (normal.y * 0.3 + 0.7);
 	vec2 heightmapSize = vec2(textureSize(heightmapClimate, 0));
@@ -353,13 +398,38 @@ void main() {
 	// under a forest the crowns hide much of the sky: the floor, the trunks and the grass between them get less of it
 	// (the gaps let some through), the crowns a little less (they're the canopy, the outer leaves see the sky)
 	float canopySky = 1.0 - skyMap.g * (crown ? 0.3 : 0.75);
+	// and the light coming through those crowns: a forest's shade glows a warm green (sunlight through the leaves,
+	// bounced between them), not the sky's blue
+	vec3 throughCrowns = sunLight * max(sunDir.y, 0.0) * skyMap.g * vec3(0.05, 0.075, 0.02) * (crown ? 0.5 : 1.0);
 	// the AO / shafts and cumulus: half resolution, or full on Ultra (each its own setting)
 	float viewZ = 0.02 / depth; // reversed z, ~ view distance
 	vec2 halfRes = pc.extra.z > 0.5 ? denoiseSSAO(screenUV, viewZ) : upsampleEffect(ssaoTexture, p, screenUV, viewZ, vec4(1.0)).rg;
 	vec4 cloud = volumetricClouds ? upsampleEffect(cloudTexture, p, screenUV, viewZ, vec4(0.0, 0.0, 0.0, 1.0)) : vec4(0.0);
 	float ssao = pc.effects.z > 0.0 ? halfRes.r : 1.0;
 	if (material == MAT_GRASS) ssao = mix(1.0, ssao, 0.25); // foliage: mostly its own root darkening, the noise flickers on thin cards
-	vec3 color = albedo / PI * skyLight * ao * ssao * skyVisible * skyVisible * canopySky * mix(0.8, 1.0, clouds); // a little less sky under a cloud
+	// multi-bounce occlusion (Jimenez et al., GTAO): light bounces around inside a crevice off its own walls, so bright
+	// surfaces darken less and the shade takes their colour (plain AO greyed every crevice the same)
+	float occlusion = ao * ssao;
+	vec3 aoA = 2.0404 * albedo - 0.3324, aoB = -4.7951 * albedo + 0.6417, aoC = 2.7552 * albedo + 0.6903;
+	vec3 colouredOcclusion = max(vec3(occlusion), ((occlusion * aoA + aoB) * occlusion + aoC) * occlusion);
+	vec3 color = albedo / PI * (skyLight * skyVisible * skyVisible * canopySky * mix(0.8, 1.0, clouds) + throughCrowns) * colouredOcclusion; // a little less sky under a cloud
+	// the sky reflected: sharp for the smooth surfaces, blurred towards the average sky for the rough ones (the sky
+	// LUT has no mips), the ground's bounce colour for what faces down. occluded like the ambient (a forest floor
+	// doesn't mirror the sky through the crowns)
+	{
+		float NdotV = max(dot(normal, -viewDir), 1e-4);
+		float reflectance = environmentBRDF(roughness, NdotV, specularF0);
+		vec3 R = reflect(viewDir, normal);
+		vec3 skyR = overcastSky(texture(skyviewLUT, skyviewUV(camKm, vec3(R.x, max(R.y, 0.02), R.z), sunDir)).rgb) * ubo.sunIlluminance;
+		skyR = mix(skyR, skyLight / PI, smoothstep(0.2, 0.9, roughness)); // rough: the hemisphere's average
+		skyR = mix(skyR, skyLight / PI * vec3(0.5, 0.48, 0.4), smoothstep(0.0, -0.3, R.y)); // down: the ground's bounce
+		float specularOcclusion = ao * ssao * skyVisible * skyVisible * canopySky;
+		// grass blades and leaves hide most of the sky from each other (only the outermost catch it), rough ground
+		// half of it in its own bumps: at full strength every meadow and crown went a washed out blue-grey
+		float selfOcclusion = material == MAT_GRASS ? 0.25 : (material == MAT_LEAF || material == MAT_IMPOSTOR ? 0.35 : (material == MAT_BARK ? 0.4 : mix(0.5, 1.0, smoothstep(0.85, 0.5, roughness))));
+		reflectance *= selfOcclusion;
+		color = color * (1.0 - reflectance) + skyR * reflectance * specularOcclusion;
+	}
 	// lightning: the whole sky lights up blue-white for an instant, from above
 	color += albedo * vec3(0.75, 0.8, 1.0) * ubo.weather.z * ubo.sunIlluminance * 0.12 * (0.35 + 0.65 * max(normal.y, 0.0)) * ao;
 	// wet surfaces reflect the sky: a thin sheen everywhere it rained, mirror-like in the puddles

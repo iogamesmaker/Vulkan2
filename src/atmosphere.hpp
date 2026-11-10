@@ -89,7 +89,7 @@ struct PostPushConstants {
 	float exposure;		 // compensation (2^EV) on top of the automatic exposure
 	float deltaTime;	 // seconds since the last frame (the exposure adapts over time)
 	float bloomStrength; // the mix of the bloom chain
-	float pad;
+	float time;			 // seconds, wraps every minute (post.comp's film grain)
 };
 static_assert(sizeof(PostPushConstants) <= 128, "push constants are only guaranteed to have 128 bytes");
 

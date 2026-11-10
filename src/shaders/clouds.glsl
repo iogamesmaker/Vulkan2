@@ -32,8 +32,10 @@ float cloudFbm(vec2 p, int octaves) {
 // puffs (~1km) and big heaps (~3km), mixed by a slow noise (~12km) so the sky isn't one size of cloud everywhere,
 // and the coverage swells and thins regionally on top (~20km). p = the small pattern's warped position (billows)
 float cloudShape(vec2 worldKm, int octaves, out vec2 p) {
-	float sizeMix = smoothstep(0.3, 0.7, cloudNoise(worldKm * 0.08 + vec2(-33.1, 5.9)));
-	float region = cloudNoise(worldKm * 0.045 + vec2(71.3, -12.7)) - 0.5;
+	// big clouds about half the time (they were the exception: a sky of similar small puffs), and the sky in fields:
+	// a slow regional swing of the coverage, so there are banks of cloud with real clear gaps between them
+	float sizeMix = smoothstep(0.2, 0.6, cloudNoise(worldKm * 0.08 + vec2(-33.1, 5.9)));
+	float region = cloudNoise(worldKm * 0.045 + vec2(71.3, -12.7)) * 0.7 + cloudNoise(worldKm * 0.017 + vec2(-5.3, 40.1)) * 0.3 - 0.5;
 	p = worldKm * 0.8;
 	p += (vec2(cloudNoise(p * 0.35 + 3.1), cloudNoise(p * 0.35 - 8.7)) - 0.5) * 1.6; // billowy, irregular outlines
 	float small = sizeMix < 0.999 ? cloudFbm(p, octaves) : 0.0;
@@ -47,7 +49,7 @@ float cloudShape(vec2 worldKm, int octaves, out vec2 p) {
 	float mean = 0.5 * (1.0 - pow(0.5, float(octaves)));
 	float spread = inversesqrt(sizeMix * sizeMix + (1.0 - sizeMix) * (1.0 - sizeMix));
 	float n = mean + (mix(small, large, sizeMix) - mean) * spread;
-	return n + region * 0.14;
+	return n + region * 0.24;
 }
 
 // ---- the weather field: where the weather is. a slow noise (~9km cells) in the same wind carried space as the

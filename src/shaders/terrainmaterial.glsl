@@ -557,6 +557,16 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	albedo = mix(albedo, vec3(0.085, 0.15, 0.035) * (0.7 + 0.6 * dot(albedo, vec3(0.3, 0.59, 0.11)) / 0.12), grassiness * 0.35);
 	float dryPatches = smoothstep(0.45, 0.8, valueNoise(snowPos * 0.08 + 31.0) * 0.7 + valueNoise(snowPos * 0.4) * 0.3);
 	albedo *= mix(vec3(1.0), vec3(1.12, 1.04, 0.72), dryPatches * grassiness * 0.6);
+	// the meadows from afar were one smooth green, a golf course: break them up at every scale. slow drifts between
+	// lush and sun-dried (~150m), darker clumps of scrub, tall grass and bracken (a few metres, where the grass rings
+	// don't reach they're what reads as vegetation), and a fine mottle in between
+	float lush = valueNoise(snowPos * 0.012 + 57.0) * 0.65 + valueNoise(snowPos * 0.05 - 9.0) * 0.35;
+	albedo *= mix(vec3(1.0), mix(vec3(0.82, 1.0, 0.86), vec3(1.16, 1.02, 0.74), smoothstep(0.25, 0.75, lush)), grassiness * 0.7);
+	float clumps = valueNoise(snowPos * 0.55 + 3.3) * 0.6 + valueNoise(snowPos * 2.1 - 7.7) * 0.4;
+	float scrub = smoothstep(0.6, 0.78, clumps) * smoothstep(0.35, 0.7, valueNoise(snowPos * 0.07 + 21.0));
+	albedo *= mix(vec3(1.0), vec3(0.52, 0.58, 0.45), scrub * grassiness * 0.85);
+	float mottle = valueNoise(snowPos * 0.22 + 41.0) * 0.6 + valueNoise(snowPos * 0.9) * 0.4;
+	albedo *= mix(1.0, mix(0.86, 1.1, mottle), grassiness);
 
 	// wheat canopy: past the foliage rings (~108m, the cards shrink away from 13.5 world units) a field would be
 	// bare soil, so the ground itself turns into the tops of the plants. the oat atlas' average colour and some

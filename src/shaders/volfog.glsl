@@ -28,7 +28,7 @@ float fogHG(float cosTheta, float g) {
 // water droplets scatter mostly forward (the glow around the sun, beams brightest looking into the light), a little
 // back. toned down from g 0.65 at 3/4: into a low sun the whole view went under a bright veil. ~5x now, the beams read
 float fogPhase(float cosTheta) {
-	return mix(fogHG(cosTheta, -0.2), fogHG(cosTheta, 0.55), 0.6);
+	return mix(fogHG(cosTheta, -0.2), fogHG(cosTheta, 0.65), 0.65); // (a strong forward lobe: the shafts glow towards the sun)
 }
 
 // what drives the fog (the push constants of whoever evaluates it)
@@ -62,10 +62,11 @@ float fogExtinction(float height, float ground, float around, vec3 worldMetres, 
 	}
 	// haze: thin everywhere close to the ground, fading over a few hundred metres up. the weather thickens it near the
 	// ground: rain and snow to a km or two of visibility, a sandstorm to a few hundred metres (its dust hugs the ground)
-	float haze = exp(-above / 300.0);
+	float haze = exp(-above / 350.0);
 	float weatherHaze = f.weatherHaze * mix(1.0, exp(-above / 120.0) * 1.6, clamp(f.weatherHaze / 5.0, 0.0, 1.0));
-	// (the haze ~6.5km of mean free path near the ground: at 4km it veiled every view, the distance haze is on top)
-	return (mist * 0.025 + haze * 0.00015 * (1.0 + weatherHaze * 10.0)) * f.density * metres;
+	// (the haze ~4.5km of mean free path near the ground: enough for the sun's shafts through trees and past ridges
+	// to show on a clear day. at 3km it veiled every view, the distance haze is on top)
+	return (mist * 0.025 + haze * 0.00019 * (1.0 + weatherHaze * 10.0)) * f.density * metres;
 }
 
 // distance along the view ray (world units) at slice coordinate s (0 = camera, 1 = far)
