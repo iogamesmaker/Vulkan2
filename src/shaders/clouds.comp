@@ -42,7 +42,10 @@ layout(push_constant) uniform constants {
 vec4 marchFarFog(vec3 dir, float tMaxKm, float jitter) {
 	if (ubo.volumetricFog < 0.5) return vec4(0.0);
 	float km = ubo.worldScale; // km per world unit
-	float start = ubo.fogDistance * km, end = min(tMaxKm, 40.0);
+	// not past the render distance (ubo.fogEnd, horizontal): there's no land out there, near the horizon the haze
+	// piled up over the empty void
+	float horizontal = max(length(dir.xz), 1e-4);
+	float start = ubo.fogDistance * km, end = min(min(tMaxKm, 40.0), ubo.fogEnd / horizontal * km);
 	if (end <= start) return vec4(0.0);
 	float metres = km * 1000.0;
 	vec2 hmSize = vec2(textureSize(heightmap, 0));
@@ -81,6 +84,7 @@ vec4 marchFarFog(vec3 dir, float tMaxKm, float jitter) {
 		float around = (textureLod(heightmap, uv, 5.0).a - 0.5) * pc.fog.w;
 		vec3 worldMetres = (pos + vec3(offsetWorld.x, 0.0, offsetWorld.y)) * metres;
 		float sigma = fogExtinction(pos.y, ground, around, worldMetres, metres, inputs) / km; // per km
+		sigma *= 1.0 - smoothstep(ubo.fogEnd * 0.85, ubo.fogEnd, t / km * horizontal); // fades out towards the edge
 		if (sigma <= 1e-6) continue;
 		float altKm = ubo.baseAltitude + pos.y * km;
 		vec3 posKm = vec3(0.0, ubo.radiusbottom + max(altKm, PLANET_RADIUS_OFFSET), 0.0);

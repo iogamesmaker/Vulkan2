@@ -182,7 +182,10 @@ vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, 
 	if (raining && camAlt < ubo.cloudAltitude + slab) {
 		float tBelow = r < bottom ? (dir.y > 0.0 ? hitBottom.y : tMax) : (hitBottom.x > 0.0 ? hitBottom.y : 0.0);
 		float tStart = r < bottom ? 1.5 : max(hitBottom.x, 1.5);
-		float tEnd = min(min(tBelow, tMax), 35.0);
+		// (not past the render distance either: curtains hanging over the void beyond the land)
+		float horizontalKm = max(length(dir.xz), 1e-4);
+		float edgeKm = ubo.fogEnd * ubo.worldScale;
+		float tEnd = min(min(min(tBelow, tMax), 35.0), edgeKm / horizontalKm);
 		if (tEnd > tStart) {
 			const int RAIN_STEPS = 10;
 			float dt = (tEnd - tStart) / float(RAIN_STEPS);
@@ -193,7 +196,8 @@ vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, 
 				vec3 q = camKm + dir * t;
 				if (length(q) > bottom) continue;
 				float precip = localPrecipitation(cloudWeatherCells(q.xz + camWorldKm + wind));
-				float sigma = precip * (snow ? 0.9 : 0.55) * smoothstep(1.5, 3.0, t); // per km: heavy rain ~3km of visibility
+				float sigma = precip * (snow ? 0.9 : 0.55) * smoothstep(1.5, 3.0, t) // per km: heavy rain ~3km of visibility
+							* (1.0 - smoothstep(edgeKm * 0.85, edgeKm, t * horizontalKm));
 				if (sigma <= 0.0) continue;
 				float stepT = exp(-sigma * dt);
 				scattered += viewTransmittance * rainLight * (1.0 - stepT);
