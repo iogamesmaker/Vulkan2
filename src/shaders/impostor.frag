@@ -30,10 +30,8 @@ layout(set = 1, binding = 3) uniform sampler3D aerialLUT;
 
 
 void main() {
-	if (treeFaded(inFade, gl_FragCoord.xy, true)) discard; // inverted dither, see treeFaded
+	// the fade dither and the alpha test are in impostor_prepass.frag: only the visible card gets here (depth EQUAL)
 	vec4 albedoTexel = mix(texture(impostorAlbedo, inUV), texture(impostorAlbedo, inUV2), inBlend);
-	float alpha = (albedoTexel.a - 0.5) / max(fwidth(albedoTexel.a), 1e-4) + 0.5;
-	if (alpha < 0.5) discard;
 
 	vec4 normalTexel = mix(texture(impostorNormal, inUV), texture(impostorNormal, inUV2), inBlend);
 	vec3 baked = normalTexel.xyz * 2.0 - 1.0; // x right, y up, z towards the viewer of the bake

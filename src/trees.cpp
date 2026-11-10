@@ -205,6 +205,7 @@ void Trees::init(Application* engine, TextureLoader& textures, const AllocatedIm
 	CompiledShader bakeShader = engine->loadShader("src/shaders/bin/trees_bake.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
 	CompiledShader impostorVertex = engine->loadShader("src/shaders/bin/impostor.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
 	CompiledShader impostorFragment = engine->loadShader("src/shaders/bin/impostor.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+	CompiledShader impostorPrepass = engine->loadShader("src/shaders/bin/impostor_prepass.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
 
 	auto meshPipeline = [&](VkPipelineLayout layout, VkShaderModule fragment) {
 		PipelineBuilder builder;
@@ -241,18 +242,23 @@ void Trees::init(Application* engine, TextureLoader& textures, const AllocatedIm
 	shadowBuilder.set_depth_format(shadowFormat);
 	m_ShadowPipeline = shadowBuilder.build_pipeline(m_Device);
 
-	PipelineBuilder impostorBuilder;
-	impostorBuilder._pipelineLayout = m_ImpostorPipelineLayout;
-	impostorBuilder.set_shaders(impostorVertex.shader, impostorFragment.shader);
-	impostorBuilder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-	impostorBuilder.set_polygon_mode(VK_POLYGON_MODE_FILL);
-	impostorBuilder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
-	impostorBuilder.set_multisampling_none();
-	impostorBuilder.disable_blending();
-	impostorBuilder.enable_depthtest(true, VK_COMPARE_OP_GREATER);
-	setGBufferTargets(impostorBuilder, true);
-	impostorBuilder.set_depth_format(engine->m_DepthBuffer.imageFormat);
-	m_ImpostorPipeline = impostorBuilder.build_pipeline(m_Device);
+	// depth + alpha test first (with the trees' prepass), then the shading only where its depth matches
+	auto impostorPipeline = [&](VkShaderModule fragment, bool prepass) {
+		PipelineBuilder builder;
+		builder._pipelineLayout = m_ImpostorPipelineLayout;
+		builder.set_shaders(impostorVertex.shader, fragment);
+		builder.set_input_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+		builder.set_polygon_mode(VK_POLYGON_MODE_FILL);
+		builder.set_cull_mode(VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
+		builder.set_multisampling_none();
+		builder.disable_blending();
+		builder.enable_depthtest(prepass, prepass ? VK_COMPARE_OP_GREATER : VK_COMPARE_OP_EQUAL);
+		setGBufferTargets(builder, !prepass);
+		builder.set_depth_format(engine->m_DepthBuffer.imageFormat);
+		return builder.build_pipeline(m_Device);
+	};
+	m_ImpostorPrepassPipeline = impostorPipeline(impostorPrepass.shader, true);
+	m_ImpostorPipeline = impostorPipeline(impostorFragment.shader, false);
 
 	bakeImpostors(engine, meshPipeline, bakeShader.shader);
 
@@ -262,7 +268,7 @@ void Trees::init(Application* engine, TextureLoader& textures, const AllocatedIm
 	writeSet(m_Device, m_ImpostorSet, 1, SAMPLER, &albedoInfo, nullptr);
 	writeSet(m_Device, m_ImpostorSet, 2, SAMPLER, &normalInfo, nullptr);
 
-	for(CompiledShader* shader : { &vertexShader, &fragmentShader, &shadowShader, &bakeShader, &impostorVertex, &impostorFragment })
+	for(CompiledShader* shader : { &vertexShader, &fragmentShader, &shadowShader, &bakeShader, &impostorVertex, &impostorFragment, &impostorPrepass })
 		vkDestroyShaderModule(m_Device, shader->shader, nullptr);
 }
 
@@ -398,6 +404,7 @@ void Trees::destroy() {
 	vkDestroyPipeline(m_Device, m_ShadowPipeline, nullptr);
 	vkDestroyPipeline(m_Device, m_PrepassPipeline, nullptr);
 	vkDestroyPipeline(m_Device, m_ImpostorPipeline, nullptr);
+	vkDestroyPipeline(m_Device, m_ImpostorPrepassPipeline, nullptr);
 	for(VkPipelineLayout layout : { m_RenderPipelineLayout, m_ShadowPipelineLayout, m_ImpostorPipelineLayout, m_Scatter.layout, m_Place.layout })
 		vkDestroyPipelineLayout(m_Device, layout, nullptr);
 	for(VkDescriptorSetLayout layout : { m_PlaceLayout, m_ComputeLayout, m_RenderLayout, m_ImpostorLayout })
@@ -461,22 +468,29 @@ vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFE
 	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, drawStages, drawReads);
 }
 
-void Trees::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet, const std::function<void()>& split) {
-	if(!m_Enabled) {
-		if(split) { split(); split(); } // the timers still need their boundaries
-		return;
-	}
+// depth prepass: leaf cards overlap a lot, this way each pixel gets shaded once. recorded before the terrain's
+// material pass so the ground behind the trunks and leaves is rejected by the depth test instead of shaded
+void Trees::drawPrepass(VkCommandBuffer cmd) {
+	if(!m_Enabled) return;
 	VkDeviceSize vertexOffset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &vertexOffset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-
-	// depth prepass: leaf cards overlap a lot, this way each pixel gets shaded once
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PrepassPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
 	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, 0, LODS * MESHES, sizeof(VkDrawIndexedIndirectCommand)); // every LOD's bins (multiDrawIndirect)
-	if(split) split();
 
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ImpostorPrepassPipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ImpostorPipelineLayout, 0, 1, &m_ImpostorSet, 0, nullptr);
+	vkCmdPushConstants(cmd, m_ImpostorPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
+	vkCmdDrawIndirect(cmd, m_ImpostorCommands.buffer, 0, 1, sizeof(VkDrawIndirectCommand));
+}
+
+void Trees::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet, const std::function<void()>& split) {
+	if(!m_Enabled) {
+		if(split) split(); // the timers still need their boundary
+		return;
+	}
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipeline);
 	VkDescriptorSet sets[] = { m_RenderSet, atmosphereSet, shadowSet };
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipelineLayout, 0, 3, sets, 0, nullptr);

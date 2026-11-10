@@ -39,6 +39,7 @@ public:
 	// scatter the clumps for this frame, call outside of rendering (before it)
 	void update(VkCommandBuffer cmd, const FoliagePushConstants& pc);
 	// inside the main rendering, after the terrain
+	void drawPrepass(VkCommandBuffer cmd);
 	void draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet);
 	// grass near the camera into a shadow cascade
 	void drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj);

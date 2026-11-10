@@ -1401,21 +1401,28 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainLayout, 0, 3, terrainSets, 0, nullptr);
 	drawTerrain(cmd, m_Projection * m_View);
 	split("terrain depth prepass");
+	// the trees' depth too before any material is shaded: the terrain is the most expensive material and a forest
+	// hides most of the ground behind it
+	m_Trees.drawPrepass(cmd);
+	split("tree depth prepass");
+	m_Foliage.drawPrepass(cmd);
+	split("grass depth prepass");
+	// the opaque small things (shaded as they're drawn, they write their own depth) before the terrain too, the
+	// ground under them is never seen
+	m_Props.draw(cmd);
+	split("rocks & logs");
+	m_GroundCover.draw(cmd);
+	split("ground cover");
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainLayout, 0, 3, terrainSets, 0, nullptr);
 	drawTerrain(cmd, m_Projection * m_View);
 	split("terrain");
-	// --- prepass | trees | impostors
-	int treeStage = 0;
-	m_Trees.draw(cmd, m_AtmosphereManager.getRenderDescriptor(), m_Shadows.getDescriptor(m_FrameNumber), [&]() { split(treeStage++ == 0 ? "tree depth prepass" : "trees"); });
+	// --- trees | impostors
+	m_Trees.draw(cmd, m_AtmosphereManager.getRenderDescriptor(), m_Shadows.getDescriptor(m_FrameNumber), [&]() { split("trees"); });
 	split("tree impostors");
 	m_Foliage.draw(cmd, m_AtmosphereManager.getRenderDescriptor(), m_Shadows.getDescriptor(m_FrameNumber));
-	split("grass");
-	m_Props.draw(cmd);
-	split("rocks & logs");
-	m_GroundCover.draw(cmd);
 	vkCmdEndRendering(cmd);
-	mark(cmd, m_DetailedOpaqueTimings ? "ground cover" : "G-buffer pass (breakdown off)");
+	mark(cmd, m_DetailedOpaqueTimings ? "grass" : "G-buffer pass (breakdown off)");
 
 	// --- the sky where nothing drew (depth still 0), straight into the draw image + its direct light target
 	VkRenderingAttachmentInfo skyAttachments[2] = {

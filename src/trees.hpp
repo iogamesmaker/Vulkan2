@@ -33,6 +33,7 @@ public:
 	// scatter for this frame, outside of rendering and before the shadow pass
 	void update(VkCommandBuffer cmd, const FoliagePushConstants& pc);
 	// split (optional) is called after the depth prepass and after the full trees, for the GPU timers
+	void drawPrepass(VkCommandBuffer cmd);
 	void draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet, const std::function<void()>& split = {});
 	void drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj);
 	// the "GPU draw counts" window (drawstats.hpp)
@@ -107,7 +108,7 @@ private:
 	VkDescriptorSet m_PlaceSet, m_ComputeSet, m_RenderSet, m_ImpostorSet;
 	ComputeEffect m_Place, m_Scatter; // pipelines destroyed by the application's deletion queue
 	VkPipelineLayout m_RenderPipelineLayout, m_ShadowPipelineLayout, m_ImpostorPipelineLayout;
-	VkPipeline m_RenderPipeline, m_PrepassPipeline, m_ShadowPipeline, m_ImpostorPipeline;
+	VkPipeline m_RenderPipeline, m_PrepassPipeline, m_ShadowPipeline, m_ImpostorPipeline, m_ImpostorPrepassPipeline;
 
 	FoliagePushConstants m_PushConstants{};
 };

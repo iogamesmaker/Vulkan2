@@ -214,18 +214,20 @@ void Foliage::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 				  VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 }
 
-void Foliage::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet) {
+// depth prepass: wheat fields and meadows are layers upon layers of cards, this way each pixel gets the shading
+// once. recorded before the terrain's material pass, so the ground under a meadow isn't shaded either
+void Foliage::drawPrepass(VkCommandBuffer cmd) {
 	if(!m_Enabled) return;
-
-	// depth prepass: wheat fields and meadows are layers upon layers of cards, this way each pixel gets the
-	// expensive shading (shadows, atmosphere) once
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PrepassPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
 	vkCmdDrawIndirect(cmd, m_Indirect.buffer, 0, 1, sizeof(VkDrawIndirectCommand));
 	vkCmdDrawIndirect(cmd, m_Indirect.buffer, sizeof(VkDrawIndirectCommand) * 2, 1, sizeof(VkDrawIndirectCommand)); // the near ring
 	vkCmdDrawIndirect(cmd, m_Indirect.buffer, sizeof(VkDrawIndirectCommand) * 3, 1, sizeof(VkDrawIndirectCommand)); // the outer rings
+}
 
+void Foliage::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet) {
+	if(!m_Enabled) return;
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipeline);
 	VkDescriptorSet sets[] = { m_RenderSet, atmosphereSet, shadowSet };
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipelineLayout, 0, 3, sets, 0, nullptr);
