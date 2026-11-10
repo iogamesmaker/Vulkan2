@@ -16,7 +16,6 @@ layout(push_constant) uniform constants {
 	ivec2 size;
 	int pass;	// 0 = horizontal, 1 = vertical + add the light
 	int radius; // pixels
-	int absolute; // TEMPORARY: 1 = the frame is a signed difference (the fog slices comparison), store its absolute value
 } pc;
 
 #define MAX_RADIUS 8 // the settings' "shadow smoothing" range
@@ -77,7 +76,6 @@ void main() {
 	} else {
 		vec3 direct = imageLoad(directLight, p).rgb;
 		vec4 color = imageLoad(drawImage, p);
-		vec3 result = color.rgb + direct * shadow;
-		imageStore(drawImage, p, vec4(pc.absolute != 0 ? abs(result) : result, color.a));
+		imageStore(drawImage, p, vec4(color.rgb + direct * shadow, color.a));
 	}
 }

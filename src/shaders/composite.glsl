@@ -21,8 +21,7 @@ struct AtmosphereView {
 
 // aerial perspective, the fog at the edge of the world, the cumulus, the volumetric fog,
 // in that order (far to near). direct: the sun / moon light the shadow filter adds later, scaled the same
-// compareFog (TEMPORARY): the comparison fog volume (more / fewer slices) instead of the normal one
-vec3 compositeAtmosphere(vec3 color, inout vec3 direct, AtmosphereView v, bool compareFog) {
+vec3 compositeAtmosphere(vec3 color, inout vec3 direct, AtmosphereView v) {
 	vec3 viewDir = normalize(v.position - v.campos);
 	float dist = distance(v.position, v.campos);
 	vec3 camKm = vec3(0.0, ubo.radiusbottom + max(ubo.baseAltitude + v.campos.y * ubo.worldScale, PLANET_RADIUS_OFFSET), 0.0);
@@ -61,8 +60,7 @@ vec3 compositeAtmosphere(vec3 color, inout vec3 direct, AtmosphereView v, bool c
 
 	// the volumetric fog (mist, haze, the beams through it), nearest of all
 	if (ubo.volumetricFog > 0.5) {
-		vec4 volume = compareFog ? sampleVolumetricFog(volumetricFogCompare, v.screenUV, dist, ubo.fogDistance)
-								 : sampleVolumetricFog(volumetricFog, v.screenUV, dist, ubo.fogDistance);
+		vec4 volume = sampleVolumetricFog(volumetricFog, v.screenUV, dist, ubo.fogDistance);
 		color = color * volume.a + volume.rgb;
 		direct *= volume.a;
 	}

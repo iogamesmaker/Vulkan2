@@ -61,7 +61,6 @@ struct GraphicsSettings {
 	int fogQuality = 0;		  // froxel grid: 0 = 160x90x16, 1 = 240x135x32
 	float fogDensity = 1.0f;  // everything
 	float valleyMist = 1.0f;  // the ground mist on top of the haze
-	float fogSliceMultiplier = 1.0f; // TEMPORARY: != 1 shows only the difference to a grid with this many times the slices
 
 	// advanced: the systems behind the scenes
 	float pomDepth = 27.0f;		  // cm between a height map's lowest and highest point
