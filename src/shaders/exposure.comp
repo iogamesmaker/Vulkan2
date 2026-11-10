@@ -29,6 +29,8 @@ const float MIN_LUMINANCE = 0.0006; // darker than this isn't brightened any fur
 const float ADAPTATION = 0.85; // 0.7 left moonlit nights black
 const float REFERENCE = 1.0;	   // the metered luminance of a typical sunny scene, where the partial adaptation pivots
 const float MAX_LUMINANCE = 8.0;
+const float NIGHT_KNEE = 0.01;		 // darker than the end of dusk (sunsets meter ~0.015, moonlit meadows ~0.002)
+const float NIGHT_ADAPTATION = 0.55; // how much of the way it follows below it (ADAPTATION above)
 const float SPEED_BRIGHTEN = 1.2; // per second, eyes adapt to the dark slower than to the light
 const float SPEED_DARKEN = 2.5;
 
@@ -62,7 +64,12 @@ void main() {
 
 	if (index == 0u) {
 		float luminance = exp2(sumLog[0] / sumWeight[0]);
-		float adapted = exp2(mix(log2(REFERENCE), log2(clamp(luminance, MIN_LUMINANCE, MAX_LUMINANCE)), ADAPTATION));
+		// below dusk (NIGHT_KNEE) the eye follows less of the way still: nights end up darker without the daylight,
+		// overcast and forest exposures changing at all
+		float logL = log2(clamp(luminance, MIN_LUMINANCE, MAX_LUMINANCE));
+		float logKnee = log2(NIGHT_KNEE);
+		float adaptedLog = mix(log2(REFERENCE), max(logL, logKnee), ADAPTATION) + min(logL - logKnee, 0.0) * NIGHT_ADAPTATION;
+		float adapted = exp2(adaptedLog);
 		float target = KEY / adapted;
 		float previous = state.exposure;
 		float exposure;

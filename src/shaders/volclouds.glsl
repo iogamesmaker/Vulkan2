@@ -111,9 +111,10 @@ float cumulusDensity(vec2 worldKm, float hKm, vec2 wind, int detail) {
 // weather grows it here (a storm tower shades far more than a fair weather puff), 4 samples up through it. the lobes
 // carve the march's clouds smaller than their dome, their average carving is taken off here. cloudshadow.comp bakes
 // it into the coverage map for the window around the camera
+const float CLOUD_SHADOW_SLANT = 0.7; // the lowest sun elevation (sine) the shadows' projection follows, cloudShadow
 float cloudShadowRay(vec2 underKm, vec3 sunDir) {
 	if (ubo.clouds < 0.5 || (ubo.cloudCoverage <= 0.0 && ubo.weather3.x <= 0.0) || sunDir.y <= 0.03) return 1.0;
-	float slant = max(sunDir.y, 0.15);
+	float slant = max(sunDir.y, CLOUD_SHADOW_SLANT); // (cloudShadow)
 	vec2 drift = sunDir.xz / slant; // km sideways per km up
 	float core = weatherCellCore(cloudWeatherCells(underKm)) * ubo.weather3.x;
 	float thickness = min(CUMULUS_THICKNESS * (1.0 + core * STORM_TOWER), cloudSlabThickness());
@@ -139,10 +140,11 @@ const float CLOUD_SHADOW_REACH = 22.5;
 // the clouds' shadow on whatever is at worldKm (the cloud wind included), altitudeKm above the ground
 float cloudShadow(vec2 worldKm, float altitudeKm, vec3 sunDir) {
 	if (ubo.clouds < 0.5 || (ubo.cloudCoverage <= 0.0 && ubo.weather3.x <= 0.0) || sunDir.y <= 0.03) return 1.0;
-	// where the sun ray crosses the cloud base: towards sunset that point runs off to infinity (1 / sun height) and
-	// the shadows swept across the land as fast as the sun sank. capped at ~9 degrees, faded out under ~9: at sunset
-	// the light comes through so much air that it's soft anyway
-	float slant = max(sunDir.y, 0.15);
+	// where the sun ray crosses the cloud base, sideways by height / tan(elevation): with a 10 minute day that moved
+	// the shadows at ~500 km/h at 20 degrees (thousands near sunset), as fast as the sun's elevation changed. the
+	// elevation only counts above ~44 degrees (at most a cloud height sideways); below it the shadows only turn
+	// with the sun's bearing, slowly. long low sun shadows are soft and can't be checked against a cloud overhead
+	float slant = max(sunDir.y, CLOUD_SHADOW_SLANT);
 	vec2 under = worldKm + sunDir.xz / slant * max(ubo.cloudAltitude - altitudeKm, 0.0);
 	float through;
 #ifdef CLOUD_COVERAGE_MAP

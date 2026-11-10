@@ -437,7 +437,7 @@ void Atmosphere::setDefaults() {
 	d.groundAlbedo	   = glm::vec3(0.16f, 0.17f, 0.12f); // roughly the terrain, it's what you see past the edge of the world
 
 	d.sunIlluminance	= 20.0f;
-	d.moonIlluminance	= 0.08f;   // way brighter than the real thing (1/400000 of the sun) so nights are playable
+	d.moonIlluminance	= 0.06f;   // way brighter than the real thing (1/400000 of the sun) so nights are playable
 	d.aerialDistance	= 32.0f;
 	d.sunAngularRadius	= 0.02f; // ~4x the real sun, it looks tiny otherwise (the shadow penumbras use the real size)
 	d.moonAngularRadius = 0.03f;
