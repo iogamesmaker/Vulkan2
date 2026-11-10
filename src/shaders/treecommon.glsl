@@ -227,7 +227,7 @@ bool placeTree(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld
 	// snow and dryness never happen together, so snow is stored as negative dryness
 	// the same lines as the terrain's snow cap (terrainmaterial.glsl) and only once the snow actually shows on the
 	// ground: the raw weights frosted trees at the taiga's edge and near the treeline grey on green ground
-	float snowline = mix(0.44, 0.68, temperature);
+	float snowline = snowlineHeight(vec3(temperature, moisture, 0.0));
 	float snowCap = smoothstep(0.3, 0.7, smoothstep(snowline - 0.03, snowline + 0.06, height)) * mountains;
 	float snow = max(smoothstep(0.3, 0.7, weights[BIOME_SNOW]), snowCap);
 	// dry (olive / brown leaves) only where the ground looks dry too: the desert, and only the very driest of the

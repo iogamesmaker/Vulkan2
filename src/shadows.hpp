@@ -141,6 +141,8 @@ private:
 	float m_Splits[SHADOW_CASCADES];
 	bool m_ForceAll = true;
 	bool m_Urgent = true; // everything due gets rendered this frame (the old maps are unusable)
+	float m_BlendB = 0.0f;			 // how much set B counts (the crossfade between the keyframes)
+	uint32_t m_FrameSlotCounter = 0; // every 4th frame the lighter set gets the budget
 	ShadowUBO m_UBOData{};
 	uint32_t m_FrameSlot = 0;
 

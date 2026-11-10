@@ -239,7 +239,10 @@ void ShadowMaps::update(const glm::mat4& view, const ShadowLightKeys& keys, floa
 		}
 
 		for(uint32_t c = 0; c < SHADOW_CASCADES; c++) {
-			bool movedOut = glm::distance(camPos, set.centers[c]) > m_Splits[c] * cascadePadding(c) * 0.8f;
+			float away = glm::distance(camPos, set.centers[c]);
+			bool movedOut = away > m_Splits[c] * cascadePadding(c) * 0.8f;
+			// a jump (teleport) right out of the old map: nothing usable left in it, it can't wait its turn (render)
+			if(!newKey && away > m_Splits[c] * (1.0f + cascadePadding(c))) m_Urgent = true;
 			if(newKey || movedOut || m_ForceAll) computeCascade(set, c, camPos, terrainHeightRange);
 		}
 	}
@@ -247,6 +250,7 @@ void ShadowMaps::update(const glm::mat4& view, const ShadowLightKeys& keys, floa
 	m_ForceAll = false;
 	m_SetA = setA;
 	m_SetB = setB;
+	m_BlendB = keys.t;
 	m_FrameSlot = frameNumber % SHADOW_FRAMES;
 
 	ShadowUBO& data = m_UBOData;
@@ -283,18 +287,25 @@ uint32_t ShadowMaps::render(VkCommandBuffer cmd, const std::function<void(VkComm
 
 	VkExtent2D extent = { m_Resolution, m_Resolution };
 
-	// the set that's fading in goes last, it has the least weight
-	const uint32_t order[SHADOW_SETS] = { m_SetA, m_SetB };
-	uint32_t fadingInBudget = m_Urgent ? SHADOW_CASCADES : 1;
+	// one cascade a frame (each is the terrain, trees, rocks and grass drawn again: several at once were a stutter
+	// whenever the camera moved out of a few together or the sun reached a new keyframe). a due cascade keeps being
+	// sampled with the matrix it was rendered with until its turn, it re-centres early enough (update) that a few
+	// frames of waiting still cover the view. the set with the most weight first, the near cascades first; the
+	// other set gets every 4th frame so it never starves (it fades in and would be stale once it counts).
+	// urgent (the maps are unusable: start, turned on, resolution): everything at once
+	bool weightA = m_BlendB < 0.5f;
+	uint32_t first = weightA ? m_SetA : m_SetB, second = weightA ? m_SetB : m_SetA;
+	if(m_FrameSlotCounter++ % 4 == 3) std::swap(first, second);
+	const uint32_t order[SHADOW_SETS] = { first, second };
+	uint32_t budget = m_Urgent ? SHADOW_SETS * SHADOW_CASCADES : 1;
 	m_Urgent = false;
 
 	for(uint32_t s : order) {
+		if(s == second && first == second) break; // (both keyframes in one set)
 		for(uint32_t c = 0; c < SHADOW_CASCADES; c++) {
 			if(!m_Sets[s].due[c]) continue;
-			if(s == m_SetB && s != m_SetA) {
-				if(fadingInBudget == 0) continue;
-				fadingInBudget--;
-			}
+			if(budget == 0) break;
+			budget--;
 			uint32_t layer = s * SHADOW_CASCADES + c;
 
 			transitionLayer(cmd, layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);

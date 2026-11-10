@@ -348,7 +348,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	weights[BIOME_MOUNTAINS] += rock;
 
 	// snow on the upper half of most mountains (lower where it's cold), only the steepest cliffs stay bare
-	float snowline = mix(0.44, 0.68, climate.r) + (lineNoise - 0.5) * 0.08;
+	float snowline = snowlineHeight(climate) + (lineNoise - 0.5) * 0.08; // (biometools.glsl: none in the desert)
 	// snow settles on ledges and gentle ground and collects in gullies, steep faces and wind blown ridges stay bare.
 	// a crisp edge (the noise only moves it around) instead of soft blotches
 	float snowHeight = smoothstep(snowline - 0.03, snowline + 0.06, terrainHeight);

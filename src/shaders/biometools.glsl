@@ -44,6 +44,14 @@ void groundCover(vec3 climate, bool allowFarmland, out float weights[BIOME_COUNT
 	weights[BIOME_SNOW]		 = snow;
 }
 
+// the height (0..1 of the heightmap) snow lies above on mountains: lower where it's cold, and out of reach in the
+// desert: hot and dry, the same weight groundCover gives the desert (the snowline only followed the temperature,
+// the sand mountains had snowcaps). terrain.frag, the trees, the props and the plants' bare ground all use this
+float snowlineHeight(vec3 climate) {
+	float desert = smoothstep(DESERT_MIN_TEMP, DESERT_MIN_TEMP + 0.1, climate.r) * smoothstep(0.45, 0.33, climate.g);
+	return mix(0.44, 0.68, climate.r) + desert * 0.6;
+}
+
 float mountainWeight(vec3 climate) {
 	return smoothstep(0.55, 0.72, climate.b);
 }
@@ -126,7 +134,7 @@ GroundBareness groundBareness(vec2 uv, vec4 data, float slope) {
 	float steepRock = smoothstep(mix(0.6, 0.35, mountains), mix(1.0, 0.75, mountains), slope + (lineNoise - 0.5) * 0.3);
 	float rockline = 0.58 + (lineNoise - 0.5) * 0.12;
 	float highRock = smoothstep(rockline, rockline + 0.06, data.a) * mountains;
-	float snowline = mix(0.44, 0.68, data.r);
+	float snowline = snowlineHeight(data.rgb);
 	// the snow as terrain.frag maps it (its cover goes through a 0.3..0.7 edge, plants stop inside it, a margin
 	// for the noise it frays its edge with)
 	float snowCover = smoothstep(snowline - 0.03, snowline + 0.06, data.a) * (1.0 - steepRock * 0.8);

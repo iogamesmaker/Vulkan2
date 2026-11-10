@@ -72,7 +72,7 @@ bool placeProp(sampler2D hm, sampler2D climate, vec2 cellIndex, vec2 offsetWorld
 	else return false;
 	if (p.mesh < PROP_FIRST_LOG && slope > 1.5 && p.scale > 0.4) return false; // nothing big sits on a cliff face
 	// small rocks don't show on snow fields (buried): scattered dark pebbles all over the snow looked like pepper
-	float snowline = mix(0.44, 0.68, data.r); // terrain.frag's, without its noise
+	float snowline = snowlineHeight(data.rgb); // terrain.frag's, without its noise
 	float snowy = smoothstep(snowline - 0.03, snowline + 0.06, data.a) * mountains * (1.0 - smoothstep(0.5, 1.0, slope));
 	if (p.mesh < PROP_FIRST_LOG && p.scale < 0.4 && snowy > 0.35) return false;
 
