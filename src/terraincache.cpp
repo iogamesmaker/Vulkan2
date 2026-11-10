@@ -147,7 +147,7 @@ void TerrainCache::invalidate() {
 	for(Level& level : m_Levels) level.valid = false;
 }
 
-void TerrainCache::update(VkCommandBuffer cmd, glm::dvec2 cameraWorld, float factor, float macroWeight, VkDescriptorSet terrainSet, VkDescriptorSet atmosphereSet) {
+bool TerrainCache::update(VkCommandBuffer cmd, glm::dvec2 cameraWorld, float factor, float macroWeight, VkDescriptorSet terrainSet, VkDescriptorSet atmosphereSet) {
 	if(macroWeight != m_MacroWeight) { invalidate(); m_MacroWeight = macroWeight; } // the macro layer setting is baked in
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Effect.pipeline);
@@ -175,6 +175,7 @@ void TerrainCache::update(VkCommandBuffer cmd, glm::dvec2 cameraWorld, float fac
 	}
 
 	uploadInfo(cmd, true);
+	return wholeLevelBaked; // (the stutter log)
 }
 
 void TerrainCache::publishOff(VkCommandBuffer cmd) { uploadInfo(cmd, false); }

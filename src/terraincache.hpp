@@ -22,7 +22,7 @@ public:
 	void init(Application* engine, VkDescriptorSet terrainSet, VkDescriptorSetLayout terrainLayout, VkDescriptorSetLayout atmosphereLayout);
 	// bakes what came into the squares around the camera (at most one whole level a frame, terrain.frag shades
 	// the rest directly meanwhile), then updates the info terrain.frag reads. outside of a render pass
-	void update(VkCommandBuffer cmd, glm::dvec2 cameraWorld, float factor, float macroWeight, VkDescriptorSet terrainSet, VkDescriptorSet atmosphereSet);
+	bool update(VkCommandBuffer cmd, glm::dvec2 cameraWorld, float factor, float macroWeight, VkDescriptorSet terrainSet, VkDescriptorSet atmosphereSet);
 	// while the cache is switched off: tells the readers (the grass, foliage.comp) there's nothing baked, every frame
 	void publishOff(VkCommandBuffer cmd);
 	void invalidate(); // the terrain or its look changed: rebake everything

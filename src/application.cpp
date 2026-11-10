@@ -1150,21 +1150,26 @@ void Application::updateHeightmap() {
 	glm::ivec2 oldMapOffset = m_MapOffset;
 	if(std::abs(moveDelta.x) >= minimumMovement) m_MapOffset.x = pos.x;
 	if(std::abs(moveDelta.y) >= minimumMovement) m_MapOffset.y = pos.y;
-	// the world origin moved, shadow cascades rendered with the old one are now offset (this was the flashing)
-	if(m_MapOffset != oldMapOffset) m_Shadows.invalidate();
-	
-	if(delta.x == 0 && delta.y == 0) return;
+	// the world origin moved: the shadow cascades rendered with the old one are re-expressed in the new space (they
+	// were all re-rendered, a stutter every few hundred metres)
+	if(m_MapOffset != oldMapOffset) {
+		float offsetScale = m_TerrainScale / static_cast<float>(m_CoordinateMultiplier);
+		glm::vec2 d = glm::vec2(m_MapOffset - oldMapOffset) * offsetScale;
+		m_Shadows.shiftOrigin(glm::vec3(d.x, 0.0f, d.y));
+		m_FrameEvents |= FRAME_ORIGIN;
+	}
+
+	// the strips the camera moved into, once it has moved a few texels: every texel was its own strip, each one
+	// with the horizon AO of ~200 texels around it (its rays reach that far), and a blocking submit between the
+	// frames. 16 texels of lag at the far edge of the map is out past the render distance (the map origin lags 64)
+	const int step = std::max(4, m_HeightmapSize / 256);
+	bool far = std::abs(delta.x) >= m_HeightmapSize || std::abs(delta.y) >= m_HeightmapSize;
+	if(!far && std::abs(delta.x) < step && std::abs(delta.y) < step) return;
 
 	m_HeightmapPC.offset = pos;
-	immediateSubmit([&](VkCommandBuffer cmd) {
-		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
-		vkutil::transition_image(cmd, m_ClimateMap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
-		
-		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.layout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
-		
+	m_FrameEvents |= FRAME_HEIGHTMAP;
+	{
 		HeightmapPushConstants pc = m_HeightmapPC;
-		std::vector<std::pair<glm::ivec2, glm::ivec2>> regions; // physical start + size, for the horizon AO
 		
 		glm::ivec2 dirtyMin;
 		dirtyMin.x = pos.x % m_HeightmapSize;
@@ -1186,12 +1191,7 @@ void Application::updateHeightmap() {
 			}
 			pcX.updateSize.x = dispatchWidth;
 			pcX.updateSize.y = dispatchHeight;
-			regions.push_back({ pcX.dirtyMin, pcX.updateSize });
-			
-			vkCmdPushConstants(cmd, m_HeightmapEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pcX);
-			uint32_t groupNX = (dispatchWidth + 15) / 16;
-			uint32_t groupNY = (dispatchHeight + 15) / 16;
-			vkCmdDispatch(cmd, groupNX, groupNY, 1);
+			m_PendingHeightmap.push_back({ pcX, pcX.dirtyMin, pcX.updateSize });
 		}
 		if(delta.y != 0) {
 			HeightmapPushConstants pcY = pc;
@@ -1206,17 +1206,25 @@ void Application::updateHeightmap() {
 			}
 			pcY.updateSize.x = dispatchWidth;
 			pcY.updateSize.y = dispatchHeight;
-			regions.push_back({ pcY.dirtyMin, pcY.updateSize });
-			
-			vkCmdPushConstants(cmd, m_HeightmapEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &pcY);
-			uint32_t groupNX = (dispatchWidth + 15) / 16;
-			uint32_t groupNY = (dispatchHeight + 15) / 16;
-			vkCmdDispatch(cmd, groupNX, groupNY, 1);
+			m_PendingHeightmap.push_back({ pcY, pcY.dirtyMin, pcY.updateSize });
 		}
-		vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		vkutil::transition_image(cmd, m_ClimateMap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		for(auto& [start, extent] : regions) dispatchHorizonAO(cmd, start, extent);
-	});	
+	}
+}
+
+void Application::recordHeightmapUpdate(VkCommandBuffer cmd) {
+	if(m_PendingHeightmap.empty()) return;
+	vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+	vkutil::transition_image(cmd, m_ClimateMap.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.pipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_HeightmapEffect.layout, 0, 1, &m_HeightmapDescriptors, 0, nullptr);
+	for(const HeightmapStrip& strip : m_PendingHeightmap) {
+		vkCmdPushConstants(cmd, m_HeightmapEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(HeightmapPushConstants), &strip.pc);
+		vkCmdDispatch(cmd, (strip.pc.updateSize.x + 15) / 16, (strip.pc.updateSize.y + 15) / 16, 1);
+	}
+	vkutil::transition_image(cmd, m_Heightmap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	vkutil::transition_image(cmd, m_ClimateMap.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	for(const HeightmapStrip& strip : m_PendingHeightmap) dispatchHorizonAO(cmd, strip.aoStart, strip.aoSize);
+	m_PendingHeightmap.clear();
 }
 
 void Application::regenerateHeightmap() {
@@ -1804,6 +1812,7 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 			}
 		}
 		if(!regions.empty()) {
+			m_FrameEvents |= FRAME_CLOUD_MAP;
 			m_CloudMapOrigin = origin;
 			m_CloudMapValid = true;
 			VkMemoryBarrier2 barrier{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
@@ -2015,6 +2024,29 @@ void Application::run() {
 			fmt::print(" shadow re-render {:.2f} ms {:.1f}/s\n", m_ShadowRenderMs, m_ShadowRendersPerSecond);
 			std::fflush(stdout);
 		}
+		// stutters: a frame much slower than the ones around it (the median of the last second), with what happened in
+		// the last few frames (a slow GPU frame makes the CPU wait for it a frame or two later)
+		{
+			m_FrameEventRing[m_FrameNumber % 4] = m_FrameEvents;
+			m_FrameEvents = 0;
+			float recent[60];
+			int count = 0;
+			for(int i = 1; i <= 60; i++) {
+				float t = m_Frametimes[(m_FrameOffset - i + m_FrameHistorySize) % m_FrameHistorySize];
+				if(t > 0.0f) recent[count++] = t;
+			}
+			if(count >= 30) {
+				std::nth_element(recent, recent + count / 2, recent + count);
+				float typical = recent[count / 2];
+				if(deltatimeMs > std::max(typical * 1.6f, typical + 5.0f)) {
+					uint32_t events = m_FrameEventRing[0] | m_FrameEventRing[1] | m_FrameEventRing[2] | m_FrameEventRing[3];
+					m_Stutters.push_back({ m_Time, deltatimeMs, typical, events });
+					if(m_Stutters.size() > 16) m_Stutters.erase(m_Stutters.begin());
+					static const bool logStutters = std::getenv("VULKAN2_STUTTERLOG") != nullptr;
+					if(logStutters) fmt::print("stutter {:.1f} ms (typical {:.1f}) shotframe {} events {}\n", deltatimeMs, typical, m_ShotFrames, events);
+				}
+			}
+		}
 		if(!m_PauseFrametimes) {
 			m_Frametimes[m_FrameOffset] = deltatimeMs/* > 0 ? 1000.0f / deltatimeMs : 0.0f*/;
 			m_FrameOffset = (m_FrameOffset + 1) % m_FrameHistorySize;
@@ -2042,67 +2074,7 @@ void Application::run() {
 			//some imgui UI
 			ImGui::NewFrame();
 			
-			if (ImGui::Begin("performance")) {
-				// where you are, to share a spot: the copy is a VULKAN2_SHOT entry (x,z,height above ground,yaw,pitch,hour)
-				{
-					const glm::vec3& pos = m_Camera.position;
-					float aboveGround = pos.y - m_Camera.groundHeight;
-					float hour = m_AtmosphereManager.getTimeOfDay();
-					ImGui::Text("position  x %.1f  y %.1f  z %.1f  (%.0fm above ground)", pos.x, pos.y, pos.z, aboveGround * m_Camera.metersPerUnit);
-					ImGui::Text("rotation  yaw %.3f  pitch %.3f   time %.2f h", m_Camera.yaw, m_Camera.pitch, hour);
-					char location[160];
-					snprintf(location, sizeof(location), "%.1f,%.1f,%.2f,%.3f,%.3f,%.2f", pos.x, pos.z, aboveGround, m_Camera.yaw, m_Camera.pitch, hour);
-					if(ImGui::Button("Copy location")) ImGui::SetClipboardText(location);
-					ImGui::SameLine();
-					ImGui::TextDisabled("%s", location);
-					ImGui::Separator();
-				}
-				ImGui::Checkbox("pause", &m_PauseFrametimes);
-				
-				char text[32]; // imgui hates strings
-				snprintf(text, sizeof(text), "%.2fms (%.1f FPS)", deltatimeMs, deltatimeMs > 0 ? 1000.0f / deltatimeMs : 0.0f);
-				
-				ImGui::PlotLines(
-					"##",
-					m_Frametimes,
-					m_FrameHistorySize,
-					m_FrameOffset,
-					text,
-					0.0f,
-					33.0f,
-					ImVec2(0, 120)
-				);
-
-				float total = 0.0f, opaque = 0.0f;
-				for(float t : m_GpuPassTimes) total += t;
-				for(uint32_t i = GPU_OPAQUE_FIRST; i <= GPU_OPAQUE_LAST; i++) opaque += m_GpuPassTimes[i];
-				ImGui::Text("GPU %.2f ms", total);
-				auto passLine = [&](const char* name, float ms) {
-					ImGui::Text("%-30s %6.2f ms", name, ms);
-					ImGui::SameLine();
-					ImGui::ProgressBar(total > 0.0f ? ms / total : 0.0f, ImVec2(-1.0f, 0.0f));
-				};
-				ImGui::Indent();
-				for(uint32_t i = 0; i < GPU_TIMESTAMPS - 1; i++) {
-					if(i < GPU_OPAQUE_FIRST || i > GPU_OPAQUE_LAST) { passLine(GPU_PASS_NAMES[i], m_GpuPassTimes[i]); continue; }
-					if(i != GPU_OPAQUE_FIRST) continue;
-					// the opaque pass as one line, its parts underneath
-					passLine("opaque", opaque);
-					ImGui::Indent();
-					if(m_DetailedOpaqueTimings) {
-						for(uint32_t j = GPU_OPAQUE_FIRST; j < GPU_OPAQUE_LAST; j++) passLine(GPU_PASS_NAMES[j], m_GpuPassTimes[j]);
-					} else {
-						ImGui::TextDisabled("(enable the breakdown below)");
-					}
-					passLine(GPU_PASS_NAMES[GPU_OPAQUE_LAST], m_GpuPassTimes[GPU_OPAQUE_LAST]); // shadow filter, always its own pass
-					ImGui::Unindent();
-				}
-				ImGui::Unindent();
-				// shadow maps only re-render now and then, the average above hides what one re-render costs
-				ImGui::TextDisabled("  shadow re-render %.2f ms, %.1f per second", m_ShadowRenderMs, m_ShadowRendersPerSecond);
-				ImGui::Checkbox("opaque breakdown (splits the pass, costs a bit)", &m_DetailedOpaqueTimings);
-			}
-			ImGui::End();
+			drawPerformanceWindow(deltatimeMs);
 			
 			if (ImGui::Begin("settings")) {
 				drawSettings();
@@ -2129,7 +2101,10 @@ void Application::run() {
 			SDL_Delay(16); // nothing to draw to
 			continue;
 		}
+		Uint64 drawStart = SDL_GetPerformanceCounter();
 		draw();
+		float drawMs = static_cast<float>(SDL_GetPerformanceCounter() - drawStart) * 1000.0f / static_cast<float>(frequency);
+		m_CpuFrameMs += (drawMs - m_CpuFrameMs) * 0.1f;
 	}
 }
 
@@ -2142,7 +2117,7 @@ void Application::draw() {
 		m_DebugView.select(static_cast<int>(m_FrameNumber % debugTextures().size()));
 		m_ShowDrawStats = true;
 	}
-	if(m_Resized) resizeSwapchain(m_Vsync);
+	if(m_Resized) { resizeSwapchain(m_Vsync); m_FrameEvents |= FRAME_RESIZE; }
 	
 	// Wait for the GPU to finish, reset the fence
 	VK_CHECK(vkWaitForFences(m_Device, 1, &getCurrentFrame().renderFence, true, 1000000000));
@@ -2206,6 +2181,9 @@ void Application::draw() {
 	// per frame atmosphere LUTs (sky view + aerial perspective)
 	updateCamera();
 	m_AtmosphereManager.update(cmd, m_View, m_Projection, m_CameraPos, glm::vec2(m_CameraPos.x, m_CameraPos.z) + glm::vec2(m_MapOffset) * (m_TerrainScale / static_cast<float>(m_CoordinateMultiplier)));
+
+	// the heightmap strips the camera moved into (updateHeightmap queued them), before anything reads the map
+	recordHeightmapUpdate(cmd);
 
 	// terrain height under the camera, read back once this frame's fence is waited on again
 	{
@@ -2282,7 +2260,8 @@ void Application::draw() {
 	if(m_TerrainCacheEnabled) {
 		glm::dvec2 offsetWorld = glm::dvec2(m_MapOffset) * (static_cast<double>(m_TerrainScale) / m_CoordinateMultiplier);
 		glm::dvec2 cameraWorld = glm::dvec2(m_CameraPos.x, m_CameraPos.z) + offsetWorld;
-		m_TerrainCache.update(cmd, cameraWorld, m_TerrainPC.factor, m_AtmosphereManager.m_AtmosphereData.terrainMacro, m_TerrainDescriptors, m_AtmosphereManager.getRenderDescriptor());
+		if(m_TerrainCache.update(cmd, cameraWorld, m_TerrainPC.factor, m_AtmosphereManager.m_AtmosphereData.terrainMacro, m_TerrainDescriptors, m_AtmosphereManager.getRenderDescriptor()))
+			m_FrameEvents |= FRAME_TERRAIN_CACHE;
 	} else m_TerrainCache.publishOff(cmd); // (the grass falls back to its own colour)
 
 	timestamp(cmd, 2);
@@ -2297,6 +2276,7 @@ void Application::draw() {
 		if(draw.cascade < SHADOW_TERRAIN_ONLY) m_Props.drawShadow(cmd, draw.viewProj);
 		if(draw.cascade == 0) m_GroundCover.drawShadow(cmd, draw.viewProj); // near the camera only, like the grass
 	});
+	if(m_ShadowCascadesRendered[m_FrameNumber % FRAME_OVERLAP] > 0) m_FrameEvents |= FRAME_SHADOWS;
 
 
 	timestamp(cmd, 3);
@@ -2902,6 +2882,147 @@ void Application::drawDrawStatsWindow() {
 			ImGui::EndTable();
 		}
 		ImGui::TextDisabled("(shadow casters are drawn once per cascade they're in)");
+	}
+	ImGui::End();
+}
+
+// the performance window: the frame (FPS, 1% low, CPU vs GPU), the GPU passes, the stutter log with what happened
+// around each stutter, where you are (to share a spot as a VULKAN2_SHOT entry)
+void Application::drawPerformanceWindow(float deltatimeMs) {
+	if(!ImGui::Begin("performance")) { ImGui::End(); return; }
+
+	float total = 0.0f, opaque = 0.0f;
+	for(float t : m_GpuPassTimes) total += t;
+	for(uint32_t i = GPU_OPAQUE_FIRST; i <= GPU_OPAQUE_LAST; i++) opaque += m_GpuPassTimes[i];
+
+	// ---- the frame
+	float sorted[m_FrameHistorySize];
+	int count = 0;
+	float sum = 0.0f;
+	for(float t : m_Frametimes) if(t > 0.0f) { sorted[count++] = t; sum += t; }
+	std::sort(sorted, sorted + count);
+	float average = count > 0 ? sum / count : 0.0f;
+	float low1 = count > 0 ? sorted[std::min(count - 1, static_cast<int>(count * 0.99f))] : 0.0f; // the 1% slowest frames
+	float worst = count > 0 ? sorted[count - 1] : 0.0f;
+	auto fps = [](float ms) { return ms > 0.0f ? 1000.0f / ms : 0.0f; };
+	ImGui::Text("%.0f FPS", fps(average));
+	ImGui::SameLine();
+	ImGui::TextDisabled("avg %.1f ms   1%% low %.0f FPS (%.1f ms)   worst %.1f ms", average, fps(low1), low1, worst);
+	// what limits it: the GPU's work vs the CPU recording the frame (the rest of a frame is waiting on one of them)
+	bool gpuBound = total > m_CpuFrameMs;
+	ImGui::Text("GPU %.2f ms   CPU %.2f ms", total, m_CpuFrameMs);
+	ImGui::SameLine();
+	ImGui::TextColored(gpuBound ? ImVec4(1.0f, 0.75f, 0.3f, 1.0f) : ImVec4(0.5f, 0.8f, 1.0f, 1.0f), gpuBound ? "(GPU bound)" : "(CPU bound)");
+	ImGui::SetItemTooltip("GPU: the passes below. CPU: recording and submitting a frame (draw()), not counting the wait for the GPU");
+	char overlay[48];
+	snprintf(overlay, sizeof(overlay), "%.1f ms (%.0f FPS)", deltatimeMs, fps(deltatimeMs));
+	float top = std::max(33.4f, worst * 1.1f);
+	ImVec2 plotPos = ImGui::GetCursorScreenPos();
+	ImGui::PlotLines("##frametimes", m_Frametimes, m_FrameHistorySize, m_FrameOffset, overlay, 0.0f, top, ImVec2(-1.0f, 110.0f));
+	{
+		// 60 and 30 FPS lines
+		ImDrawList* drawList = ImGui::GetWindowDrawList();
+		ImVec2 size = ImGui::GetItemRectSize();
+		for(float ms : { 16.67f, 33.33f }) {
+			if(ms > top) continue;
+			float y = plotPos.y + size.y * (1.0f - ms / top);
+			drawList->AddLine(ImVec2(plotPos.x, y), ImVec2(plotPos.x + size.x, y), IM_COL32(255, 255, 255, 50));
+			drawList->AddText(ImVec2(plotPos.x + 2.0f, y - 13.0f), IM_COL32(255, 255, 255, 90), ms < 20.0f ? "60" : "30");
+		}
+	}
+	ImGui::Checkbox("pause graph", &m_PauseFrametimes);
+
+	// ---- the GPU passes
+	if(ImGui::CollapsingHeader("GPU passes", ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::Checkbox("sort by cost", &m_SortPasses);
+		ImGui::SameLine();
+		ImGui::Checkbox("hide < 0.05 ms", &m_HideSmallPasses);
+		ImGui::SameLine();
+		ImGui::Checkbox("opaque breakdown", &m_DetailedOpaqueTimings);
+		ImGui::SetItemTooltip("Splits the opaque pass into one rendering per part to time them (Intel reports ~0 inside a pass). Costs a little");
+		auto passLine = [&](const char* name, float ms, int depth) {
+			if(m_HideSmallPasses && ms < 0.05f) return;
+			if(depth > 0) ImGui::Indent(depth * 12.0f);
+			float share = total > 0.0f ? ms / total : 0.0f;
+			// red for the big ones, yellow for the noticeable ones
+			ImVec4 colour = share > 0.2f ? ImVec4(0.85f, 0.35f, 0.3f, 1.0f) : (share > 0.08f ? ImVec4(0.85f, 0.65f, 0.3f, 1.0f) : ImVec4(0.4f, 0.65f, 0.4f, 1.0f));
+			ImGui::Text("%-30s %6.2f ms", name, ms);
+			ImGui::SameLine();
+			ImGui::PushStyleColor(ImGuiCol_PlotHistogram, colour);
+			char percent[16];
+			snprintf(percent, sizeof(percent), "%.0f%%", share * 100.0f);
+			ImGui::ProgressBar(share, ImVec2(-1.0f, 0.0f), percent);
+			ImGui::PopStyleColor();
+			if(depth > 0) ImGui::Unindent(depth * 12.0f);
+		};
+		struct Line { const char* name; float ms; int depth; };
+		std::vector<Line> lines;
+		if(m_SortPasses) {
+			// flat, slowest first (the opaque pass' parts on their own when they're timed)
+			for(uint32_t i = 0; i < GPU_TIMESTAMPS - 1; i++) {
+				bool part = i >= GPU_OPAQUE_FIRST && i < GPU_OPAQUE_LAST;
+				if(part && !m_DetailedOpaqueTimings) continue;
+				lines.push_back({ GPU_PASS_NAMES[i], m_GpuPassTimes[i], 0 });
+			}
+			if(!m_DetailedOpaqueTimings) lines.push_back({ "opaque", opaque - m_GpuPassTimes[GPU_OPAQUE_LAST], 0 });
+			std::sort(lines.begin(), lines.end(), [](const Line& a, const Line& b) { return a.ms > b.ms; });
+		} else {
+			for(uint32_t i = 0; i < GPU_TIMESTAMPS - 1; i++) {
+				if(i < GPU_OPAQUE_FIRST || i > GPU_OPAQUE_LAST) { lines.push_back({ GPU_PASS_NAMES[i], m_GpuPassTimes[i], 0 }); continue; }
+				if(i != GPU_OPAQUE_FIRST) continue;
+				lines.push_back({ "opaque", opaque, 0 }); // the opaque pass as one line, its parts underneath
+				if(m_DetailedOpaqueTimings)
+					for(uint32_t j = GPU_OPAQUE_FIRST; j < GPU_OPAQUE_LAST; j++) lines.push_back({ GPU_PASS_NAMES[j], m_GpuPassTimes[j], 1 });
+				lines.push_back({ GPU_PASS_NAMES[GPU_OPAQUE_LAST], m_GpuPassTimes[GPU_OPAQUE_LAST], 1 }); // shadow filter, always its own pass
+			}
+		}
+		for(const Line& line : lines) passLine(line.name, line.ms, line.depth);
+		// shadow maps only re-render now and then, the average above hides what one re-render costs
+		ImGui::TextDisabled("shadow re-render %.2f ms, %.1f per second", m_ShadowRenderMs, m_ShadowRendersPerSecond);
+	}
+
+	// ---- stutters
+	char stutterHeader[48];
+	snprintf(stutterHeader, sizeof(stutterHeader), "Stutters (%d)###stutters", static_cast<int>(m_Stutters.size()));
+	if(ImGui::CollapsingHeader(stutterHeader, ImGuiTreeNodeFlags_DefaultOpen)) {
+		ImGui::TextDisabled("frames 1.6x (and 5 ms) slower than the typical frame, with what happened in the frames around them");
+		if(m_Stutters.empty()) ImGui::TextDisabled("none yet");
+		else if(ImGui::SmallButton("clear")) m_Stutters.clear();
+		if(!m_Stutters.empty() && ImGui::BeginTable("stutters", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+			ImGui::TableSetupColumn("ago");
+			ImGui::TableSetupColumn("frame");
+			ImGui::TableSetupColumn("around it", ImGuiTableColumnFlags_WidthStretch);
+			ImGui::TableHeadersRow();
+			const std::pair<uint32_t, const char*> names[] = {
+				{ FRAME_HEIGHTMAP, "terrain strip" }, { FRAME_ORIGIN, "map re-centred" }, { FRAME_SHADOWS, "shadow re-render" },
+				{ FRAME_CLOUD_MAP, "cloud map" }, { FRAME_TERRAIN_CACHE, "terrain cache level" }, { FRAME_RESIZE, "resize" } };
+			for(auto it = m_Stutters.rbegin(); it != m_Stutters.rend(); ++it) {
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::Text("%.0fs", m_Time - it->time);
+				ImGui::TableNextColumn();
+				ImGui::Text("%.1f ms (typ. %.1f)", it->ms, it->typical);
+				ImGui::TableNextColumn();
+				std::string causes;
+				for(const auto& [bit, name] : names) if(it->events & bit) causes += (causes.empty() ? "" : ", ") + std::string(name);
+				ImGui::TextUnformatted(causes.empty() ? "(nothing tracked: CPU side, driver or window)" : causes.c_str());
+			}
+			ImGui::EndTable();
+		}
+	}
+
+	// ---- where you are, to share a spot: the copy is a VULKAN2_SHOT entry (x,z,height above ground,yaw,pitch,hour)
+	if(ImGui::CollapsingHeader("Location", ImGuiTreeNodeFlags_DefaultOpen)) {
+		const glm::vec3& pos = m_Camera.position;
+		float aboveGround = pos.y - m_Camera.groundHeight;
+		float hour = m_AtmosphereManager.getTimeOfDay();
+		ImGui::Text("position  x %.1f  y %.1f  z %.1f  (%.0fm above ground)", pos.x, pos.y, pos.z, aboveGround * m_Camera.metersPerUnit);
+		ImGui::Text("rotation  yaw %.3f  pitch %.3f   time %.2f h", m_Camera.yaw, m_Camera.pitch, hour);
+		char location[160];
+		snprintf(location, sizeof(location), "%.1f,%.1f,%.2f,%.3f,%.3f,%.2f", pos.x, pos.z, aboveGround, m_Camera.yaw, m_Camera.pitch, hour);
+		if(ImGui::Button("Copy location")) ImGui::SetClipboardText(location);
+		ImGui::SameLine();
+		ImGui::TextDisabled("%s", location);
 	}
 	ImGui::End();
 }

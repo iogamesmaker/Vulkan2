@@ -57,6 +57,19 @@ public:
 
 	// re-render every cascade next frame, e.g. when the world origin moved under the old matrices
 	void invalidate() { m_ForceAll = true; }
+	// the world origin moved by d (terrain space, what was at p is now at p - d): the maps still hold the same world,
+	// their matrices are re-expressed in the new space instead of re-rendering every cascade (a stutter)
+	void shiftOrigin(const glm::vec3& d) {
+		glm::mat4 t(1.0f);
+		t[3] = glm::vec4(d, 1.0f);
+		for(ShadowSet& set : m_Sets) {
+			for(uint32_t c = 0; c < SHADOW_CASCADES; c++) {
+				set.lightViewProj[c] = set.lightViewProj[c] * t;
+				set.renderedViewProj[c] = set.renderedViewProj[c] * t;
+				set.centers[c] -= d;
+			}
+		}
+	}
 	// how far the visible world reaches from the camera (the terrain's round edge): the far cascade covers that
 	void setWorldRadius(float radius) { if(radius != m_FarDistance) m_ForceAll = true; m_FarDistance = radius; }
 	// graphics settings

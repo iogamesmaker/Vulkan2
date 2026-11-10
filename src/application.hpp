@@ -359,7 +359,19 @@ private:
 	// sky visibility (horizon AO) for a region of the heightmap, in heightmap texels (wraps, the ring buffer)
 	void dispatchHorizonAO(VkCommandBuffer cmd, glm::ivec2 heightmapStart, glm::ivec2 heightmapSize);
 	void initHorizonAO();
-	void updateHeightmap(); // the strips the camera moved into
+	void updateHeightmap(); // the strips the camera moved into (queued, recordHeightmapUpdate records them)
+	void recordHeightmapUpdate(VkCommandBuffer cmd); // into the frame's command buffer, before anything reads the map
+	struct HeightmapStrip { HeightmapPushConstants pc; glm::ivec2 aoStart, aoSize; };
+	std::vector<HeightmapStrip> m_PendingHeightmap;
+	// what happened in a frame that can make it slow, for the stutter log in the performance window
+	enum FrameEvent : uint32_t { FRAME_HEIGHTMAP = 1, FRAME_ORIGIN = 2, FRAME_SHADOWS = 4, FRAME_CLOUD_MAP = 8, FRAME_TERRAIN_CACHE = 16, FRAME_RESIZE = 32 };
+	uint32_t m_FrameEvents = 0;		// this frame's
+	uint32_t m_FrameEventRing[4] = {}; // the last few frames' (a slow GPU frame shows up a frame or two later)
+	struct Stutter { double time; float ms, typical; uint32_t events; };
+	std::vector<Stutter> m_Stutters; // the latest last
+	float m_CpuFrameMs = 0.0f;		 // draw() on the CPU, smoothed
+	bool m_SortPasses = false, m_HideSmallPasses = false;
+	void drawPerformanceWindow(float deltatimeMs);
 	void createHeightmapImages(); // heightmap, climate map and sky visibility
 	void destroyHeightmapImages();
 	void regenerateHeightmap(); // the whole map in strips, a few submits (a 6144 map in one took seconds)
