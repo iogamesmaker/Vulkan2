@@ -312,6 +312,18 @@ void Application::initSwapchain(bool vsync) {
 			VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(image->imageFormat, image->image, VK_IMAGE_ASPECT_COLOR_BIT);
 			VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &image->imageView));
 		}
+		std::pair<AllocatedImage*, VkImageUsageFlags> cloudDepthTargets[] = {
+			{ &m_CloudDepth, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT },
+			{ &m_CloudDepthHistory, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT },
+		};
+		for(auto& [image, usage] : cloudDepthTargets) {
+			image->imageFormat = VK_FORMAT_R32_SFLOAT;
+			image->imageExtent = cloudExtent;
+			VkImageCreateInfo imageCI = vkinit::image_create_info(image->imageFormat, usage, cloudExtent);
+			VK_CHECK(vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &image->image, &image->allocation, nullptr));
+			VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(image->imageFormat, image->image, VK_IMAGE_ASPECT_COLOR_BIT);
+			VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &image->imageView));
+		}
 		m_CloudHistoryValid = false;
 	}
 
@@ -1107,7 +1119,7 @@ void Application::destroySwapchain() {
 	vkDestroyImageView(m_Device, m_DepthBuffer.imageView, nullptr);
 	vmaDestroyImage(m_Allocator, m_DepthBuffer.image, m_DepthBuffer.allocation);
 
-	for(AllocatedImage* target : { &m_GAlbedo, &m_GNormal, &m_GMaterial, &m_GVelocity, &m_History[0], &m_History[1], &m_SSAOImage, &m_CloudImage, &m_CloudRaw, &m_CloudHistory, &m_OutputImage }) {
+	for(AllocatedImage* target : { &m_GAlbedo, &m_GNormal, &m_GMaterial, &m_GVelocity, &m_History[0], &m_History[1], &m_SSAOImage, &m_CloudImage, &m_CloudRaw, &m_CloudHistory, &m_CloudDepth, &m_CloudDepthHistory, &m_OutputImage }) {
 		vkDestroyImageView(m_Device, target->imageView, nullptr);
 		vmaDestroyImage(m_Allocator, target->image, target->allocation);
 	}
@@ -1584,6 +1596,8 @@ void Application::initClouds() {
 	resolveBuilder.add_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // last frame's result
 	resolveBuilder.add_binding(2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // depth
 	resolveBuilder.add_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);		  // the result (m_CloudImage)
+	resolveBuilder.add_binding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // last frame's depth per texel
+	resolveBuilder.add_binding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);		  // this frame's (m_CloudDepth)
 	m_CloudResolveLayout = resolveBuilder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_CloudResolveSet = g_DescriptorAllocator.allocate(m_Device, m_CloudResolveLayout);
 	VkPushConstantRange resolveRange{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4) + sizeof(glm::vec4) };
@@ -1680,22 +1694,24 @@ void Application::writeLightingDescriptors() {
 		vkUpdateDescriptorSets(m_Device, 3, cloudWrites, 0, nullptr);
 	}
 	if(m_CloudResolveSet != VK_NULL_HANDLE) {
-		VkDescriptorImageInfo resolveInfos[4] = {
+		VkDescriptorImageInfo resolveInfos[6] = {
 			{ m_NearestSampler, m_CloudRaw.imageView, read },
 			{ m_AtmosphereSampler, m_CloudHistory.imageView, read }, // linear, clamped
 			{ m_NearestSampler, m_DepthBuffer.imageView, read },
 			{ VK_NULL_HANDLE, m_CloudImage.imageView, VK_IMAGE_LAYOUT_GENERAL },
+			{ m_NearestSampler, m_CloudDepthHistory.imageView, read },
+			{ VK_NULL_HANDLE, m_CloudDepth.imageView, VK_IMAGE_LAYOUT_GENERAL },
 		};
-		VkWriteDescriptorSet resolveWrites[4] = {};
-		for(uint32_t i = 0; i < 4; i++) {
+		VkWriteDescriptorSet resolveWrites[6] = {};
+		for(uint32_t i = 0; i < 6; i++) {
 			resolveWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			resolveWrites[i].dstSet = m_CloudResolveSet;
 			resolveWrites[i].dstBinding = i;
 			resolveWrites[i].descriptorCount = 1;
-			resolveWrites[i].descriptorType = i == 3 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			resolveWrites[i].descriptorType = i == 3 || i == 5 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			resolveWrites[i].pImageInfo = &resolveInfos[i];
 		}
-		vkUpdateDescriptorSets(m_Device, 4, resolveWrites, 0, nullptr);
+		vkUpdateDescriptorSets(m_Device, 6, resolveWrites, 0, nullptr);
 	}
 
 	VkDescriptorImageInfo ssaoInfos[3] = {
@@ -1840,7 +1856,11 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 
 		// the accumulation: ~10 frames of marches (each starts at a different random offset) average the noise out
 		vkutil::transition_image(cmd, m_CloudRaw.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-		if(!m_CloudHistoryValid) vkutil::transition_image(cmd, m_CloudHistory.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		if(!m_CloudHistoryValid) {
+			vkutil::transition_image(cmd, m_CloudHistory.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+			vkutil::transition_image(cmd, m_CloudDepthHistory.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		}
+		vkutil::transition_image(cmd, m_CloudDepth.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 		struct { glm::mat4 reproject; float valid, blend; glm::vec2 pad; } resolve{};
 		resolve.reproject = m_PreviousViewProj * glm::inverse(m_UnjitteredProjection * m_View); // as clouds.comp marched (unjittered)
 		// a lightning flash (and the frame after it): no history, or the strike's light lingered and smeared
@@ -1864,6 +1884,10 @@ void Application::drawLighting(VkCommandBuffer cmd, uint32_t firstTimestamp) {
 		vkCmdCopyImage(cmd, m_CloudImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_CloudHistory.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
 		vkutil::transition_image(cmd, m_CloudHistory.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		vkutil::transition_image(cmd, m_CloudImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
+		vkutil::transition_image(cmd, m_CloudDepth.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		vkutil::transition_image(cmd, m_CloudDepthHistory.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		vkCmdCopyImage(cmd, m_CloudDepth.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_CloudDepthHistory.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+		vkutil::transition_image(cmd, m_CloudDepthHistory.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		m_CloudHistoryValid = true;
 	}
 	vkutil::transition_image(cmd, m_CloudImage.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -2381,7 +2405,13 @@ bool Application::updateShots() {
 	m_Camera.walking = false;
 	m_Camera.velocity = glm::vec3(0.0f);
 	m_Camera.position = glm::vec3(shot.x, m_Camera.groundHeight + shot.height, shot.z);
-	m_Camera.yaw = shot.yaw;
+	// VULKAN2_SHOT_STRAFE=<metres per frame>: the camera walks sideways during the shot (trees passing in front of the
+	// clouds with parallax: ghosting in the histories)
+	static const float strafe = std::getenv("VULKAN2_SHOT_STRAFE") ? static_cast<float>(std::atof(std::getenv("VULKAN2_SHOT_STRAFE"))) : 0.0f;
+	m_Camera.position += glm::vec3(std::cos(shot.yaw), 0.0f, std::sin(shot.yaw)) * strafe * static_cast<float>(m_ShotFrames);
+	// VULKAN2_SHOT_PAN=<radians per frame>: the camera turns during the shot (trees sweeping past the clouds: ghosting)
+	static const float pan = std::getenv("VULKAN2_SHOT_PAN") ? static_cast<float>(std::atof(std::getenv("VULKAN2_SHOT_PAN"))) : 0.0f;
+	m_Camera.yaw = shot.yaw + pan * static_cast<float>(m_ShotFrames);
 	m_Camera.pitch = shot.pitch;
 	m_AtmosphereManager.setTimeOfDay(shot.hour, false);
 	// enough frames for the heightmap, tree placement, shadow cascades and the smoothed GPU timers to settle

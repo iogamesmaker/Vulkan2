@@ -11,6 +11,8 @@ layout(set = 0, binding = 0) uniform sampler2D current;	   // this frame's march
 layout(set = 0, binding = 1) uniform sampler2D history;	   // last frame's result, linear filtered, clamped
 layout(set = 0, binding = 2) uniform sampler2D depthBuffer;   // full resolution
 layout(rgba16f, set = 0, binding = 3) uniform writeonly image2D resolved;
+layout(set = 0, binding = 4) uniform sampler2D historyDepth;  // the scene depth each texel was marched to last frame
+layout(r32f, set = 0, binding = 5) uniform writeonly image2D resolvedDepth; // this frame's, for the next
 
 layout(push_constant) uniform constants {
 	mat4 reproject;	  // this frame's NDC (as clouds.comp marched it) -> last frame's clip
@@ -25,13 +27,13 @@ void main() {
 	if (any(greaterThanEqual(p, size))) return;
 
 	vec4 now = texelFetch(current, p, 0);
-	if (pc.valid < 0.5) { imageStore(resolved, p, now); return; }
-
 	vec2 fullSize = vec2(textureSize(depthBuffer, 0));
 	ivec2 ratio = max(ivec2(round(fullSize / vec2(size))), ivec2(1)); // half resolution, or full (Ultra)
 	ivec2 full = p * ratio;
 	vec2 uv = (vec2(full) + 0.5) / fullSize;
 	float depth = texelFetch(depthBuffer, full, 0).r;
+	imageStore(resolvedDepth, p, vec4(depth));
+	if (pc.valid < 0.5) { imageStore(resolved, p, now); return; }
 	float viewZ = 0.02 / max(depth, 1e-7); // reversed z, ~ view distance (the sky: huge)
 
 	// the neighbourhood (3x3, only the texels at this one's depth: along an edge the sky's rays and the ones stopped by
@@ -79,9 +81,38 @@ void main() {
 	}
 	// (texel q holds the ray through full resolution pixel q * ratio, not the texel's centre: read as if it were the
 	// history came a quarter texel off every frame, it crept and blurred, and the box fought it along every edge)
-	vec2 historyUV = ((previousUV * fullSize - 0.5) / vec2(ratio) + 0.5) / vec2(size);
-	vec4 before = clamp(textureLod(history, historyUV, 0.0), low, high);
+	// bilinear by hand over the 4 history texels, each only if it was marched to what's here now: where this pixel
+	// sees the sky, a texel that last frame stopped at a tree (or the other way round) is something else. without
+	// this a tree walking past in front of the clouds left its silhouette in them for a second (the sky's box is
+	// loose, nothing else threw it out)
+	float expectedZ = depth > 0.0 ? 0.02 / max(previousClip.z / previousClip.w, 1e-7) : 1e30; // where it was last frame
+	vec2 texel = (previousUV * fullSize - 0.5) / vec2(ratio); // in texels, centres at whole numbers
+	ivec2 base = ivec2(floor(texel));
+	vec2 f = texel - vec2(base);
+	vec4 historySum = vec4(0.0);
+	float historyWeight = 0.0;
+	for (int i = 0; i < 4; i++) {
+		ivec2 o = ivec2(i & 1, i >> 1);
+		ivec2 q = clamp(base + o, ivec2(0), size - 1);
+		float d = texelFetch(historyDepth, q, 0).r;
+		float z = d > 0.0 ? 0.02 / max(d, 1e-7) : 1e30;
+		bool same = (z >= 1e29) == (expectedZ >= 1e29) && (z >= 1e29 || abs(log(z / expectedZ)) < 0.7); // within 2x: a tree 10m off vs the sky or a ridge, not a slope's
+		// neighbouring texels (the TAA's jitter moved those in and out of a tight match: flicker)
+		float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+		if (same && w > 0.0) {
+			historySum += texelFetch(history, q, 0) * w;
+			historyWeight += w;
+		}
+	}
+	if (historyWeight < 0.05) { // all of it something else: start over from this frame
+		imageStore(resolved, p, filtered);
+		return;
+	}
+	vec4 before = clamp(historySum / historyWeight, low, high);
+	// partly something else (an edge just uncovered): this frame counts for more until it has settled
+	float blend = sky ? pc.blend * 0.6 : pc.blend;
+	blend = mix(0.3, blend, historyWeight);
 	// (the sky holds ~20 frames, the land ~12: nothing moves fast up there, and the cloud edges are where a march
 	// either catches a thin wisp or skips it, the most noise to average)
-	imageStore(resolved, p, mix(before, filtered, sky ? pc.blend * 0.6 : pc.blend));
+	imageStore(resolved, p, mix(before, filtered, blend));
 }

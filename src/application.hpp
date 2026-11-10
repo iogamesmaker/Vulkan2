@@ -263,6 +263,9 @@ private:
 	AllocatedImage m_CloudImage, m_CloudNoise;
 	// the clouds' temporal accumulation (cloudresolve.comp): the raw march, last frame's result
 	AllocatedImage m_CloudRaw, m_CloudHistory;
+	// the depth each cloud texel was marched to (cloudresolve.comp writes it, copied for the next frame): history from
+	// something else (a tree that walked past in front of the sky) is thrown out instead of lingering
+	AllocatedImage m_CloudDepth, m_CloudDepthHistory;
 	VkDescriptorSetLayout m_CloudResolveLayout;
 	VkDescriptorSet m_CloudResolveSet = VK_NULL_HANDLE;
 	ComputeEffect m_CloudResolveEffect;
