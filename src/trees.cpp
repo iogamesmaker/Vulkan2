@@ -33,9 +33,9 @@ bool Trees::loadMeshes(std::vector<TreeVertex>& vertices, std::vector<uint32_t>&
 }
 
 uint32_t Trees::binOffset(uint32_t bin) {
-	// LOD0, LOD1, LOD2, shadow: MESHES bins each, then the impostor pool (treecommon.glsl binOffset)
+	// LOD0, LOD1, LOD2, shadow, near shadow: MESHES bins each, then the impostor pool (treecommon.glsl binOffset)
 	uint32_t offset = 0;
-	for(uint32_t group = 0; group <= LODS; group++) {
+	for(uint32_t group = 0; group <= LODS + 1; group++) {
 		if(bin < (group + 1) * MESHES) return offset + (bin - group * MESHES) * CAPACITY[group];
 		offset += MESHES * CAPACITY[group];
 	}
@@ -427,6 +427,7 @@ void Trees::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 	m_PushConstants = pc;
 	m_PushConstants.extra = m_Density;
 	m_PushConstants.sundir.y = m_DetailDistance; // trees.comp: the impostor distance (the draws only read .x)
+	m_PushConstants.sundir.z = std::floor(m_NearShadow.x) + glm::clamp(m_NearShadow.y, 0.0f, 0.999f); // trees.comp: the near cascade's casters
 	if(!m_Enabled) return;
 
 	const VkPipelineStageFlags2 drawStages = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
@@ -463,7 +464,11 @@ vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFE
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Scatter.pipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Scatter.layout, 0, 1, &m_ComputeSet, 0, nullptr);
-	vkCmdPushConstants(cmd, m_Scatter.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
+	// (trees.comp gets the light's horizontal direction in two fields it has no use for, its near caster list)
+	FoliagePushConstants cullPC = m_PushConstants;
+	cullPC.projScale = m_NearShadowLightXZ.x;
+	cullPC.lodPixels = m_NearShadowLightXZ.y;
+	vkCmdPushConstants(cmd, m_Scatter.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FoliagePushConstants), &cullPC);
 	vkCmdDispatch(cmd, (MAX_PLACED + 63) / 64, 1, 1); // threads past the placed count exit straight away
 
 	vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, drawStages, drawReads);
@@ -510,7 +515,7 @@ void Trees::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescripto
 	vkCmdDrawIndirect(cmd, m_ImpostorCommands.buffer, 0, 1, sizeof(VkDrawIndirectCommand));
 }
 
-void Trees::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {
+void Trees::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj, bool nearCascade) {
 	if(!m_Enabled) return;
 	FoliagePushConstants pc = m_PushConstants;
 	pc.viewproj = lightViewProj;
@@ -520,7 +525,8 @@ void Trees::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &offset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, LODS * MESHES * sizeof(VkDrawIndexedIndirectCommand), MESHES, sizeof(VkDrawIndexedIndirectCommand));
+	uint32_t group = nearCascade ? LODS + 1 : LODS;
+	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, group * MESHES * sizeof(VkDrawIndexedIndirectCommand), MESHES, sizeof(VkDrawIndexedIndirectCommand));
 }
 
 void Trees::drawImGui() {

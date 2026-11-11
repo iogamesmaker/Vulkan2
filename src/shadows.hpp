@@ -116,6 +116,11 @@ private:
 	void transitionLayer(VkCommandBuffer cmd, uint32_t layer, VkImageLayout from, VkImageLayout to);
 	void computeCascade(ShadowSet& set, uint32_t cascade, glm::vec3 center, float terrainHeightRange);
 	float cascadeRadius(uint32_t cascade) const;
+public:
+	// how far from the camera the nearest cascade can reach: its square's corners (radius * sqrt 2) and the lag before
+	// it re-centres (trees.comp's near caster list)
+	float nearCascadeReach() const { return cascadeRadius(0) * 1.6f; }
+private:
 	// the far cascade barely pads: the world moves with the camera, so anything past its edge is never seen, and
 	// re-rendering only the terrain at the coarsest tessellation is cheap
 	float cascadePadding(uint32_t cascade) const { return cascade == SHADOW_CASCADES - 1 ? m_FarPadding : m_Padding; }
@@ -160,7 +165,9 @@ private:
 	// 48 unit patches: 32 made cascade 0's casters 1.5 unit (9m) triangles, coarser than the heightmap's detail bumps
 	// and crevices up close (they self shadowed). 64 is the hardware maximum, only the few patches within each cascade's
 	// radius get the full level
-	float m_CascadeTessLevels[SHADOW_CASCADES] = { 64.0f, 48.0f, 12.0f, 4.0f };
+	// (24 unit patches now: the same triangle sizes as before take half the level, except cascade 0, finer casters
+	// right around you, less of the sag that made concave ground shadow itself)
+	float m_CascadeTessLevels[SHADOW_CASCADES] = { 64.0f, 24.0f, 6.0f, 2.0f };
 };
 
 // the opaque pass's second colour target: sun / moon light without shadows (rgb) and the shadow term (a)

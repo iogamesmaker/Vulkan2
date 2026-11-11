@@ -992,7 +992,9 @@ void Application::initTerrainPatches() {
 	m_PatchVertices.clear();
 	Vertex vertex{};
 	vertex.position.y = 0.0f;
-	unsigned rez = 128; // must match TERRAIN_PATCHES in terrainheight.glsl, smaller patches = finer max tessellation up close
+	// must match TERRAIN_PATCHES in terrainheight.glsl, smaller patches = finer max tessellation up close (64 per
+	// edge at most: 128 patches gave ~4.4m triangles right where you walk, 256 ~2.2m)
+	unsigned rez = 256;
 	float width = m_WorldSize * m_TerrainScale;
 	float height = m_WorldSize * m_TerrainScale;
 	for(unsigned i = 0; i <= rez-1; i++) // https://learnopengl.com/Guest-Articles/2021/Tessellation/Tessellation
@@ -2313,6 +2315,11 @@ void Application::draw() {
 		dependency.pMemoryBarriers = &barrier;
 		vkCmdPipelineBarrier2(cmd, &dependency);
 	}
+	{
+		glm::vec3 shadowLight = m_SunDir.y > 0.0f ? m_SunDir : -m_SunDir; // the shadow maps follow whichever is up
+		m_Trees.m_NearShadow = glm::vec2(m_Shadows.nearCascadeReach(), shadowLight.y);
+		m_Trees.m_NearShadowLightXZ = glm::vec2(shadowLight.x, shadowLight.z);
+	}
 	m_Trees.update(cmd, foliagePC);
 	mark(cmd, "tree placement");
 
@@ -2331,7 +2338,7 @@ void Application::draw() {
 	m_ShadowCascadesRendered[m_FrameNumber % FRAME_OVERLAP] = m_Shadows.render(cmd, [&](VkCommandBuffer cmd, const ShadowCascadeDraw& draw) {
 		vkutil::bindGraphics(cmd, m_TerrainShadowPipeline);
 		drawTerrain(cmd, draw.viewProj, &draw);
-		if(draw.cascade < SHADOW_TERRAIN_ONLY) m_Trees.drawShadow(cmd, draw.viewProj); // the far ones are terrain only
+		if(draw.cascade < SHADOW_TERRAIN_ONLY) m_Trees.drawShadow(cmd, draw.viewProj, draw.cascade == 0); // the far ones are terrain only
 		if(draw.cascade == 0) m_Foliage.drawShadow(cmd, draw.viewProj); // grass shadows only matter up close
 		if(draw.cascade < SHADOW_TERRAIN_ONLY) m_Props.drawShadow(cmd, draw.viewProj);
 		if(draw.cascade == 0) m_GroundCover.drawShadow(cmd, draw.viewProj); // near the camera only, like the grass

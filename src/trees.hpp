@@ -35,7 +35,12 @@ public:
 	// split (optional) is called after the depth prepass and after the full trees, for the GPU timers
 	void drawPrepass(VkCommandBuffer cmd);
 	void draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet, const std::function<void()>& split = {});
-	void drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj);
+	// nearCascade: the nearest cascade's own short list of casters (see m_NearShadow), the others get every one
+	void drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj, bool nearCascade = false);
+	// the nearest shadow cascade's reach (world units, its square's corners and how far it lags behind the camera)
+	// and how high the light is (0..1): which trees go in its caster list (trees.comp)
+	glm::vec2 m_NearShadow{ 30.0f, 0.5f };
+	glm::vec2 m_NearShadowLightXZ{ 0.0f, 0.0f }; // the light direction's horizontal part (towards the light)
 	// the "GPU draw counts" window (drawstats.hpp)
 	std::vector<DrawStatBuffer> drawStatBuffers() const {
 		return { { m_Commands.buffer, BINS * sizeof(VkDrawIndexedIndirectCommand) }, { m_ImpostorCommands.buffer, sizeof(VkDrawIndirectCommand) } };
@@ -46,6 +51,7 @@ public:
 		out.push_back(sumIndexed("trees, LOD2", data[0], 2 * MESHES, MESHES));
 		out.push_back(sumNonIndexed("trees, impostors", data[1], 0, 1));
 		out.push_back(sumIndexed("trees, shadow casters (LOD2)", data[0], 3 * MESHES, MESHES));
+		out.push_back(sumIndexed("trees, nearest cascade's shadow casters", data[0], 4 * MESHES, MESHES));
 	}
 
 	void drawImGui();
@@ -67,14 +73,14 @@ private:
 	struct Mesh { uint32_t firstIndex, indexCount; };
 
 	static constexpr uint32_t MESHES = TREE_MESH_COUNT, LODS = TREE_LODS; // treecommon.glsl TREE_MESHES / TREE_LODS
-	static constexpr uint32_t BINS = MESHES * (LODS + 1); // indexed draws: LOD0, LOD1, LOD2, shadow (impostors have their own commands)
+	static constexpr uint32_t BINS = MESHES * (LODS + 2); // indexed draws: LOD0, LOD1, LOD2, shadow, near shadow (impostors have their own commands)
 	// must match treecommon.glsl
 	static constexpr uint32_t MAX_PLACED = 1048576; // more than the placement circle holds (~994k cells), can't overflow
 	// per mesh (sized for wall to wall pines seen from above, ~9 grown pine meshes share them), impostors are one
 	// pool for all meshes
-	static constexpr uint32_t CAPACITY[LODS + 1] = { 512, 2048, 8192, 4096 }; // LOD0, LOD1, LOD2, shadow
+	static constexpr uint32_t CAPACITY[LODS + 2] = { 512, 2048, 8192, 4096, 1024 }; // LOD0, LOD1, LOD2, shadow, near shadow
 	static constexpr uint32_t CAPACITY_IMPOSTOR = MAX_PLACED;
-	static constexpr uint32_t MAX_INSTANCES = MESHES * (512 + 2048 + 8192 + 4096) + CAPACITY_IMPOSTOR;
+	static constexpr uint32_t MAX_INSTANCES = MESHES * (512 + 2048 + 8192 + 4096 + 1024) + CAPACITY_IMPOSTOR;
 	static constexpr uint32_t PLACE_GRID_SIDE = 1125;
 	static constexpr float PLACE_STEP = 25.0f; // world units the camera moves before trees get placed again
 	static constexpr uint32_t IMPOSTOR_CELL = 192;

@@ -96,6 +96,23 @@ void main() {
 
 	// shadow casters near the camera, regardless of where it's looking (no dither in the shadow pass)
 	if (dist < SHADOW_DISTANCE) append(BIN_SHADOW + mesh, instance);
+	// and the few that can reach the nearest cascade, its own short list: it re-renders every few steps you walk,
+	// and drew all ~4000 casters out to SHADOW_DISTANCE (millions of triangles) to fill a ~100m square. those
+	// within its reach (pc.sundir.z = its radius in the integer part, how high the light is in the fraction) plus
+	// the tree's shadow across the ground: from its foot away from the light, as long as the tree is tall over how
+	// high the light is (pc.projScale / lodPixels = the light's horizontal direction, Trees::update). the tree is
+	// in the list if that shadow (thickened by the crown) comes within the cascade's reach
+	{
+		float nearRadius = floor(pc.sundir.z), lightY = max(fract(pc.sundir.z), 0.05);
+		vec2 lightXZ = vec2(pc.projScale, pc.lodPixels);
+		float horizontal = length(lightXZ);
+		vec2 away = horizontal > 1e-4 ? -lightXZ / horizontal : vec2(0.0);
+		float shadowRun = min(treeHeight * horizontal / lightY, SHADOW_DISTANCE);
+		vec2 toCamera = pc.campos.xz - pos.xz;
+		float along = clamp(dot(toCamera, away), 0.0, shadowRun);
+		float crown = treeHeight * 0.4;
+		if (distance(toCamera, away * along) < nearRadius + crown) append(BIN_SHADOW_NEAR + mesh, instance);
+	}
 
 	// frustum cull with a sphere around the tree
 	if (sphereOutsideView(pc.viewproj, pos + vec3(0.0, treeHeight * 0.5, 0.0), treeHeight * 0.6)) return;

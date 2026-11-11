@@ -41,8 +41,13 @@ float tessFactor(vec3 p0, vec3 p1, vec2 uv0, vec2 uv1) {
 	float dist = max(distance(mid, pc.campos), 1.0);
 	float edgePixels = distance(p0.xz, p1.xz) * pc.projScale / dist;
 	float targetPixels = 40.0 / max(pc.tessellationFactor, 0.1); // factor 10 -> 4px triangles
-
-	return clamp(edgePixels / targetPixels, 1.0, 64.0);
+	float level = edgePixels / targetPixels;
+	// no finer than it's worth: the patches' finest (0.375 units, ~2m) only around your feet where you walk over
+	// it, half a heightmap texel (0.75) from ~40 units on: the bicubic heightmap and the bumps' coarse octaves are
+	// all there is to show, and the pixel target alone kept triangles at the finest level out to ~1km
+	float minSpacing = mix(0.375, 0.75, smoothstep(8.0, 40.0, dist));
+	level = min(level, distance(p0.xz, p1.xz) / minSpacing);
+	return clamp(level, 1.0, 64.0);
 }
 
 // shadow pass: the cascade's level within its radius of where it was rendered around (pc.sundir = centre.x, radius,

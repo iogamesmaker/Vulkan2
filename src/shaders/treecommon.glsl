@@ -8,7 +8,8 @@
 #define SPECIES_CONIFER	  0 // = PACK_GROUP_CONIFER: the biomes choose between the two groups, then a pack and a mesh
 #define SPECIES_BROADLEAF 1
 
-// instance bins, must match trees.hpp: LOD0, LOD1, LOD2, shadow casters (LOD2) per mesh, then the impostor pool
+// instance bins, must match trees.hpp: LOD0, LOD1, LOD2, shadow casters (LOD2), the nearest cascade's shadow casters
+// (LOD2) per mesh, then the impostor pool
 #define TREE_LODS 3
 #define BINS_PER_GROUP TREE_MESHES
 // per mesh. ~58 meshes share the forest (a pure pine forest is ~9 grown meshes), sized for wall to wall pines seen
@@ -17,6 +18,7 @@
 #define CAPACITY_LOD1  2048u
 #define CAPACITY_LOD2  8192u
 #define CAPACITY_SHADOW 4096u
+#define CAPACITY_SHADOW_NEAR 1024u
 // impostors are one pool for all meshes (the mesh is packed into the fade, see packImpostorFade), as big as the
 // placement itself: a tree goes in at most once, so it can never overflow and drop random trees
 #define CAPACITY_IMPOSTOR MAX_PLACED_TREES
@@ -24,14 +26,16 @@
 #define MAX_PLACED_TREES 1048576u // Trees::MAX_PLACED, more than the placement circle can hold (~994k cells)
 
 #define BIN_SHADOW (3u * uint(TREE_MESHES))	 // the first shadow bin
-#define BIN_IMPOSTOR (4u * uint(TREE_MESHES)) // the impostor pool
+#define BIN_SHADOW_NEAR (4u * uint(TREE_MESHES)) // the first of the nearest cascade's shadow bins
+#define BIN_IMPOSTOR (5u * uint(TREE_MESHES)) // the impostor pool
 uint binOffset(uint bin) {
 	const uint M = uint(TREE_MESHES);
 	if (bin < M)	  return bin * CAPACITY_LOD0;
 	if (bin < 2u * M) return M * CAPACITY_LOD0 + (bin - M) * CAPACITY_LOD1;
 	if (bin < 3u * M) return M * (CAPACITY_LOD0 + CAPACITY_LOD1) + (bin - 2u * M) * CAPACITY_LOD2;
 	if (bin < 4u * M) return M * (CAPACITY_LOD0 + CAPACITY_LOD1 + CAPACITY_LOD2) + (bin - 3u * M) * CAPACITY_SHADOW;
-	return M * (CAPACITY_LOD0 + CAPACITY_LOD1 + CAPACITY_LOD2 + CAPACITY_SHADOW);
+	if (bin < 5u * M) return M * (CAPACITY_LOD0 + CAPACITY_LOD1 + CAPACITY_LOD2 + CAPACITY_SHADOW) + (bin - 4u * M) * CAPACITY_SHADOW_NEAR;
+	return M * (CAPACITY_LOD0 + CAPACITY_LOD1 + CAPACITY_LOD2 + CAPACITY_SHADOW + CAPACITY_SHADOW_NEAR);
 }
 
 // the impostor atlas (Trees::bakeImpostors): a grid of IMPOSTOR_COLUMNS meshes across, each a column of
@@ -50,18 +54,20 @@ void unpackImpostorFade(float packed, out uint mesh, out float fade) { mesh = ui
 
 uint binCapacity(uint bin) {
 	const uint M = uint(TREE_MESHES);
-	return bin < M ? CAPACITY_LOD0 : (bin < 2u * M ? CAPACITY_LOD1 : (bin < 3u * M ? CAPACITY_LOD2 : (bin < 4u * M ? CAPACITY_SHADOW : CAPACITY_IMPOSTOR)));
+	return bin < M ? CAPACITY_LOD0 : (bin < 2u * M ? CAPACITY_LOD1 : (bin < 3u * M ? CAPACITY_LOD2 : (bin < 4u * M ? CAPACITY_SHADOW : (bin < 5u * M ? CAPACITY_SHADOW_NEAR : CAPACITY_IMPOSTOR))));
 }
 
 // persistent placement (trees_place.comp), re-run when the camera moved, culled every frame (trees.comp)
 #define PLACE_RADIUS 900.0	   // ~5.4km
 #define PLACE_GRID_SIDE 1125u  // 2 * PLACE_RADIUS / TREE_CELL_SIZE
 // the packs' own LODs (a big oak: ~24k, ~10k, ~6k triangles), impostors beyond. world units (~6m)
-#define LOD0_DISTANCE 10.0
-#define LOD1_DISTANCE 25.0
-#define LOD2_DISTANCE 70.0	// impostors beyond (thousands of meshes of a few thousand triangles each was too much further out)
+// (the full mesh out to ~60m and the 10k one to ~150m: hundreds of thousands of leaf triangles a few pixels big,
+// the trees' depth prepass + shading were ~10ms of a forest frame. now ~30m / ~85m / ~300m for a big tree)
+#define LOD0_DISTANCE 5.0
+#define LOD1_DISTANCE 14.0
+#define LOD2_DISTANCE 50.0	// impostors beyond (thousands of meshes of a few thousand triangles each was too much further out)
 #define IMPOSTOR_BLEND 0.12 // fraction of LOD2_DISTANCE the mesh and the impostor crossfade over (dithered, a wide band shows as a checker pattern)
-#define SHADOW_DISTANCE 70.0 // shadow casters (LOD2) out to where the impostors take over
+#define SHADOW_DISTANCE 70.0 // shadow casters (LOD2), a bit past where the impostors take over (they cast none)
 
 struct TreeInstance {
 	vec4 posScale; // xyz = position in terrain space, w = height in world units
