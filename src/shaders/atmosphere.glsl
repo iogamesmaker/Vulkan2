@@ -155,6 +155,13 @@ vec3 sunTransmittance(sampler2D lut, vec3 pos, vec3 sunDir) {
 	if (visible <= 0.0) return vec3(0.0);
 	return texture(lut, transmittanceUV(height, max(mu, horizonMu + 1e-4))).rgb * visible;
 }
+// the light a low sun throws onto the land and the fog (not the sky, which keeps its colours): partly
+// desaturated towards a warm white. through the long path the transmittance goes deep orange-red, physically
+// right but it read as painted: slopes at sunrise and the fog towards an evening sun were a red wash
+vec3 lowSunLight(vec3 sunLight, float sunHeight) {
+	float l = dot(sunLight, vec3(0.2126, 0.7152, 0.0722));
+	return mix(sunLight, vec3(l) * vec3(1.1, 1.0, 0.86), 0.7 * (1.0 - smoothstep(0.04, 0.4, sunHeight)));
+}
 
 vec3 sampleMultiscattering(sampler2D lut, vec3 pos, vec3 sunDir) {
 	float height = length(pos);

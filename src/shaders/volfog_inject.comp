@@ -80,7 +80,9 @@ void main() {
 		float altKm = ubo.baseAltitude + pos.y * ubo.worldScale;
 		vec3 posKm = vec3(0.0, ubo.radiusbottom + max(altKm, PLANET_RADIUS_OFFSET), 0.0);
 		vec3 sunDir = pc.sundir, moonDir = -pc.sundir;
-		vec3 sunLight = sunTransmittance(transmittanceLUT, posKm, sunDir) * ubo.sunIlluminance;
+		// (desaturated like the land's: lit by the raw transmittance, the fog towards an evening sun was a red veil
+		// over everything)
+		vec3 sunLight = lowSunLight(sunTransmittance(transmittanceLUT, posKm, sunDir) * ubo.sunIlluminance, sunDir.y);
 		vec3 moonLight = sunTransmittance(transmittanceLUT, posKm, moonDir) * ubo.moonIlluminance;
 
 		// the shadow maps follow whichever of the two is up, the clouds shade both

@@ -316,10 +316,7 @@ void main() {
 	vec3 sunLight  = sunTransmittance(transmittanceLUT, posKm, sunDir) * ubo.sunIlluminance;
 	// a low sun's light partly desaturated: through the long path the transmittance goes deep orange-red, the slopes
 	// it lit at sunrise read as painted red (the sky keeps its colours)
-	{
-		float l = dot(sunLight, vec3(0.2126, 0.7152, 0.0722));
-		sunLight = mix(sunLight, vec3(l) * vec3(1.08, 1.0, 0.88), 0.55 * (1.0 - smoothstep(0.05, 0.35, sunDir.y)));
-	}
+	sunLight = lowSunLight(sunLight, sunDir.y);
 	// (the land only, the sky keeps its own moon: surfaces lit 2.5x the moon's light, the land was black under a sky
 	// you could still see)
 	vec3 moonLight = sunTransmittance(transmittanceLUT, posKm, moonDir) * ubo.moonIlluminance * 2.0;
