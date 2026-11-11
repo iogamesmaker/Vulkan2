@@ -532,12 +532,12 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	materials[BIOME_SNOW] = 0.0;
 	// the forest floor under the crowns (the canopy map follows the trees actually placed), patchy at the edges of a
 	// stand and between trees, never on rock, snow or in a field. needles where the conifers grow, leaves elsewhere
+	vec3 trees = treeChances(vec4(climate, terrainHeight), 0.0, 1.0);
 	{
 		// (only where the crowns close up, and up close only: from afar the crowns hide the floor, the litter turned
 		// every forested mountainside an autumn brown. the cache's viewDistance is huge: none baked in)
 		g_LitterOver = forestFloorCover(skyVisibility, readCoord, s.worldXZ) * (1.0 - rock) * (1.0 - weights[BIOME_WHEAT])
 					 * (1.0 - smoothstep(45.0, 110.0, s.viewDistance));
-		vec3 trees = treeChances(vec4(climate, terrainHeight), 0.0, 1.0);
 		g_LitterKind = trees.x > trees.y ? TERRAIN_NEEDLES : TERRAIN_LEAF_LITTER;
 	}
 
@@ -712,6 +712,29 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	{
 		float l = dot(albedo, vec3(0.3, 0.59, 0.11));
 		albedo = mix(albedo, mix(vec3(l), albedo, 0.7) * vec3(0.72, 0.7, 0.66), g_LitterOver * (1.0 - snowCap));
+	}
+	// the undergrowth past the ground cover plants (groundcover.comp): they thin out from ~20m and are gone by ~45m,
+	// and from there a forest's floor was bare dirt and litter, empty next to the ferns and sorrel right in front of
+	// you. the floor itself takes over: the ferns' own patches (the same pattern groundcover.comp grows them in) as
+	// a mottled dark olive green, broken up by the small plants in between and their shade. nothing to draw, the
+	// cache bakes it for the distance
+	{
+		float forestHere = smoothstep(0.08, 0.45, trees.x + trees.y); // groundcover.comp's forest mask
+		float plantsGone = smoothstep(1.5, 5.0, s.viewDistance);	  // (world units: the small plants are gone by 3.5, most ferns by 5)
+		vec2 w = s.worldXZ;
+		float ferns = smoothstep(0.3, 0.7, lineValueNoise(w / 2.0 + 37.0) * 0.7 + lineValueNoise(w / 0.74 - 11.0) * 0.3);
+		float small = smoothstep(0.35, 0.65, lineValueNoise(w / 0.9 + 185.0) * 0.7 + lineValueNoise(w / 0.333 - 55.0) * 0.3); // ~periwinkle / sorrel
+		float cover = clamp(0.25 + ferns * 0.65 + small * 0.25, 0.0, 1.0) * forestHere * plantsGone
+					* (1.0 - rock) * (1.0 - snowCap) * (1.0 - weights[BIOME_WHEAT]) * (1.0 - weights[BIOME_DESERT]);
+		if (cover > 0.0) {
+			// the fern atlas' average, a little darker: from afar a stand of ferns is as much its own shade as its fronds
+			// the patches darker and denser, the gaps between them lighter and thinner (a flat olive read as a tint,
+			// not as plants), and a mottle of fronds catching the light over their own shade
+			float mottle = lineValueNoise(w / 0.45 + 71.0);
+			vec3 fronds = vec3(0.05, 0.08, 0.022) * mix(1.15, 0.75, ferns) * mix(0.75, 1.25, mottle);
+			float l = dot(albedo, vec3(0.3, 0.59, 0.11));
+			albedo = mix(albedo, fronds * clamp(l / 0.1, 0.7, 1.3), cover * mix(0.55, 0.9, ferns));
+		}
 	}
 	float grassLuma = dot(albedo, vec3(0.3, 0.59, 0.11));
 	albedo = mix(albedo, mix(vec3(grassLuma), albedo, 0.8), grassiness);
