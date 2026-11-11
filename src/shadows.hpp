@@ -165,9 +165,7 @@ private:
 	// 48 unit patches: 32 made cascade 0's casters 1.5 unit (9m) triangles, coarser than the heightmap's detail bumps
 	// and crevices up close (they self shadowed). 64 is the hardware maximum, only the few patches within each cascade's
 	// radius get the full level
-	// (24 unit patches now: the same triangle sizes as before take half the level, except cascade 0, finer casters
-	// right around you, less of the sag that made concave ground shadow itself)
-	float m_CascadeTessLevels[SHADOW_CASCADES] = { 64.0f, 24.0f, 6.0f, 2.0f };
+	float m_CascadeTessLevels[SHADOW_CASCADES] = { 64.0f, 48.0f, 12.0f, 4.0f };
 };
 
 // the opaque pass's second colour target: sun / moon light without shadows (rgb) and the shadow term (a)

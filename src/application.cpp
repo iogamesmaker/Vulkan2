@@ -993,8 +993,9 @@ void Application::initTerrainPatches() {
 	Vertex vertex{};
 	vertex.position.y = 0.0f;
 	// must match TERRAIN_PATCHES in terrainheight.glsl, smaller patches = finer max tessellation up close (64 per
-	// edge at most: 128 patches gave ~4.4m triangles right where you walk, 256 ~2.2m)
-	unsigned rez = 256;
+	// edge at most: ~4.4m triangles where you walk. 256 patches halved that but cost ~1.5ms: 4x the patches to cull
+	// and tessellate, twice a frame, all over the map)
+	unsigned rez = 128;
 	float width = m_WorldSize * m_TerrainScale;
 	float height = m_WorldSize * m_TerrainScale;
 	for(unsigned i = 0; i <= rez-1; i++) // https://learnopengl.com/Guest-Articles/2021/Tessellation/Tessellation
@@ -3020,7 +3021,9 @@ void Application::drawPerformanceWindow(float deltatimeMs) {
 			ImGui::SameLine();
 			ImGui::PushStyleColor(ImGuiCol_PlotHistogram, colour);
 			char percent[16];
-			snprintf(percent, sizeof(percent), "%.0f%%", share * 100.0f);
+			// (one decimal below 10%: rounded to whole numbers, the ~20 small passes all read 0% and the column added up
+			// to ~95%)
+			snprintf(percent, sizeof(percent), share < 0.1f ? "%.1f%%" : "%.0f%%", share * 100.0f);
 			ImGui::ProgressBar(share, ImVec2(-1.0f, 0.0f), percent);
 			ImGui::PopStyleColor();
 			if(depth > 0) ImGui::Unindent(depth * 12.0f);
@@ -3031,6 +3034,9 @@ void Application::drawPerformanceWindow(float deltatimeMs) {
 		for(const GpuTimer& t : m_GpuTimers) lines.push_back({ t.name, t.ms, 0 });
 		if(m_SortPasses) std::sort(lines.begin(), lines.end(), [](const Line& a, const Line& b) { return a.ms > b.ms; });
 		for(const Line& line : lines) passLine(line.name, line.ms, line.depth);
+		// what the shares are of: every pass above together (the hidden small ones included)
+		ImGui::Separator();
+		ImGui::Text("%-30s %6.2f ms", "total (100%)", total);
 		// shadow maps only re-render now and then, the average above hides what one re-render costs
 		ImGui::TextDisabled("shadow re-render %.2f ms, %.1f per second", m_ShadowRenderMs, m_ShadowRendersPerSecond);
 	}

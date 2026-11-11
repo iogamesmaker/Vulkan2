@@ -8,7 +8,7 @@
 
 #include "heightmapscale.glsl"
 
-#define TERRAIN_PATCHES 256.0 // patches per side, must match Application::initTerrainPatches
+#define TERRAIN_PATCHES 128.0 // patches per side, must match Application::initTerrainPatches
 #define DETAIL_AMPLITUDE 0.12 // world units (~70cm)
 #define DETAIL_FADE_START 30.0
 #define DETAIL_FADE_END 120.0
