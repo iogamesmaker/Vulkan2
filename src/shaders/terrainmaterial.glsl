@@ -622,7 +622,20 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 		vec3 viewTS = vec3(dot(toEye, va), dot(toEye, vb), dot(toEye, normal));
 		float scale = ubo.pomDepth * pomMaterial / ubo.textureRepeatNear * pomFade; // uv units
 		float depth;
+		vec2 uvBefore = near.uv;
 		near.uv = parallaxOcclusion(first, second, wA, near, viewTS, scale, pomFade, depth);
+		// the same shift for every other layer sampled here (the side projections on slopes, the far / macro
+		// scales): only the near top layer moved, the cliff texturing's blend band showed two textures sliding
+		// against each other. the shift in world units (near has no rotation)
+		vec2 shiftWorld = (near.uv - uvBefore) * ubo.textureRepeatNear;
+		far.uv += farRotation * (shiftWorld / ubo.textureRepeatFar);
+		macroLayer.uv += macroRotation * (shiftWorld / macroRepeat);
+		sideXNear.uv += sideXAxis * (shiftWorld / ubo.textureRepeatNear);
+		sideXFar.uv += sideXAxis * (shiftWorld / ubo.textureRepeatFar);
+		sideXMacro.uv += sideXAxis * (shiftWorld / macroRepeat);
+		sideZNear.uv += sideZAxis * (shiftWorld / ubo.textureRepeatNear);
+		sideZFar.uv += sideZAxis * (shiftWorld / ubo.textureRepeatFar);
+		sideZMacro.uv += sideZAxis * (shiftWorld / macroRepeat);
 		// lit by whichever of the sun / moon is up, like the shadow maps
 		vec3 light = s.sundir.y > 0.0 ? s.sundir : -s.sundir;
 		vec3 lightTS = vec3(dot(light, va), dot(light, vb), dot(light, normal));
