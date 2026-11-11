@@ -147,7 +147,7 @@ struct Node : public IRenderable {
     do {                                                                \
         VkResult err = x;                                               \
         if (err) {                                                      \
-             fmt::print("Detected Vulkan error: {}", string_VkResult(err)); \
+             fmt::print("Detected Vulkan error: {} ({})\n", string_VkResult(err), #x); std::fflush(stdout); \
             abort();                                                    \
         }                                                               \
     } while (0)

@@ -2150,7 +2150,9 @@ void Application::draw() {
 	if(m_Resized) { resizeSwapchain(m_Vsync); m_FrameEvents |= FRAME_RESIZE; }
 	
 	// Wait for the GPU to finish, reset the fence
-	VK_CHECK(vkWaitForFences(m_Device, 1, &getCurrentFrame().renderFence, true, 1000000000));
+	// no timeout: a frame the GPU takes over a second for (the first frames' bakes on an integrated GPU) returned
+	// VK_TIMEOUT, VK_CHECK aborted (0xC0000409) before its message was flushed: the "random" startup crashes
+	VK_CHECK(vkWaitForFences(m_Device, 1, &getCurrentFrame().renderFence, true, UINT64_MAX));
 	
 	getCurrentFrame().deletionQueue.flush();
 

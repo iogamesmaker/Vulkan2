@@ -69,6 +69,8 @@ void main() {
 	s.dPdy = vec3(0.0, gradient.y * pc.texel, pc.texel);
 	s.readCoord = readCoord;
 	s.detailPos = worldXZ - TERRAIN_DETAIL_PERIOD * floor(worldXZ / TERRAIN_DETAIL_PERIOD);
+	s.detailLocal = s.detailPos; // (the far field: a texel is metres, the float's precision is plenty)
+	s.detailOffset = vec2(0.0);
 	s.worldXZ = worldXZ;
 	s.factor = pc.factor;
 	s.viewDistance = 1e9; // no parallax

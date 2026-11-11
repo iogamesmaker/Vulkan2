@@ -164,6 +164,8 @@ void Application::drawSettings() {
 	check("Cliff anti-tiling", &s.cliffNoTile);
 	slider("Parallax distance (m)", &s.pomDistance, 0.0f, 150.0f, "%.0f");
 	changed |= ImGui::SliderInt("Parallax steps", &s.pomSteps, 2, 64);
+	slider("Parallax depth (cm)", &s.pomDepth, 0.0f, 80.0f, "%.0f");
+	ImGui::SetItemTooltip("How deep the ground's relief looks (stones, cracks, ripples). 0 = flat");
 
 	ImGui::SeparatorText("Shadows");
 	check("Shadows", &s.shadows);
@@ -226,7 +228,6 @@ void Application::drawSettings() {
 	ImGui::EndDisabled();
 
 	if(ImGui::CollapsingHeader("Advanced")) {
-		slider("Parallax depth (cm)", &s.pomDepth, 0.0f, 80.0f, "%.0f");
 		slider("Shadow softness (sun size)", &s.shadowSoftness, 0.25f, 4.0f);
 		ImGui::SetItemTooltip("How quickly shadows soften away from what casts them (PCSS light size, 1 = the real sun)");
 		check("Grass bends around you", &s.grassInteraction);

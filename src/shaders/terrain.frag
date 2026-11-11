@@ -112,6 +112,8 @@ void main() {
 		s.dPdx = dPdx; s.dPdy = dPdy;
 		s.readCoord = readCoord;
 		s.detailPos = fragPos.xz + pc.detailOffset; // (fragPos is small near the camera so it's precise where it matters)
+		s.detailLocal = fragPos.xz;
+		s.detailOffset = pc.detailOffset;
 		s.worldXZ = worldXZ;
 		s.factor = pc.factor;
 		s.viewDistance = viewDistance;

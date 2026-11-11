@@ -306,6 +306,8 @@ struct TerrainShading {
 	vec3 dPdx, dPdy;	// the position's derivatives over a pixel (terrain.frag) / a cache texel (terraincache.comp)
 	vec2 readCoord;		// heightmap uv (wraps)
 	vec2 detailPos;		// xz in the detail textures' space (wraps at TERRAIN_DETAIL_PERIOD)
+	vec2 detailLocal;	// the same split in two: small per pixel (the position near the camera) + the same for every
+	vec2 detailOffset;	// pixel. the uvs are built from the two (detailUV), see there
 	vec2 worldXZ;		// continuous world xz, the noise is anchored to it
 	float factor;		// world units of height per unit of heightmap
 	float viewDistance; // parallax up close (none in the cache)
@@ -521,10 +523,14 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 
 	// detail uvs in world units (in the wrapped detail space: small and precise), their gradients from the position's
 	vec2 detailPos = s.detailPos;
+	// the uvs from the per pixel part plus the uniform part wrapped to the texture's own repeat. built from detailPos
+	// directly they reached ~875 tiles far from the origin, where a float only steps ~0.2 texels: the textures
+	// sampled in stripes and the parallax traced blocks (the wrapping's rounding is the same for every pixel)
+	#define LAYER_UV(R, repeat) ((R) * (s.detailLocal / (repeat)) + fract((R) * (s.detailOffset / (repeat))))
 	vec2 dx = s.dPdx.xz, dy = s.dPdy.xz;
-	DetailUV near = DetailUV(detailPos / ubo.textureRepeatNear, dx / ubo.textureRepeatNear, dy / ubo.textureRepeatNear);
+	DetailUV near = DetailUV(LAYER_UV(mat2(1.0), ubo.textureRepeatNear), dx / ubo.textureRepeatNear, dy / ubo.textureRepeatNear);
 	const mat2 farRotation = mat2(0.8, 0.6, -0.6, 0.8); // ~37 degrees, so the two layers never line up
-	DetailUV far = DetailUV(farRotation * (detailPos / ubo.textureRepeatFar), farRotation * (dx / ubo.textureRepeatFar), farRotation * (dy / ubo.textureRepeatFar));
+	DetailUV far = DetailUV(LAYER_UV(farRotation, ubo.textureRepeatFar), farRotation * (dx / ubo.textureRepeatFar), farRotation * (dy / ubo.textureRepeatFar));
 	float farWeight = s.farWeight;
 
 	// the macro layer, a much bigger scale in the distance: the far layer's ~18m tile otherwise prints a visible
@@ -535,7 +541,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// a 7x bigger tile reads a 7x sharper mip at the same distance: all that detail is sub pixel out here and the
 	// bandwidth isn't (1.6ms), so the macro layer samples as if it were 4x further away
 	const float MACRO_MIP_BIAS = 3.0;
-	DetailUV macroLayer = DetailUV(macroRotation * (detailPos / macroRepeat), macroRotation * dx / macroRepeat * MACRO_MIP_BIAS, macroRotation * dy / macroRepeat * MACRO_MIP_BIAS);
+	DetailUV macroLayer = DetailUV(LAYER_UV(macroRotation, macroRepeat), macroRotation * dx / macroRepeat * MACRO_MIP_BIAS, macroRotation * dy / macroRepeat * MACRO_MIP_BIAS);
 
 	// cliffs: the top down projection stretches the textures into long streaks there, so steep ground is
 	// textured from the sides instead (triplanar, x and z facing planes), blended by the geometric normal.
@@ -546,12 +552,15 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	vec2 sideZ = vec2(-detailPos.x * axisSign.z, y); // plane facing z: (x, y)
 	vec2 sideXdx = vec2(s.dPdx.z * axisSign.x, s.dPdx.y), sideXdy = vec2(s.dPdy.z * axisSign.x, s.dPdy.y);
 	vec2 sideZdx = vec2(-s.dPdx.x * axisSign.z, s.dPdx.y), sideZdy = vec2(-s.dPdy.x * axisSign.z, s.dPdy.y);
-	DetailUV sideXNear = DetailUV(sideX / ubo.textureRepeatNear, sideXdx / ubo.textureRepeatNear, sideXdy / ubo.textureRepeatNear);
-	DetailUV sideXFar = DetailUV(sideX / ubo.textureRepeatFar, sideXdx / ubo.textureRepeatFar, sideXdy / ubo.textureRepeatFar);
-	DetailUV sideZNear = DetailUV(sideZ / ubo.textureRepeatNear, sideZdx / ubo.textureRepeatNear, sideZdy / ubo.textureRepeatNear);
-	DetailUV sideZFar = DetailUV(sideZ / ubo.textureRepeatFar, sideZdx / ubo.textureRepeatFar, sideZdy / ubo.textureRepeatFar);
-	DetailUV sideXMacro = DetailUV(sideX / macroRepeat, sideXdx / macroRepeat * MACRO_MIP_BIAS, sideXdy / macroRepeat * MACRO_MIP_BIAS);
-	DetailUV sideZMacro = DetailUV(sideZ / macroRepeat, sideZdx / macroRepeat * MACRO_MIP_BIAS, sideZdy / macroRepeat * MACRO_MIP_BIAS);
+	// (the horizontal coordinate split like the top's, LAYER_UV)
+	mat2 sideXAxis = mat2(0.0, 0.0, axisSign.x, 0.0), sideZAxis = mat2(-axisSign.z, 0.0, 0.0, 0.0); // picks z / x into u
+	#define SIDE_UV(A, repeat) (LAYER_UV(A, repeat) + vec2(0.0, y / (repeat)))
+	DetailUV sideXNear = DetailUV(SIDE_UV(sideXAxis, ubo.textureRepeatNear), sideXdx / ubo.textureRepeatNear, sideXdy / ubo.textureRepeatNear);
+	DetailUV sideXFar = DetailUV(SIDE_UV(sideXAxis, ubo.textureRepeatFar), sideXdx / ubo.textureRepeatFar, sideXdy / ubo.textureRepeatFar);
+	DetailUV sideZNear = DetailUV(SIDE_UV(sideZAxis, ubo.textureRepeatNear), sideZdx / ubo.textureRepeatNear, sideZdy / ubo.textureRepeatNear);
+	DetailUV sideZFar = DetailUV(SIDE_UV(sideZAxis, ubo.textureRepeatFar), sideZdx / ubo.textureRepeatFar, sideZdy / ubo.textureRepeatFar);
+	DetailUV sideXMacro = DetailUV(SIDE_UV(sideXAxis, macroRepeat), sideXdx / macroRepeat * MACRO_MIP_BIAS, sideXdy / macroRepeat * MACRO_MIP_BIAS);
+	DetailUV sideZMacro = DetailUV(SIDE_UV(sideZAxis, macroRepeat), sideZdx / macroRepeat * MACRO_MIP_BIAS, sideZdy / macroRepeat * MACRO_MIP_BIAS);
 	// (a narrower band where the top and the side projections are both sampled)
 	float sideWeight = smoothstep(0.8, 0.66, normal.y) * ubo.terrainTriplanar; // from 0.8: medium slopes stretched the top projection into streaks
 	vec2 sideAxes = pow(abs(normal.xz), vec2(6.0));
