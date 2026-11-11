@@ -64,7 +64,19 @@ void main() {
 	// the caster mesh is coarser than what's on screen: across a crevice or a dip its flat triangles sit above the
 	// real surface (and the prefilter fills it in), so the floor shadowed itself with the sun shining right in.
 	// lowered a little with the triangle size. a heightfield has no overhangs, this only trims a shadow's very start
-	if (shadowPass) pos.y -= min(spacing * 0.06, 0.12);
+	// in a concave place (a gully, a bowl, the foot of a slope) the flat caster triangles bow above the real surface
+	// by their sag, and with the sun grazing the slope each one shaded a long streak down it: stair stepped bands. the
+	// sag from the curvature (the height's second difference one triangle either way, along x, z and both
+	// diagonals): a chord over a curve k sits k s^2 / 8 above its middle, the second difference is k s^2 / 2
+	if (shadowPass) {
+		vec2 du = vec2(spacing / terrainSize, 0.0), dv = vec2(0.0, spacing / terrainSize);
+		float hx = terrainHeight(heightmap, readCoord + du, dist, spacing, pc.factor, terrainSize) + terrainHeight(heightmap, readCoord - du, dist, spacing, pc.factor, terrainSize);
+		float hz = terrainHeight(heightmap, readCoord + dv, dist, spacing, pc.factor, terrainSize) + terrainHeight(heightmap, readCoord - dv, dist, spacing, pc.factor, terrainSize);
+		float hd = terrainHeight(heightmap, readCoord + du + dv, dist, spacing, pc.factor, terrainSize) + terrainHeight(heightmap, readCoord - du - dv, dist, spacing, pc.factor, terrainSize);
+		float he = terrainHeight(heightmap, readCoord + du - dv, dist, spacing, pc.factor, terrainSize) + terrainHeight(heightmap, readCoord - du + dv, dist, spacing, pc.factor, terrainSize);
+		float concave = max(max(hx, hz), max(hd, he)) * 0.5 - pos.y; // (the diagonals are a longer edge: their sag counts double, as it should)
+		pos.y -= max(concave, 0.0) * 0.4 + min(spacing * 0.03, 0.06);
+	}
 
 	outPosition = pos.xyz;
 
