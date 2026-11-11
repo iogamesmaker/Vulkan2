@@ -89,16 +89,33 @@ void addLayerNoTile(inout Material m, int index, DetailUV layer, float weight, b
 	m.height += mix(a.height, b.height, t) * weight;
 }
 
-// the offset addLayerNoTile mostly uses here, without its cross fade: what the parallax traces (one height read per
-// step instead of two; it differs from the textures only inside the narrow fade bands)
-// the parallax picks it once per pixel, where its ray starts (g_PomOffset, parallaxOcclusion): re-picked at every step,
-// the ray crossing a patch boundary jumped to another part of the texture, the height tore (worst far away, where
-// the ray covers more ground)
-vec2 g_PomOffset = vec2(0.0), g_PomLitterOffset = vec2(0.0);
-vec2 noTileOffset(vec2 uv) {
+// the top projection's anti-tiling, decided once per pixel from where its uv is BEFORE the parallax shifts it
+// (topNoTileBegin): the two offsets and the cross fade between them. the parallax traces its height with exactly
+// these and the textures are sampled with them too, so the two agree. picked per sample instead, the textures cross
+// faded where the traced height didn't: the relief and the texture slid apart along every patch border
+bool g_TopNoTile = false;
+vec2 g_TopA = vec2(0.0), g_TopB = vec2(0.0);
+float g_TopT = 0.0;
+void topNoTileBegin(vec2 uv) {
 	float k = valueNoise(uv * 0.6) * 8.0;
 	float i = floor(k), f = fract(k);
-	return sin(vec2(3.0, 7.0) * (f < 0.5 ? i : i + 1.0));
+	g_TopA = sin(vec2(3.0, 7.0) * i);
+	g_TopB = sin(vec2(3.0, 7.0) * (i + 1.0));
+	g_TopT = smoothstep(0.36, 0.64, f);
+	g_TopNoTile = true;
+}
+void addLayerPair(inout Material m, int index, DetailUV layer, float weight, bool needHeight) {
+	if (g_TopT < 0.001) { sampleOffset(m, index, layer, g_TopA, weight, needHeight); return; }
+	if (g_TopT > 0.999) { sampleOffset(m, index, layer, g_TopB, weight, needHeight); return; }
+	sampleOffset(m, index, layer, g_TopA, weight * (1.0 - g_TopT), needHeight);
+	sampleOffset(m, index, layer, g_TopB, weight * g_TopT, needHeight);
+}
+// a height map read the same way (ubo.cliffNoTile off: plain)
+float pairHeight(int index, vec2 uv, vec2 dx, vec2 dy) {
+	if (!g_TopNoTile) return textureGrad(pom[nonuniformEXT(index)], uv, dx, dy).r;
+	float a = g_TopT < 0.999 ? textureGrad(pom[nonuniformEXT(index)], uv + g_TopA, dx, dy).r : 0.0;
+	float b = g_TopT > 0.001 ? textureGrad(pom[nonuniformEXT(index)], uv + g_TopB, dx, dy).r : 0.0;
+	return mix(a, b, g_TopT);
 }
 
 Material sampleMaterial(int index, DetailUV near, DetailUV far, DetailUV macro, float farWeight, float macroWeight, bool needHeight, bool nearNoTile) {
@@ -106,7 +123,8 @@ Material sampleMaterial(int index, DetailUV near, DetailUV far, DetailUV macro, 
 	m.albedo = vec3(0.0); m.normal = vec3(0.0); m.height = 0.0;
 	float wNear = 1.0 - farWeight, wFar = farWeight * (1.0 - macroWeight), wMacro = farWeight * macroWeight;
 	if (wNear > 0.0) {
-		if (nearNoTile) addLayerNoTile(m, index, near, wNear, needHeight, 0.6);
+		if (nearNoTile && g_TopNoTile) addLayerPair(m, index, near, wNear, needHeight);
+		else if (nearNoTile) addLayerNoTile(m, index, near, wNear, needHeight, 0.6);
 		else addLayer(m, index, near, wNear, needHeight);
 	}
 	if (wFar > 0.0) addLayer(m, index, far, wFar, needHeight);
@@ -232,28 +250,27 @@ void sampleBlend(int first, int second, float wA, DetailUV near, DetailUV far, D
 // the height of the blended surface here, with exactly the blend the textures get, so the parallax traces the
 // same surface that ends up textured
 float groundHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) {
-	uv += g_PomOffset; // (the top projection's near layer has its repeat broken up too, sampleBlend)
-	if (wFirst > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[nonuniformEXT(first)], uv, near.dx, near.dy).r;
-	if (wFirst < HEIGHT_BLEND_CUTOFF) return textureGrad(pom[nonuniformEXT(second)], uv, near.dx, near.dy).r;
-	float h1 = textureGrad(pom[nonuniformEXT(first)], uv, near.dx, near.dy).r;
-	float h2 = textureGrad(pom[nonuniformEXT(second)], uv, near.dx, near.dy).r;
+	if (wFirst > 1.0 - HEIGHT_BLEND_CUTOFF) return pairHeight(first, uv, near.dx, near.dy);
+	if (wFirst < HEIGHT_BLEND_CUTOFF) return pairHeight(second, uv, near.dx, near.dy);
+	float h1 = pairHeight(first, uv, near.dx, near.dy);
+	float h2 = pairHeight(second, uv, near.dx, near.dy);
 	return mix(h1, h2, materialBlend(first, second, h1, h2, wFirst));
 }
 float blendedHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) {
 	float snow = g_SnowOver;
-	if (snow > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[BIOME_SNOW], uv + g_PomOffset, near.dx, near.dy).r;
+	if (snow > 1.0 - HEIGHT_BLEND_CUTOFF) return pairHeight(BIOME_SNOW, uv, near.dx, near.dy);
 	float litter = g_LitterOver;
 	float h;
-	if (litter > 1.0 - HEIGHT_BLEND_CUTOFF) h = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE + g_PomLitterOffset, near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
+	if (litter > 1.0 - HEIGHT_BLEND_CUTOFF) h = pairHeight(g_LitterKind, uv * LITTER_SCALE, near.dx * LITTER_SCALE, near.dy * LITTER_SCALE);
 	else {
 		h = groundHeight(first, second, wFirst, near, uv);
 		if (litter >= HEIGHT_BLEND_CUTOFF) {
-			float hl = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE + g_PomLitterOffset, near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
+			float hl = pairHeight(g_LitterKind, uv * LITTER_SCALE, near.dx * LITTER_SCALE, near.dy * LITTER_SCALE);
 			h = mix(h, hl, heightBlend(h, hl, 1.0 - litter));
 		}
 	}
 	if (snow >= HEIGHT_BLEND_CUTOFF) {
-		float hs = textureGrad(pom[BIOME_SNOW], uv + g_PomOffset, near.dx, near.dy).r;
+		float hs = pairHeight(BIOME_SNOW, uv, near.dx, near.dy);
 		h = mix(h, hs, materialBlend(-1, BIOME_SNOW, h, hs, 1.0 - snow));
 	}
 	return h;
@@ -271,8 +288,6 @@ vec2 parallaxOcclusion(int first, int second, float wFirst, DetailUV near, vec3 
 	vec2 delta = viewTS.xy / max(viewTS.z, 0.35) * scale * layer;
 
 	vec2 uv = near.uv;
-	g_PomOffset = noTileOffset(uv);
-	g_PomLitterOffset = noTileOffset(uv * LITTER_SCALE);
 	float rayDepth = 0.0;
 	float surfaceDepth = 1.0 - blendedHeight(first, second, wFirst, near, uv);
 	bool crossed = rayDepth >= surfaceDepth;
@@ -582,6 +597,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// faded over the outer 70% of the range
 	float pomFade = ubo.pomDistance > 0.0 && ubo.pomDepth > 0.0 ? 1.0 - smoothstep(ubo.pomDistance * 0.3, ubo.pomDistance, viewDistance) : 0.0;
 	pomFade *= wTop * smoothstep(0.02, 0.1, pomMaterial);
+	if (ubo.cliffNoTile > 0.5) topNoTileBegin(near.uv); // (before the parallax moves near.uv)
 	if (pomFade > 0.0) {
 		vec3 toEye = normalize(s.campos - s.position);
 		vec3 viewTS = vec3(dot(toEye, va), dot(toEye, vb), dot(toEye, normal));
@@ -605,6 +621,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 		normalSum += normalize(mat3(va, vb, normal) * n) * wTop;
 		wSum += wTop;
 	}
+	g_TopNoTile = false; // the side projections pick their own per sample (no parallax there)
 	if (wX > 0.02) {
 		vec3 a, n;
 		sampleBlend(first, second, wA, sideXNear, sideXFar, sideXMacro, farWeight, macroWeight, ubo.cliffNoTile > 0.5, a, n);
