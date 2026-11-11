@@ -174,11 +174,25 @@ float MagnitudeSum(int octaves, float gain) {
 	return (1.0 - pow(gain, float(octaves))) / (1.0 - gain);
 }
 
+vec3 baseNoise(vec2 p);
+
 // height after erosion at strength times EROSION_STRENGTH, with the EROSION_HEIGHT_OFFSET shift
 float erodedHeight(vec2 p, vec3 heightAndSlope, float strength) {
 	if (strength <= 0.0) return heightAndSlope.x;
 	vec3 h = Erosion(p, heightAndSlope, EROSION_SCALE, strength, EROSION_SLOPE_POWER, EROSION_CELL_SCALE,
 					 EROSION_OCTAVES, EROSION_GAIN, EROSION_LACUNARITY);
+	// the gullies are at their crest (cos(0)) wherever the ground is flat. on a peak that's fine, but at the bottom of
+	// a basin every octave put its crest on the same flat spot and they stacked into a sharp, gully-free cone in the
+	// middle of the valley. so the erosion fades out over flat basins of the base hills: cupped (the base around, half
+	// a first octave cell away, sits above this point, against the first octave's gully depth) and flat. from the
+	// smooth base only, so the fade is as smooth as the hills (fading on the eroded slope left a crater with a rim)
+	const float D = EROSION_SCALE * 0.5;
+	vec3 center = baseNoise(p);
+	float around = (baseNoise(p + vec2(D, 0.0)).x + baseNoise(p - vec2(D, 0.0)).x
+				  + baseNoise(p + vec2(0.0, D)).x + baseNoise(p - vec2(0.0, D)).x) * 0.25;
+	float depth = EROSION_SCALE * strength;
+	float basin = smoothstep(0.0, 0.5 * depth, around - center.x) * (1.0 - smoothstep(0.05, 0.3, length(center.yz)));
+	h.x *= 1.0 - basin;
 	float offset = EROSION_SCALE * strength * MagnitudeSum(EROSION_OCTAVES, EROSION_GAIN) * EROSION_HEIGHT_OFFSET;
 	return heightAndSlope.x + h.x + offset;
 }

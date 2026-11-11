@@ -3,7 +3,7 @@
 
 // every graphics option in one place, with quality presets. Application::applySettings pushes them into the
 // renderer's parts (terrain UBO flags, shadow maps, foliage rings, ...) whenever something changed
-enum class Quality : int { Low, Medium, High, Ultra, Custom };
+enum class Quality : int { Low, Medium, High, Ultra, Preferred, Custom };
 
 struct GraphicsSettings {
 	// display
@@ -122,6 +122,13 @@ inline GraphicsSettings qualityPreset(Quality q) {
 		s.shadowResolution = 2; // 4096: ~4cm texels around the player
 		s.fullResSSAO = true; s.cloudResolution = 2;
 		s.fogQuality = 1;
+		break;
+	case Quality::Preferred: // Ultra, minus the expensive full resolution passes
+		s = qualityPreset(Quality::Ultra);
+		s.cloudResolution = 1;	// half
+		s.fullResSSAO = false;
+		s.pomDistance = 40.0f;	// half of Ultra's 80m
+		s.shadowSmoothing = 2;
 		break;
 	default: break;
 	}

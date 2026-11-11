@@ -803,12 +803,13 @@ void Application::initDefaultData() {
 	m_TerrainPC.factor = m_WorldSize * TERRAIN_HEIGHT_SCALE * m_TerrainScale;
 	m_Camera.position.y = m_TerrainPC.factor * 0.5f;
 
-	// graphics settings. VULKAN2_PRESET=low|medium|high|ultra|off picks a preset (for the captures)
+	// graphics settings. VULKAN2_PRESET=low|medium|high|ultra|preferred|off picks a preset (for the captures)
 	if(const char* preset = std::getenv("VULKAN2_PRESET")) {
 		std::string name = preset;
 		if(name == "low") m_Quality = Quality::Low;
 		else if(name == "medium") m_Quality = Quality::Medium;
 		else if(name == "ultra") m_Quality = Quality::Ultra;
+		else if(name == "preferred") m_Quality = Quality::Preferred;
 		m_Settings = qualityPreset(m_Quality);
 		if(name == "off") { m_Settings = everythingOff(m_Settings); m_Quality = Quality::Custom; }
 	}

@@ -116,9 +116,9 @@ void Application::drawSettings() {
 	GraphicsSettings& s = m_Settings;
 	bool changed = false;
 
-	const char* presets[] = { "Low", "Medium", "High", "Ultra", "Custom" };
+	const char* presets[] = { "Low", "Medium", "High", "Ultra", "Preferred", "Custom" };
 	int quality = static_cast<int>(m_Quality);
-	if(ImGui::Combo("Quality", &quality, presets, 5) && quality != static_cast<int>(Quality::Custom)) {
+	if(ImGui::Combo("Quality", &quality, presets, 6)&& quality != static_cast<int>(Quality::Custom)) {
 		m_Quality = static_cast<Quality>(quality);
 		bool vsync = s.vsync; // a display choice, not a quality one
 		s = qualityPreset(m_Quality);
