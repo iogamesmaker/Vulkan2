@@ -21,7 +21,7 @@ layout(std430, set = 0, binding = 2) writeonly buffer Instances { GroundCoverIns
 struct DrawCommand { uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset; uint firstInstance; };
 // [0, GC_MAX_MESHES) what the camera sees, per mesh, then the same for the shadow casters (simplified), then what the
 // camera sees small on screen (simplified)
-layout(std430, set = 0, binding = 3) buffer Commands { DrawCommand commands[GC_MAX_MESHES * 3]; };
+layout(std430, set = 0, binding = 3) buffer Commands { DrawCommand commands[GC_MAX_MESHES * 4]; };
 layout(std430, set = 0, binding = 4) readonly buffer Species { GroundCoverSpecies species[GC_SPECIES]; };
 
 void append(uint bin, GroundCoverInstance instance) {
@@ -168,5 +168,6 @@ void main() {
 	if (sphereOutsideView(pc.viewproj, instance.posScale.xyz + vec3(0.0, sphere * 0.5, 0.0), sphere + 0.015)) return; // (+ the wind's sway)
 	// the full model only while it's big on screen, the simplified one (~30% of the triangles) below that
 	float radiusPixels = sphere * pc.projScale / max(dist, 1e-3);
-	append(radiusPixels > GC_LOD_PIXELS ? mesh : uint(GC_MAX_MESHES * 2) + mesh, instance);
+	// (and ~8% of them once it's a speck: the 30% one went on to the plant's reach, a knot of triangles a few pixels wide)
+	append(radiusPixels > GC_LOD_PIXELS ? mesh : uint(GC_MAX_MESHES * (radiusPixels > GC_LOD2_PIXELS ? 2 : 3)) + mesh, instance);
 }

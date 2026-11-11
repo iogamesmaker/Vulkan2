@@ -9,7 +9,7 @@ class Application;
 
 class TextureLoader;
 
-// rocks, boulders, fallen logs and stumps: photoscans (Poly Haven, assets/props), two LODs each from meshoptimizer,
+// rocks, boulders, fallen logs and stumps: photoscans (Poly Haven, assets/props), three LODs each from meshoptimizer,
 // scattered on a world anchored grid around the camera every frame by props.comp, drawn per mesh / LOD with indexed
 // indirect draws into the G-buffer, plus shadow casters near the camera
 constexpr uint32_t PROP_MESH_COUNT = 15; // 10 rocks, 3 logs, 2 stumps (propscommon.glsl PROP_MESHES)
@@ -31,6 +31,7 @@ public:
 	std::vector<DrawStatBuffer> drawStatBuffers() const { return { { m_Commands.buffer, BINS * sizeof(VkDrawIndexedIndirectCommand) } }; }
 	void drawStats(const std::vector<const uint8_t*>& data, std::vector<DrawStat>& out) const {
 		out.push_back(sumIndexed("rocks, logs, stumps", data[0], 0, MESHES * 2));
+		out.push_back(sumIndexed("rocks, logs, stumps, far (LOD 2)", data[0], MESHES * 3, MESHES));
 		out.push_back(sumIndexed("rocks, logs, stumps, shadow casters", data[0], MESHES * 2, MESHES));
 	}
 
@@ -50,7 +51,7 @@ private:
 	struct Mesh { uint32_t firstIndex, indexCount; int32_t vertexOffset; };
 
 	// must match propscommon.glsl
-	static constexpr uint32_t MESHES = PROP_MESH_COUNT, BINS = MESHES * 3, CAPACITY = 4096;
+	static constexpr uint32_t MESHES = PROP_MESH_COUNT, BINS = MESHES * 4, CAPACITY = 4096; // (propscommon.glsl's bins)
 	static constexpr float CELL = 0.9f, RADIUS = 160.0f;
 	static constexpr uint32_t GRID_SIDE = static_cast<uint32_t>(2.0f * RADIUS / CELL);
 
@@ -61,7 +62,7 @@ private:
 	TextureLoader* m_TextureLoader = nullptr;
 	AllocatedImage m_Textures[MESHES * 2]{}; // per mesh albedo, normal
 	AllocatedImage m_Stone[4]{};			  // ambientCG Rock030, Rock062: albedo, normal each
-	Mesh m_Meshes[MESHES][2];
+	Mesh m_Meshes[MESHES][3]; // LOD 0, 1, 2
 	AllocatedBuffer m_VertexBuffer, m_IndexBuffer, m_Instances, m_Commands;
 	std::vector<VkDrawIndexedIndirectCommand> m_CommandTemplate;
 

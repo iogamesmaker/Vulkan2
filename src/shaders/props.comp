@@ -75,5 +75,8 @@ void main() {
 	// triangles on rocks a pixel wide, ~4ms of a forest frame on an integrated GPU
 	float radiusPixels = radius * pc.projScale / max(dist, 1e-3);
 	if (radiusPixels < 1.5) return;
-	append(mesh * 2u + (radiusPixels > PROP_LOD_PIXELS ? 0u : 1u), instance);
+	// (a third LOD, ~1/5 of the cheap one, once it's a few pixels across: the 300-700 triangles went on to the
+	// edge of the ring, dense little knots of triangles on every distant rock)
+	if (radiusPixels < PROP_LOD2_PIXELS) append(uint(PROP_MESHES * 3) + mesh, instance);
+	else append(mesh * 2u + (radiusPixels > PROP_LOD_PIXELS ? 0u : 1u), instance);
 }

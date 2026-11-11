@@ -140,6 +140,18 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 		mesh.firstIndex1 = static_cast<uint32_t>(indices.size());
 		mesh.indexCount1 = static_cast<uint32_t>(simplified.size());
 		indices.insert(indices.end(), simplified.begin(), simplified.end());
+		// LOD 2: ~8% for the plants a few pixels across, whatever it costs (sloppy when the careful one can't get there)
+		std::vector<uint32_t> far(mesh.indexCount);
+		size_t farTarget = std::max<size_t>(mesh.indexCount * 8 / 100 / 3 * 3, 3);
+		far.resize(meshopt_simplify(far.data(), indices.data() + mesh.firstIndex, mesh.indexCount, &vertices[mesh.vertexOffset].positionSpecies.x,
+									mesh.vertexCount, sizeof(Vertex), farTarget, 0.2f, 0, &error));
+		if(far.size() > farTarget * 2)
+			far.resize(meshopt_simplifySloppy(far.data(), indices.data() + mesh.firstIndex, mesh.indexCount, &vertices[mesh.vertexOffset].positionSpecies.x,
+											  mesh.vertexCount, sizeof(Vertex), farTarget, 1.0f, &error));
+		if(far.empty()) far.assign(simplified.begin(), simplified.end());
+		mesh.firstIndex2 = static_cast<uint32_t>(indices.size());
+		mesh.indexCount2 = static_cast<uint32_t>(far.size());
+		indices.insert(indices.end(), far.begin(), far.end());
 	}
 	if(vertices.empty()) vertices.resize(1), indices.resize(3, 0); // nothing found: keep the buffers valid
 
@@ -160,9 +172,9 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 		vkCmdCopyBuffer(cmd, staging.buffer, m_SpeciesBuffer.buffer, 1, &speciesCopy);
 	});
 	engine->destroyBuffer(staging);
-	size_t lod1 = 0;
-	for(const Mesh& mesh : m_Meshes) lod1 += mesh.indexCount1 / 3;
-	fmt::print("ground cover: {} meshes, {} vertices, {} triangles ({} simplified)\n", m_Meshes.size(), vertices.size(), indices.size() / 3 - lod1, lod1);
+	size_t lod1 = 0, lod2 = 0;
+	for(const Mesh& mesh : m_Meshes) lod1 += mesh.indexCount1 / 3, lod2 += mesh.indexCount2 / 3;
+	fmt::print("ground cover: {} meshes, {} vertices, {} triangles ({} simplified, {} far)\n", m_Meshes.size(), vertices.size(), indices.size() / 3 - lod1 - lod2, lod1, lod2);
 
 	// bins: one per mesh for the camera, then one per mesh for the shadow casters
 	m_Instances = engine->createBuffer(BINS * CAPACITY * sizeof(glm::vec4) * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
@@ -172,9 +184,9 @@ void GroundCover::init(Application* engine, TextureLoader& textures, const Alloc
 		uint32_t mesh = bin % MAX_MESHES;
 		m_CommandTemplate[bin].firstInstance = bin * CAPACITY;
 		if(mesh >= m_Meshes.size()) continue;
-		bool simple = bin >= MAX_MESHES; // the shadow casters and the camera's lod 1
-		m_CommandTemplate[bin].indexCount = simple ? m_Meshes[mesh].indexCount1 : m_Meshes[mesh].indexCount;
-		m_CommandTemplate[bin].firstIndex = simple ? m_Meshes[mesh].firstIndex1 : m_Meshes[mesh].firstIndex;
+		uint32_t block = bin / MAX_MESHES; // 0 the camera's lod 0, 1 the shadow casters and 2 the camera's lod 1 (simplified), 3 lod 2
+		m_CommandTemplate[bin].indexCount = block == 0 ? m_Meshes[mesh].indexCount : (block == 3 ? m_Meshes[mesh].indexCount2 : m_Meshes[mesh].indexCount1);
+		m_CommandTemplate[bin].firstIndex = block == 0 ? m_Meshes[mesh].firstIndex : (block == 3 ? m_Meshes[mesh].firstIndex2 : m_Meshes[mesh].firstIndex1);
 		m_CommandTemplate[bin].vertexOffset = m_Meshes[mesh].vertexOffset;
 	}
 
@@ -326,6 +338,7 @@ void GroundCover::draw(VkCommandBuffer cmd) {
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, 0, static_cast<uint32_t>(m_Meshes.size()), sizeof(VkDrawIndexedIndirectCommand));
 	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, MAX_MESHES * 2 * sizeof(VkDrawIndexedIndirectCommand), static_cast<uint32_t>(m_Meshes.size()), sizeof(VkDrawIndexedIndirectCommand)); // lod 1
+	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, MAX_MESHES * 3 * sizeof(VkDrawIndexedIndirectCommand), static_cast<uint32_t>(m_Meshes.size()), sizeof(VkDrawIndexedIndirectCommand)); // lod 2
 }
 
 void GroundCover::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {

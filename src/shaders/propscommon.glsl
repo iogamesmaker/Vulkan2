@@ -7,13 +7,15 @@
 // meshes (photoscans, Props::loadMesh): PROP_ROCKS rocks (also scaled up into boulders), the logs, the stumps
 // (propplacement.glsl). every mesh has a detailed and a cheap LOD
 #define PROP_MESHES 15 // Props::MESHES: 6 rocks, 2 logs, 2 stumps
-// bins: mesh * 2 + lod for the camera, then PROP_MESHES shadow caster bins (cheap LOD), every bin PROP_CAPACITY
-#define PROP_BINS (PROP_MESHES * 3)
+// bins: mesh * 2 + lod for the camera (LOD 0 / 1), then PROP_MESHES shadow caster bins (cheap LOD), then
+// PROP_MESHES bins for the camera's LOD 2 (the speck), every bin PROP_CAPACITY
+#define PROP_BINS (PROP_MESHES * 4)
 #define PROP_CAPACITY 4096u
 
 // PROP_CELL: propplacement.glsl
 #define PROP_RADIUS 160.0  // ~1km
 #define PROP_LOD_PIXELS 70.0 // the detailed LOD above this radius on screen (props.comp)
+#define PROP_LOD2_PIXELS 16.0 // the cheapest below this one
 #define PROP_SHADOW_DISTANCE 90.0
 
 struct PropInstance {

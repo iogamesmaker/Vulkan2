@@ -25,6 +25,7 @@ public:
 		uint32_t meshes = static_cast<uint32_t>(m_Meshes.size());
 		out.push_back(sumIndexed("ground cover", data[0], 0, meshes));
 		out.push_back(sumIndexed("ground cover, simplified", data[0], MAX_MESHES * 2, meshes));
+		out.push_back(sumIndexed("ground cover, far (LOD 2)", data[0], MAX_MESHES * 3, meshes));
 		out.push_back(sumIndexed("ground cover, shadow casters", data[0], MAX_MESHES, meshes));
 	}
 
@@ -38,11 +39,11 @@ private:
 		glm::vec4 uv;
 	};
 	// lod 1: meshoptimizer's simplification (~30%), for the plants small on screen and the shadow casters
-	struct Mesh { uint32_t firstIndex, indexCount; int32_t vertexOffset; uint32_t vertexCount, firstIndex1, indexCount1; };
+	struct Mesh { uint32_t firstIndex, indexCount; int32_t vertexOffset; uint32_t vertexCount, firstIndex1, indexCount1, firstIndex2, indexCount2; };
 	struct Species { glm::uvec4 meshes; glm::vec4 size; }; // groundcovercommon.glsl
 
 	// must match groundcovercommon.glsl
-	static constexpr uint32_t SPECIES = 20, MAX_MESHES = 128, BINS = MAX_MESHES * 3, CAPACITY = 3072; // bins: camera lod 0, shadow casters, camera lod 1
+	static constexpr uint32_t SPECIES = 20, MAX_MESHES = 128, BINS = MAX_MESHES * 4, CAPACITY = 3072; // bins: camera lod 0, shadow casters, camera lod 1, camera lod 2
 	static constexpr uint32_t SIDE[3] = { 140, 133, 166 }; // the small / medium / far grids, 2 * radius / cell
 	static constexpr uint32_t THREADS = SIDE[0] * SIDE[0] + SIDE[1] * SIDE[1] + SIDE[2] * SIDE[2];
 

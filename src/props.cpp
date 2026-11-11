@@ -235,8 +235,9 @@ void Props::init(Application* engine, TextureLoader& textures, const AllocatedIm
 		} else bakeShape(mesh, meshVertices, meshIndices);
 		// the LODs from the scan: the simplifier keeps the uv seams and the silhouette. LOD0 within a small error
 		// (it stops early on simple shapes), LOD1 down to its budget whatever it costs (it's small on screen)
-		for(uint32_t lod = 0; lod < 2; lod++) {
-			size_t target = std::min(meshIndices.size(), (lod == 0 ? file.lod0 : file.lod1) * 3);
+		// LOD2: a fifth of LOD1, for the ones only a few pixels across (props.comp), sloppy if it has to
+		for(uint32_t lod = 0; lod < 3; lod++) {
+			size_t target = std::min(meshIndices.size(), (lod == 0 ? file.lod0 : (lod == 1 ? file.lod1 : std::max<size_t>(file.lod1 / 5, 40))) * 3);
 			std::vector<uint32_t> simplified(meshIndices.size());
 			float error = 0.0f;
 			simplified.resize(meshopt_simplify(simplified.data(), meshIndices.data(), meshIndices.size(), &meshVertices[0].positionMaterial.x,
@@ -252,6 +253,7 @@ void Props::init(Application* engine, TextureLoader& textures, const AllocatedIm
 			indices.insert(indices.end(), simplified.begin(), simplified.end());
 		}
 		fmt::print("props: {} {}: {} -> {} / {} triangles\n", file.folder, file.node ? file.node : "", meshIndices.size() / 3, m_Meshes[mesh][0].indexCount / 3, m_Meshes[mesh][1].indexCount / 3);
+		fmt::print("props:   LOD2 {} triangles\n", m_Meshes[mesh][2].indexCount / 3);
 		vertices.insert(vertices.end(), meshVertices.begin(), meshVertices.end());
 	}
 
@@ -275,7 +277,7 @@ void Props::init(Application* engine, TextureLoader& textures, const AllocatedIm
 	m_Commands = engine->createBuffer(BINS * sizeof(VkDrawIndexedIndirectCommand), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 	m_CommandTemplate.resize(BINS);
 	for(uint32_t bin = 0; bin < BINS; bin++) {
-		const Mesh& m = bin < MESHES * 2 ? m_Meshes[bin / 2][bin % 2] : m_Meshes[bin - MESHES * 2][1];
+		const Mesh& m = bin < MESHES * 2 ? m_Meshes[bin / 2][bin % 2] : (bin < MESHES * 3 ? m_Meshes[bin - MESHES * 2][1] : m_Meshes[bin - MESHES * 3][2]);
 		m_CommandTemplate[bin] = { m.indexCount, 0, m.firstIndex, m.vertexOffset, bin * CAPACITY };
 	}
 
@@ -438,7 +440,8 @@ void Props::draw(VkCommandBuffer cmd) {
 	VkDeviceSize offset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &offset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, 0, MESHES * 2, sizeof(VkDrawIndexedIndirectCommand)); // every mesh and LOD (multiDrawIndirect)
+	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, 0, MESHES * 2, sizeof(VkDrawIndexedIndirectCommand)); // every mesh, LOD 0 and 1 (multiDrawIndirect)
+	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, MESHES * 3 * sizeof(VkDrawIndexedIndirectCommand), MESHES, sizeof(VkDrawIndexedIndirectCommand)); // LOD 2
 }
 
 void Props::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {

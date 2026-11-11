@@ -9,6 +9,7 @@
 #define GC_SPECIES 20
 #define GC_MAX_MESHES 128
 #define GC_CAPACITY 3072u // (more meshes, fewer per bin: the same ~38MB of instances)
+#define GC_LOD2_PIXELS 12.0 // and the much simpler LOD 2 below this one
 #define GC_LOD_PIXELS 45.0 // the full model above this radius on screen, the simplified one below (groundcover.comp)
 // species
 #define GC_FERN 0
