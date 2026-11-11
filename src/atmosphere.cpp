@@ -431,7 +431,7 @@ void Atmosphere::setDefaults() {
 	d.rayleighscale	   = 8.0f;
 	d.miescale		   = 1.4f;
 	d.rayleigh		   = glm::vec3(5.802, 13.558, 33.100) * glm::vec3(0.001);
-	d.mie			   = glm::vec3(0.0055); // scattering, extinction is 1.11x this. ~1.7x the textbook clear day: a humid
+	d.mie			   = glm::vec3(0.0047); // scattering, extinction is 1.11x this. ~1.7x the textbook clear day: a humid
 											   // summer haze, distance reads as layers of softer, warmer air
 	d.mieg			   = 0.8f;
 	d.absorbtion	   = glm::vec3(0.000650,0.001881,0.000085);

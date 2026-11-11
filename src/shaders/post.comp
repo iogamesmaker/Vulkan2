@@ -42,7 +42,7 @@ vec3 gradeScene(vec3 c) {
 	float green = clamp((c.g - max(c.r, c.b)) / max(c.g, 1e-5) * 2.5, 0.0, 1.0); // how much it leans green
 	c.r = mix(c.r, c.g * 0.85, green * 0.18);
 	c = mix(vec3(luma), c, 1.0 - green * 0.12);
-	return max(c * vec3(1.05, 1.0, 0.93), 0.0);
+	return max(c * vec3(1.03, 1.0, 0.96), 0.0); // (a touch warm; more and every sunrise was a red wash)
 }
 
 // on the display referred image: cool shadows and warm highlights (split toning), a gentle S curve around the

@@ -74,7 +74,9 @@ void main() {
 	vec2 size = vec2(textureSize(heightmap, 0));
 	vec2 readCoord = fragUV + (vec2(pc.offset) / size);
 	// (the texture gradients come from these, taken while every pixel of the quad is still running)
-	vec3 dPdx = dFdx(fragPos), dPdy = dFdy(fragPos);
+	// per pixel derivatives: the coarse ones (one per 2x2 quad on Intel) gave each quad its own mip and parallax
+	// depth, small squares fixed to the screen, worst far away and zoomed in
+	vec3 dPdx = dFdxFine(fragPos), dPdy = dFdyFine(fragPos);
 	float viewDistance = distance(fragPos, pc.campos);
 	vec2 worldXZ = fragPos.xz + vec2(pc.offset) * (ubo.terrainSize / size.x); // continuous world units
 	float bumpFade = detailFade(horizontalDistance) * ubo.terrainBumps;

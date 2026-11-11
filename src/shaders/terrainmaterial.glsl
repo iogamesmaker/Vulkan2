@@ -91,6 +91,10 @@ void addLayerNoTile(inout Material m, int index, DetailUV layer, float weight, b
 
 // the offset addLayerNoTile mostly uses here, without its cross fade: what the parallax traces (one height read per
 // step instead of two; it differs from the textures only inside the narrow fade bands)
+// the parallax picks it once per pixel, where its ray starts (g_PomOffset, parallaxOcclusion): re-picked at every step,
+// the ray crossing a patch boundary jumped to another part of the texture, the height tore (worst far away, where
+// the ray covers more ground)
+vec2 g_PomOffset = vec2(0.0), g_PomLitterOffset = vec2(0.0);
 vec2 noTileOffset(vec2 uv) {
 	float k = valueNoise(uv * 0.6) * 8.0;
 	float i = floor(k), f = fract(k);
@@ -228,7 +232,7 @@ void sampleBlend(int first, int second, float wA, DetailUV near, DetailUV far, D
 // the height of the blended surface here, with exactly the blend the textures get, so the parallax traces the
 // same surface that ends up textured
 float groundHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) {
-	uv += noTileOffset(uv); // (the top projection's near layer has its repeat broken up too, sampleBlend)
+	uv += g_PomOffset; // (the top projection's near layer has its repeat broken up too, sampleBlend)
 	if (wFirst > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[nonuniformEXT(first)], uv, near.dx, near.dy).r;
 	if (wFirst < HEIGHT_BLEND_CUTOFF) return textureGrad(pom[nonuniformEXT(second)], uv, near.dx, near.dy).r;
 	float h1 = textureGrad(pom[nonuniformEXT(first)], uv, near.dx, near.dy).r;
@@ -237,19 +241,19 @@ float groundHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) 
 }
 float blendedHeight(int first, int second, float wFirst, DetailUV near, vec2 uv) {
 	float snow = g_SnowOver;
-	if (snow > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[BIOME_SNOW], uv + noTileOffset(uv), near.dx, near.dy).r;
+	if (snow > 1.0 - HEIGHT_BLEND_CUTOFF) return textureGrad(pom[BIOME_SNOW], uv + g_PomOffset, near.dx, near.dy).r;
 	float litter = g_LitterOver;
 	float h;
-	if (litter > 1.0 - HEIGHT_BLEND_CUTOFF) h = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE + noTileOffset(uv * LITTER_SCALE), near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
+	if (litter > 1.0 - HEIGHT_BLEND_CUTOFF) h = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE + g_PomLitterOffset, near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
 	else {
 		h = groundHeight(first, second, wFirst, near, uv);
 		if (litter >= HEIGHT_BLEND_CUTOFF) {
-			float hl = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE + noTileOffset(uv * LITTER_SCALE), near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
+			float hl = textureGrad(pom[nonuniformEXT(g_LitterKind)], uv * LITTER_SCALE + g_PomLitterOffset, near.dx * LITTER_SCALE, near.dy * LITTER_SCALE).r;
 			h = mix(h, hl, heightBlend(h, hl, 1.0 - litter));
 		}
 	}
 	if (snow >= HEIGHT_BLEND_CUTOFF) {
-		float hs = textureGrad(pom[BIOME_SNOW], uv + noTileOffset(uv), near.dx, near.dy).r;
+		float hs = textureGrad(pom[BIOME_SNOW], uv + g_PomOffset, near.dx, near.dy).r;
 		h = mix(h, hs, materialBlend(-1, BIOME_SNOW, h, hs, 1.0 - snow));
 	}
 	return h;
@@ -267,6 +271,8 @@ vec2 parallaxOcclusion(int first, int second, float wFirst, DetailUV near, vec3 
 	vec2 delta = viewTS.xy / max(viewTS.z, 0.35) * scale * layer;
 
 	vec2 uv = near.uv;
+	g_PomOffset = noTileOffset(uv);
+	g_PomLitterOffset = noTileOffset(uv * LITTER_SCALE);
 	float rayDepth = 0.0;
 	float surfaceDepth = 1.0 - blendedHeight(first, second, wFirst, near, uv);
 	bool crossed = rayDepth >= surfaceDepth;

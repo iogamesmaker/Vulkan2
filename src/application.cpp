@@ -816,6 +816,8 @@ void Application::initDefaultData() {
 	if(const char* scale = std::getenv("VULKAN2_SCALE")) m_Settings.renderScale = static_cast<float>(std::atof(scale));
 	// VULKAN2_TREEDIST=<x>: the tree detail distance (comparison captures)
 	if(const char* treeDist = std::getenv("VULKAN2_TREEDIST")) m_Settings.treeDetailDistance = static_cast<float>(std::atof(treeDist));
+	// VULKAN2_POM=0: parallax occlusion mapping off (comparison captures)
+	if(const char* pom = std::getenv("VULKAN2_POM")) m_Settings.pomDistance = std::atoi(pom) == 0 ? 0.0f : 35.0f; // (=1 turns it on over VULKAN2_PRESET=off)
 	// VULKAN2_TAA=0: TAA off (flicker captures)
 	if(const char* taa = std::getenv("VULKAN2_TAA")) m_Settings.taa = std::atoi(taa) != 0;
 	// VULKAN2_GROUNDCOVER=0: ground cover off (comparison captures; how much grows is the world's call, not a setting)
