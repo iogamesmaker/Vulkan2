@@ -28,6 +28,7 @@ public:
 	// how fast you're moving through the vegetation (world units / s), the audio's rustle
 	float speed() const { return m_Speed; }
 	float m_Wind = 0.3f; // the weather's wind (weather.hpp), how hard the grass, bushes and trees sway
+	float m_WindTravel = 0.0f; // how far the gusts have blown, world units (windfield.glsl)
 
 private:
 	Application* m_Engine = nullptr;

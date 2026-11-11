@@ -49,7 +49,7 @@ void Precipitation::setDepth(VkImageView depth, VkSampler nearest) {
 }
 
 void Precipitation::draw(VkCommandBuffer cmd, const PrecipitationPushConstants& pc, VkDescriptorSet atmosphereSet, VkImageView output, VkExtent2D extent) {
-	uint32_t instances = static_cast<uint32_t>(pc.counts.x + pc.counts.y + pc.counts.z);
+	uint32_t instances = static_cast<uint32_t>(pc.counts.x + pc.counts.y + pc.counts.z + pc.counts.w);
 	if(instances == 0) return;
 	VkRenderingAttachmentInfo color = vkinit::attachment_info(output, nullptr, VK_IMAGE_LAYOUT_GENERAL);
 	VkRenderingInfo renderInfo = vkinit::rendering_info(extent, &color, nullptr);

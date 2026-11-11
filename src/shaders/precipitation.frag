@@ -8,6 +8,7 @@
 layout(location = 0) in vec2 inUV;
 layout(location = 1) flat in int inKind;
 layout(location = 2) in float inAlpha;
+layout(location = 3) flat in vec2 inLeaf; // x = colour, y = which face shows
 
 layout(location = 0) out vec4 outColor;
 
@@ -25,7 +26,14 @@ void main() {
 	if (scene > gl_FragCoord.z) discard; // reversed z: something's in front
 
 	float shape;
-	if (inKind == KIND_SNOW) {
+	if (inKind == KIND_LEAF) {
+		// a pointed oval with a hard edge (a leaf is opaque, not a soft blob)
+		vec2 p = inUV * 2.0 - 1.0;
+		float edge = 1.0 - abs(p.y) * 0.35; // narrower towards the tips
+		shape = 1.0 - smoothstep(0.85, 1.0, length(vec2(p.x / edge, p.y)));
+		if (shape < 0.5) discard;
+		shape = 1.0;
+	} else if (inKind == KIND_SNOW) {
 		shape = 1.0 - smoothstep(0.55, 1.0, length(inUV * 2.0 - 1.0));
 	} else {
 		float across = 1.0 - abs(inUV.x * 2.0 - 1.0);
@@ -43,7 +51,15 @@ void main() {
 	float opacity;
 	if (inKind == KIND_RAIN) { color = vec3(0.6, 0.65, 0.7) * light * 0.45; opacity = 0.5; }
 	else if (inKind == KIND_SNOW) { color = vec3(0.9, 0.92, 0.95) * light * 0.3; opacity = 0.85; }
-	else { color = vec3(0.75, 0.55, 0.33) * light * 0.3; opacity = 0.5; }
+	else if (inKind == KIND_SAND) { color = vec3(0.75, 0.55, 0.33) * light * 0.3; opacity = 0.5; }
+	else {
+		// dead leaves: browns, rust and the odd yellow one, the face towards the light brighter than its back, light
+		// shining through when it's against the sun
+		vec3 leaf = inLeaf.x < 0.45 ? vec3(0.16, 0.09, 0.04) : (inLeaf.x < 0.75 ? vec3(0.28, 0.12, 0.04) : (inLeaf.x < 0.92 ? vec3(0.36, 0.26, 0.06) : vec3(0.1, 0.11, 0.04)));
+		float face = mix(0.7, 1.15, inLeaf.y * 0.5 + 0.5);
+		color = leaf * light * 0.32 * face;
+		opacity = 1.0;
+	}
 
 	float a = shape * opacity * inAlpha;
 	outColor = vec4(color, a);

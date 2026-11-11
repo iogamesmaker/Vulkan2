@@ -18,6 +18,7 @@ layout(location = 3) in float inHeight;
 layout(location = 4) flat in int inKind;
 layout(location = 5) flat in float inSeed;
 layout(location = 6) flat in float inMoisture;
+layout(location = 10) flat in float inGust; // the gust over it (foliage.vert)
 
 
 layout(set = 0, binding = 1) uniform sampler2D bladeAtlas;
@@ -108,6 +109,14 @@ void main() {
 			float luma = dot(albedo, vec3(0.3, 0.59, 0.11));
 			albedo = mix(albedo, luma * vec3(1.55, 1.2, 0.55), dry * 0.6); // golden tan straw (a paler one went cream white in the sun)
 		}
+	}
+
+	// a gust flattening the meadow shows the blades' paler, glossier sides and their tips to the sky: the wave of
+	// lighter grass you see rolling over a field in the wind
+	if (inKind != 3) {
+		float sheen = inGust * smoothstep(0.15, 0.9, inHeight);
+		float luma = dot(albedo, vec3(0.3, 0.59, 0.11));
+		albedo = mix(albedo, mix(vec3(luma), albedo, 0.7) * 1.4, sheen * 0.7);
 	}
 
 	// darker near the roots, the clump shadows itself

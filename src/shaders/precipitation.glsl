@@ -6,6 +6,7 @@
 #define KIND_RAIN 0
 #define KIND_SNOW 1
 #define KIND_SAND 2
+#define KIND_LEAF 3
 
 layout(push_constant) uniform constants {
 	mat4 viewProj;	 // unjittered, terrain space
@@ -13,7 +14,7 @@ layout(push_constant) uniform constants {
 	float time;
 	vec2 offsetWorld; // terrain space -> continuous world (the particles are world anchored)
 	vec2 wind;		 // world units / s, horizontal
-	ivec4 counts;	 // instances: x rain, y snow, z sand (in that order)
+	ivec4 counts;	 // instances: x rain, y snow, z sand, w leaves (in that order)
 	vec4 view;		 // xy = output size (pixels), z = projScale (pixels per world unit at distance 1), w = 0
 	vec3 sundir;
 	float pad;

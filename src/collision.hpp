@@ -38,6 +38,13 @@ public:
 	// VULKAN2_COLLDUMP: the ground (terrain or prop top) along a line through the nearest prop, printed
 	void dumpNearestProp(glm::vec2 from) const;
 	bool valid() const { return m_Valid; }
+	// how wooded it is around you: the share of the ~5x5 tree cells around the camera that hold a tree (0..1)
+	float treeCover() const {
+		if(!m_Valid) return 0.0f;
+		int n = 0;
+		for(const glm::vec4& t : m_Data.trees) n += t.w > 0.5f ? 1 : 0;
+		return float(n) / float(PROBE_TREES);
+	}
 
 	// the terrain under a world xz point
 	float groundAt(glm::vec2 xz) const;

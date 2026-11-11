@@ -1,5 +1,5 @@
 #pragma once
-// rain, snow and blowing sand (precipitation.vert / .frag): instanced quads in a box around the camera, no buffers,
+// rain, snow, blowing sand and leaves blown off the trees in a forest (precipitation.vert / .frag): instanced quads in a box around the camera, no buffers,
 // drawn onto the window resolution output after the TAA (so the streaks don't ghost), depth tested by hand against
 // the render resolution depth buffer. how much of each comes from the weather (weather.hpp)
 #include <vk_types.h>
@@ -12,7 +12,7 @@ struct PrecipitationPushConstants {
 	float time;
 	glm::vec2 offsetWorld;
 	glm::vec2 wind;
-	glm::ivec4 counts; // x rain, y snow, z sand
+	glm::ivec4 counts; // x rain, y snow, z sand, w leaves
 	glm::vec4 view;	   // xy output size, z projScale
 	glm::vec3 sundir;
 	float pad = 0.0f;
@@ -21,7 +21,7 @@ struct PrecipitationPushConstants {
 
 class Precipitation {
 public:
-	static constexpr uint32_t MAX_RAIN = 60000, MAX_SNOW = 30000, MAX_SAND = 40000;
+	static constexpr uint32_t MAX_RAIN = 60000, MAX_SNOW = 30000, MAX_SAND = 40000, MAX_LEAVES = 2500;
 
 	void init(Application* engine, VkFormat outputFormat, VkDescriptorSetLayout atmosphereLayout);
 	// after every resize: the depth buffer it tests against (SHADER_READ_ONLY when it draws)

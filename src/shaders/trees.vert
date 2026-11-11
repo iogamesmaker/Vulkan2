@@ -5,6 +5,7 @@
 #define INTERACTION_SET 0
 #define INTERACTION_BINDING 2
 #include "interaction.glsl"
+#include "windfield.glsl"
 
 layout(location = 0) in vec4 inPositionWind; // xyz in tree space (height 1), w = how much it sways
 layout(location = 1) in vec4 inNormalMaterial; // xyz normal, w = material: pack * 2 + 1 for the leaves
@@ -50,12 +51,16 @@ void main() {
 	float treeHeight = inst.posScale.w;
 	vec3 pos = inst.posScale.xyz + local * treeHeight;
 
-	// wind: the whole tree leans with slow gusts, leaves flutter on top of that
-	vec2 windDir = normalize(vec2(0.8, 0.35));
+	// wind: the whole tree leans as the gusts roll through the forest (windfield.glsl, the same ones as over the
+	// grass: one passes through tree after tree downwind), rocking a little on its own, leaves flutter on top
+	vec2 windDir = WIND_DIR;
 	vec2 worldXZ = inst.posScale.xz + pc.offsetWorld;
 	float phase = dot(worldXZ, windDir) * 0.15 + inst.params.z;
-	float sway = (sin(pc.time * 0.7 + phase) * 0.5 + 0.5) * 0.7 + sin(pc.time * 1.9 + phase * 1.7) * 0.3;
-	float swayBefore = (sin(pc.sundir.x * 0.7 + phase) * 0.5 + 0.5) * 0.7 + sin(pc.sundir.x * 1.9 + phase * 1.7) * 0.3; // last frame
+	float travel = interaction.trailInfo.w, travelBefore = travel - (pc.time - pc.sundir.x) * windSpeed(interaction.trailInfo.z);
+	// (the crown catches it a moment after the grass at its foot)
+	float gust = windGust(worldXZ, travel - 0.3), gustBefore = windGust(worldXZ, travelBefore - 0.3);
+	float sway = 0.2 + gust * 0.85 + sin(pc.time * 0.7 + phase) * 0.12 + sin(pc.time * 1.9 + phase * 1.7) * (0.08 + 0.15 * gust);
+	float swayBefore = 0.2 + gustBefore * 0.85 + sin(pc.sundir.x * 0.7 + phase) * 0.12 + sin(pc.sundir.x * 1.9 + phase * 1.7) * (0.08 + 0.15 * gustBefore); // last frame
 	float bend = inPositionWind.w * inPositionWind.w;
 	float gale = mix(0.5, 2.4, interaction.trailInfo.z); // the weather's wind (interaction.glsl)
 	sway *= gale;
@@ -78,7 +83,7 @@ void main() {
 	if (leaves) {
 		// leaf flutter, the phase from the position before it so last frame's is the same function. brushing past
 		// shakes them harder for a moment
-		float flutterScale = inPositionWind.w * treeHeight * 0.003 + disturbed * 0.012;
+		float flutterScale = inPositionWind.w * treeHeight * 0.003 * (0.5 + gust) + disturbed * 0.012;
 		float px = dot(pos, vec3(7.0)), pz = dot(pos, vec3(5.0));
 		vec3 flutter = vec3(sin(pc.time * 3.1 + px), sin(pc.time * 2.7 + pz), 0.0).xzy * flutterScale;
 		windBefore += vec3(sin(pc.sundir.x * 3.1 + px), sin(pc.sundir.x * 2.7 + pz), 0.0).xzy * flutterScale - flutter;

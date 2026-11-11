@@ -6,6 +6,7 @@
 #define INTERACTION_SET 0
 #define INTERACTION_BINDING 5
 #include "interaction.glsl"
+#include "windfield.glsl"
 
 layout(std430, set = 0, binding = 0) readonly buffer Instances { FoliageInstance instances[]; };
 
@@ -19,6 +20,7 @@ layout(location = 5) flat out float outSeed;
 layout(location = 7) out vec3 outPrevPosition; // with last frame's wind (motion vectors)
 layout(location = 8) flat out vec3 outGroundNormal; // the terrain's normal under the clump (foliage.comp)
 layout(location = 9) flat out vec4 outGroundAlbedo; // the terrain's colour under the clump, w = 1 when known (foliage.comp)
+layout(location = 10) flat out float outGust; // how hard the gust over it blows, 0..1 (windfield.glsl): the blades show their lighter sides
 
 invariant gl_Position; // the prepass and the shading pass must produce the exact same depth
 
@@ -66,7 +68,7 @@ void main() {
 	if (type == FOLIAGE_WHEAT && blade >= (ring > 1.5 ? 3 : 6)) {
 		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 		outPosition = vec3(0.0); outPrevPosition = vec3(0.0); outUV = vec2(0.0); outNormal = vec3(0.0, 1.0, 0.0); outHeight = 0.0;
-		outKind = 1; outSeed = 0.0; outMoisture = 0.0;
+		outKind = 1; outSeed = 0.0; outMoisture = 0.0; outGust = 0.0;
 		return;
 	}
 
@@ -81,7 +83,7 @@ void main() {
 		if (bladeLOD <= 0.0) {
 			gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 			outPosition = vec3(0.0); outPrevPosition = vec3(0.0); outUV = vec2(0.0); outNormal = vec3(0.0, 1.0, 0.0); outHeight = 0.0;
-			outKind = 0; outSeed = 0.0; outMoisture = 0.0;
+			outKind = 0; outSeed = 0.0; outMoisture = 0.0; outGust = 0.0;
 			return;
 		}
 	}
@@ -96,7 +98,7 @@ void main() {
 	if (!segmented && segment > 0) {
 		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 		outPosition = vec3(0.0); outPrevPosition = vec3(0.0); outUV = vec2(0.0); outNormal = vec3(0.0, 1.0, 0.0); outHeight = 0.0;
-		outKind = 0; outSeed = 0.0; outMoisture = 0.0;
+		outKind = 0; outSeed = 0.0; outMoisture = 0.0; outGust = 0.0;
 		return;
 	}
 
@@ -135,15 +137,19 @@ void main() {
 	float dist = distance(root, pc.campos);
 	width = max(width, dist * 0.003);
 
-	// wind: a slow gust field moving over the world plus a little per blade flutter, bends the tips most
-	vec2 windDir = normalize(vec2(0.8, 0.35));
+	// wind: the gusts rolling over the meadow (windfield.glsl) flatten it in waves, a little per blade flutter on
+	// top (harder in a gust), bends the tips most
+	vec2 windDir = WIND_DIR;
 	vec2 worldXZ = root.xz + pc.offsetWorld;
-	float gustPhase = dot(worldXZ, windDir) * 2.5, flutterPhase = r.w * 40.0;
+	float flutterPhase = r.w * 40.0, swayPhase = dot(worldXZ, windDir) * 2.5;
+	float travel = interaction.trailInfo.w, travelBefore = travel - (pc.time - pc.sundir.x) * windSpeed(interaction.trailInfo.z);
+	float gust = windGust(worldXZ, travel), gustBefore = windGust(worldXZ, travelBefore);
 	// grass arcs over, it doesn't stand like spikes. the weather's wind: barely moving on a calm day, flattened in a gale
 	float leanScale = (type == FOLIAGE_WHEAT ? 0.25 : 0.5) * mix(0.55, 1.9, interaction.trailInfo.z);
-	float lean = ((sin(pc.time * 1.3 + gustPhase) * 0.5 + 0.5) * 0.6 + sin(pc.time * 4.7 + flutterPhase) * 0.15 + 0.3) * leanScale;
-	float leanBefore = ((sin(pc.sundir.x * 1.3 + gustPhase) * 0.5 + 0.5) * 0.6 + sin(pc.sundir.x * 4.7 + flutterPhase) * 0.15 + 0.3) * leanScale; // last frame
-	vec3 bendDir = normalize(vec3(windDir.x, 0.0, windDir.y) + vec3(r.w - 0.5, 0.0, r.z - 0.5) * 0.8);
+	float lean = (0.25 + gust * 0.8 + sin(pc.time * 1.3 + swayPhase) * 0.08 + sin(pc.time * 4.7 + flutterPhase) * (0.08 + 0.14 * gust)) * leanScale;
+	float leanBefore = (0.25 + gustBefore * 0.8 + sin(pc.sundir.x * 1.3 + swayPhase) * 0.08 + sin(pc.sundir.x * 4.7 + flutterPhase) * (0.08 + 0.14 * gustBefore)) * leanScale; // last frame
+	vec3 bendDir = normalize(vec3(windDir.x, 0.0, windDir.y) + vec3(r.w - 0.5, 0.0, r.z - 0.5) * mix(0.8, 0.35, gust)); // a gust combs them all one way
+	outGust = gust * mix(0.4, 1.0, interaction.trailInfo.z);
 
 	vec3 up = vec3(0.0, 1.0, 0.0);
 	vec3 tipOffset = bendDir * height * lean;

@@ -38,7 +38,17 @@ void Application::drawPrecipitation(VkCommandBuffer cmd) {
 	pc.counts = glm::ivec4(static_cast<int>(Precipitation::MAX_RAIN * std::min(w.rain, 1.5f) / 1.5f),
 						   static_cast<int>(Precipitation::MAX_SNOW * std::min(w.snow, 1.5f) / 1.5f),
 						   static_cast<int>(Precipitation::MAX_SAND * std::min(w.sand, 1.5f) / 1.5f), 0);
-	if(pc.counts.x + pc.counts.y + pc.counts.z == 0) return;
+	// leaves blowing about: only in a real forest (most of the tree cells around you hold a tree), more of them the
+	// harder it blows, none in the snow or a downpour (they're stuck to the wet ground). eased: the probe's tree
+	// count jumps as you walk from cell to cell
+	{
+		static float forest = 0.0f;
+		float target = glm::smoothstep(0.3f, 0.65f, m_Collision.treeCover());
+		forest += (target - forest) * std::min(m_Deltatime * 1.0f, 1.0f);
+		float amount = forest * glm::mix(0.15f, 1.0f, std::min(w.wind * 1.4f, 1.0f)) * (1.0f - std::min(w.snow * 2.0f, 1.0f)) * (1.0f - std::min(w.rain * 0.6f, 0.8f));
+		pc.counts.w = static_cast<int>(Precipitation::MAX_LEAVES * amount);
+	}
+	if(pc.counts.x + pc.counts.y + pc.counts.z + pc.counts.w == 0) return;
 
 	auto barrier = [&](VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
 		VkMemoryBarrier2 b{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };

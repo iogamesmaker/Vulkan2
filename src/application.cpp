@@ -2029,6 +2029,8 @@ void Application::run() {
 		m_AtmosphereManager.tick(worldDeltatime);
 		updateWeather(worldDeltatime);
 		if(!m_ShotPair || m_ShotPairAnimated) m_Time += deltatime; // frozen in the pair captures: only flicker changes between the frames
+		// how far the gusts have blown (windfield.glsl windSpeed): summed, so a change of wind changes their speed, not where they are
+		m_PlayerTrail.m_WindTravel += worldDeltatime * (0.6f + 2.4f * m_Weather.state().wind);
 		m_Deltatime = deltatime;
 		// VULKAN2_BENCH=1 prints the GPU timers every 2 seconds (for profiling without the UI)
 		static const bool bench = std::getenv("VULKAN2_BENCH") != nullptr;

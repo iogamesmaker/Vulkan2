@@ -10,6 +10,7 @@
 layout(location = 0) out vec2 outUV;	   // x across, y along the particle (0..1)
 layout(location = 1) flat out int outKind;
 layout(location = 2) out float outAlpha;
+layout(location = 3) flat out vec2 outLeaf; // leaves: x = which colour (0..1), y = which face shows (-1 back .. 1 front)
 
 uint hashU(uint x) {
 	x ^= x >> 16; x *= 0x7feb352du;
@@ -23,14 +24,16 @@ vec3 hash3(uint i) {
 
 void main() {
 	int instance = gl_InstanceIndex;
-	int kind = instance < pc.counts.x ? KIND_RAIN : (instance < pc.counts.x + pc.counts.y ? KIND_SNOW : KIND_SAND);
+	int kind = instance < pc.counts.x ? KIND_RAIN : (instance < pc.counts.x + pc.counts.y ? KIND_SNOW : (instance < pc.counts.x + pc.counts.y + pc.counts.z ? KIND_SAND : KIND_LEAF));
+	outLeaf = vec2(0.0);
 	vec3 r = hash3(uint(instance) * 7919u + uint(kind) * 104729u);
 	vec3 r2 = hash3(uint(instance) * 31u + 17u);
 
 	// the box (half size, world units ~6m): the near field only, ~30m around you for rain, ~35m for snow, sand hugging
 	// the ground. what's further away is the volumetric fog's rain haze (weather.cpp); spread over ~170m the drops
 	// were so sparse a heavy rain showed a handful of streaks
-	vec3 halfSize = kind == KIND_RAIN ? vec3(5.0, 4.0, 5.0) : (kind == KIND_SNOW ? vec3(6.0, 5.0, 6.0) : vec3(7.0, 2.0, 7.0));
+	// (leaves: ~17m around you, from the ground up into the lower crowns: further out they were specks)
+	vec3 halfSize = kind == KIND_RAIN ? vec3(5.0, 4.0, 5.0) : (kind == KIND_SNOW ? vec3(6.0, 5.0, 6.0) : (kind == KIND_SAND ? vec3(7.0, 2.0, 7.0) : vec3(3.0, 1.2, 3.0)));
 	// each particle its own: drop size sets how fast rain falls (~7-11 m/s) and how much the wind carries it, snow
 	// flakes and sand grains vary more. the wind itself gusts: two slow waves of strength that sweep across the scene
 	// (their phase goes with the particle's place), so neighbouring drops lean together and the next patch differently.
@@ -40,7 +43,8 @@ void main() {
 	float fall, drag, gustiness;
 	if (kind == KIND_RAIN)		{ fall = 1.2 + r2.x * 0.6;  drag = 0.35 + r2.y * 0.35; gustiness = 0.55; }
 	else if (kind == KIND_SNOW) { fall = 0.1 + r2.x * 0.14; drag = 0.6 + r2.y * 0.4;   gustiness = 0.8; }
-	else						{ fall = 0.0;				drag = 1.0 + r2.y * 0.6;   gustiness = 0.7; }
+	else if (kind == KIND_SAND) { fall = 0.0;				drag = 1.0 + r2.y * 0.6;   gustiness = 0.7; }
+	else						{ fall = 0.12 + r2.x * 0.1; drag = 0.45 + r2.y * 0.4;  gustiness = 1.0; } // leaves: flutter down slowly, swept along in the gusts
 	// where it is with the steady wind alone: the gusts' phase goes by that place in the world (stable as you move)
 	vec3 steady = base + vec3(pc.wind.x * drag * pc.time, -fall * pc.time, pc.wind.y * drag * pc.time);
 	vec3 place = worldCam + mod(steady - worldCam + halfSize, 2.0 * halfSize) - halfSize;
@@ -55,10 +59,12 @@ void main() {
 	vec3 moved = steady + vec3(pc.wind.x * drag * gustOffset, 0.0, pc.wind.y * drag * gustOffset);
 	if (kind != KIND_RAIN) {
 		// flakes and grains tumble: a little swirl of their own on top (and its velocity)
-		float s1 = 0.8 + r2.y, s2 = 0.6 + r2.z, amp = kind == KIND_SNOW ? 0.1 : 0.06;
+		float s1 = 0.8 + r2.y, s2 = 0.6 + r2.z, amp = kind == KIND_SNOW ? 0.1 : (kind == KIND_LEAF ? 0.18 : 0.06);
 		moved.xz += vec2(sin(pc.time * s1 + r2.z * 6.28), cos(pc.time * s2 + r2.y * 6.28)) * amp;
 		velocity.xz += vec2(cos(pc.time * s1 + r2.z * 6.28) * s1, -sin(pc.time * s2 + r2.y * 6.28) * s2) * amp;
 		if (kind == KIND_SAND) { moved.y += sin(pc.time * 1.7 + r2.x * 6.28) * 0.12; velocity.y += cos(pc.time * 1.7 + r2.x * 6.28) * 0.2; }
+		// a leaf rocks side to side as it falls (the falling leaf's pendulum), lifted for a moment at each end of the swing
+		if (kind == KIND_LEAF) { float s = 2.2 + r2.z * 1.5; moved.y += abs(sin(pc.time * s + r.x * 6.28)) * 0.08; moved.xz += vec2(sin(pc.time * s + r.x * 6.28)) * vec2(0.06, -0.04); }
 	}
 	// wrapped into the box around the camera
 	vec3 rel = mod(moved - worldCam + halfSize, 2.0 * halfSize) - halfSize;
@@ -68,6 +74,12 @@ void main() {
 
 	// fades: at the box's edge (no popping as they wrap) and right at the camera (giant streaks across the screen)
 	float alpha = (1.0 - smoothstep(0.65, 1.0, length(rel / halfSize))) * smoothstep(0.12, 0.6, dist);
+	// leaves: from about the ground (what's under it is hidden by the depth test) up into the crowns, and right up to
+	// you (they're small and opaque, no screen filling streak)
+	if (kind == KIND_LEAF) {
+		position.y += 0.8;
+		alpha = (1.0 - smoothstep(0.7, 1.0, length(rel / halfSize))) * smoothstep(0.03, 0.08, length(position - pc.campos));
+	}
 
 	// the quad: along the motion (streaks) or facing the screen (flakes), in pixels
 	vec2 corner = vec2(gl_VertexIndex == 1 || gl_VertexIndex == 2 || gl_VertexIndex == 4 ? 1.0 : 0.0,
@@ -77,7 +89,19 @@ void main() {
 	vec4 head = pc.viewProj * vec4(position, 1.0);
 	if (head.w <= 0.05) { gl_Position = vec4(0.0, 0.0, -1.0, 1.0); outAlpha = 0.0; return; } // behind: off screen
 	vec2 pixel = 2.0 / pc.view.xy; // one pixel in NDC
-	if (kind == KIND_SNOW) {
+	if (kind == KIND_LEAF) {
+		// ~8cm, spinning and flipping over as it tumbles: the quad turned on screen and squashed along one side as the
+		// leaf turns edge on
+		float sizePx = 0.014 * (0.7 + 0.6 * r2.z) * pc.view.z / head.w;
+		alpha *= clamp(sizePx / 2.0, 0.3, 1.0);
+		sizePx = max(sizePx, 2.0);
+		float spin = pc.time * (1.5 + 2.5 * r2.x) * (r.z > 0.5 ? 1.0 : -1.0) + r.y * 6.28;
+		float flip = cos(pc.time * (2.0 + 3.0 * r2.y) + r2.z * 6.28);
+		vec2 q = (corner * 2.0 - 1.0) * vec2(max(abs(flip), 0.12), 0.6) * sizePx * 0.5;
+		q = mat2(cos(spin), sin(spin), -sin(spin), cos(spin)) * q;
+		gl_Position = head + vec4(q * pixel * head.w, 0.0, 0.0);
+		outLeaf = vec2(fract(r.x * 13.7 + r2.y * 5.1), flip);
+	} else if (kind == KIND_SNOW) {
 		float sizePx = 0.02 * pc.view.z / head.w; // ~12cm: bigger than real flakes, they read as flakes at a distance
 		alpha *= clamp(sizePx / 1.5, 0.35, 1.0);  // smaller than a pixel and a half: fades instead (not below a third)
 		sizePx = max(sizePx, 1.5);

@@ -8,7 +8,7 @@
 
 layout(std140, set = INTERACTION_SET, binding = INTERACTION_BINDING) uniform Interaction {
 	vec4 trailPoints[INTERACTION_POINTS]; // xyz = feet (terrain space), w = seconds since the player was there
-	vec4 trailInfo;						  // x = points in use, y = body height (feet -> eye, world units)
+	vec4 trailInfo;						  // x = points in use, y = body height (feet -> eye, world units), z = the weather's wind 0..1, w = how far the gusts have blown (windfield.glsl)
 } interaction;
 
 // how a point at p reacts to the trail. reach = horizontal radius of influence (world units), above = how far above
