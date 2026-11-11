@@ -105,7 +105,7 @@ void main() {
 	}
 
 	TerrainSurface surface;
-	surface.albedo = vec3(0.0); surface.normal = vec3(0.0, 1.0, 0.0); surface.canopy = 0.0;
+	surface.albedo = vec3(0.0); surface.normal = vec3(0.0, 1.0, 0.0); surface.canopy = 0.0; surface.directScale = 1.0;
 	if (cacheWeight < 1.0) {
 		TerrainShading s;
 		s.position = fragPos;
@@ -136,6 +136,7 @@ void main() {
 		surface.albedo = mix(surface.albedo, cachedAlbedo.rgb, cacheWeight);
 		surface.normal = normalize(mix(surface.normal, normal, cacheWeight));
 		surface.canopy = mix(surface.canopy, cachedAlbedo.a, cacheWeight);
+		surface.directScale = mix(surface.directScale, 1.0, cacheWeight); // (the far field has no parallax)
 	}
 
 	// the wind gusts rolling over the wheat canopy
@@ -143,5 +144,5 @@ void main() {
 
 
 	// lit in lighting.comp
-	writeGBuffer(surface.albedo, 1.0, surface.normal, MAT_TERRAIN, 1.0, 1.0);
+	writeGBuffer(surface.albedo, 1.0, surface.normal, MAT_TERRAIN, 1.0, surface.directScale);
 }

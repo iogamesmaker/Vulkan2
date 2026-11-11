@@ -338,7 +338,25 @@ struct TerrainSurface {
 	vec3 albedo;	 // linear
 	vec3 normal;	 // world space
 	float canopy;	 // the wheat canopy's share of the albedo (the caller animates its wind gusts)
+	float directScale; // the parallax' self shadow (G-buffer's direct light scale), 1 = lit
 };
+
+// the parallax' self shadow: from the point the view ray hit (uv, its depth below the top) up towards the light
+// through the same height field. soft: how far under the surface the light ray passes, more weight close to the
+// point (pebbles shade their own foot, a ridge further off only darkens). returns 1 lit .. ~0.45 in shadow (the sky still lights it)
+float parallaxShadow(int first, int second, float wFirst, DetailUV near, vec2 uv, float depth, vec3 lightTS, float scale) {
+	if (lightTS.z <= 0.02 || depth <= 0.0) return 1.0;
+	const int STEPS = 8;
+	float stepDepth = depth / float(STEPS);
+	vec2 delta = lightTS.xy / max(lightTS.z, 0.2) * scale * stepDepth; // (capped like the view ray at grazing light)
+	float occlusion = 0.0;
+	for (int i = 1; i <= STEPS; i++) {
+		float rayDepth = depth - stepDepth * float(i);
+		float surfaceDepth = 1.0 - blendedHeight(first, second, wFirst, near, uv + delta * float(i));
+		occlusion = max(occlusion, (rayDepth - surfaceDepth) * (1.0 - float(i - 1) / float(STEPS)) * 3.5);
+	}
+	return 1.0 - 0.55 * clamp(occlusion, 0.0, 1.0);
+}
 
 // bare rock: a photographed cliff face (Poly Haven CC0 cliff_side) at its real size over the base
 // rock texture, the real structure of a cliff (blocks, joints, ledges) where a texture tiling every 7m and the
@@ -598,12 +616,17 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	float pomFade = ubo.pomDistance > 0.0 && ubo.pomDepth > 0.0 ? 1.0 - smoothstep(ubo.pomDistance * 0.3, ubo.pomDistance, viewDistance) : 0.0;
 	pomFade *= wTop * smoothstep(0.02, 0.1, pomMaterial);
 	if (ubo.cliffNoTile > 0.5) topNoTileBegin(near.uv); // (before the parallax moves near.uv)
+	float pomShadow = 1.0;
 	if (pomFade > 0.0) {
 		vec3 toEye = normalize(s.campos - s.position);
 		vec3 viewTS = vec3(dot(toEye, va), dot(toEye, vb), dot(toEye, normal));
 		float scale = ubo.pomDepth * pomMaterial / ubo.textureRepeatNear * pomFade; // uv units
 		float depth;
 		near.uv = parallaxOcclusion(first, second, wA, near, viewTS, scale, pomFade, depth);
+		// lit by whichever of the sun / moon is up, like the shadow maps
+		vec3 light = s.sundir.y > 0.0 ? s.sundir : -s.sundir;
+		vec3 lightTS = vec3(dot(light, va), dot(light, vb), dot(light, normal));
+		pomShadow = mix(1.0, parallaxShadow(first, second, wA, near, near.uv, depth, lightTS, scale), pomFade);
 	}
 
 	RockCover rockDetail = rockCover(s.worldXZ, rock * smoothstep(0.2, 0.5, slope) * (1.0 - snowCap));
@@ -702,6 +725,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	TerrainSurface surface;
 	surface.albedo = albedo;
 	surface.normal = normal;
+	surface.directScale = pomShadow;
 	surface.canopy = canopy;
 	return surface;
 }
