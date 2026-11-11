@@ -155,6 +155,7 @@ void Application::initVulkan() {
 	features10.multiDrawIndirect = VK_TRUE; // the ground cover draws all its meshes with one indirect call
 	features10.textureCompressionBC = VK_TRUE; // block compressed textures, see TextureLoader::loadCompressed
 	features10.shaderStorageImageExtendedFormats = VK_TRUE; // rg16f storage image for the sky visibility (horizon AO + canopy) map
+	features10.fillModeNonSolid = VK_TRUE; // the wireframe setting (vk_pipelines.h)
 	features10.samplerAnisotropy = VK_TRUE; // the material sampler (see initSamplers): grazing ground otherwise smears into streaks
 	
 	
@@ -686,6 +687,7 @@ void Application::initTessellationPipeline() {
 	m_DeletionQueue.push([&]() {
 		vkDestroyPipelineLayout(m_Device, m_TerrainLayout, nullptr);
 		vkDestroyPipeline(m_Device, m_TerrainPipeline, nullptr);
+		vkutil::destroyWireframeTwins(m_Device); // (every system's, built with theirs; this queue runs after theirs are gone)
 		vkDestroyPipeline(m_Device, m_TerrainShadowPipeline, nullptr);
 		vkDestroyPipeline(m_Device, m_TerrainDepthPipeline, nullptr);
 		vkDestroyDescriptorSetLayout(m_Device, m_TerrainDescriptorLayout, nullptr);
@@ -817,6 +819,7 @@ void Application::initDefaultData() {
 	// VULKAN2_TREEDIST=<x>: the tree detail distance (comparison captures)
 	if(const char* treeDist = std::getenv("VULKAN2_TREEDIST")) m_Settings.treeDetailDistance = static_cast<float>(std::atof(treeDist));
 	// VULKAN2_POM=0: parallax occlusion mapping off (comparison captures)
+	if(std::getenv("VULKAN2_WIREFRAME")) vkutil::g_Wireframe = true; // VULKAN2_WIREFRAME=1: the wireframe view (captures)
 	if(const char* pom = std::getenv("VULKAN2_POM")) m_Settings.pomDistance = std::atoi(pom) == 0 ? 0.0f : 35.0f; // (=1 turns it on over VULKAN2_PRESET=off)
 	// VULKAN2_TAA=0: TAA off (flicker captures)
 	if(const char* taa = std::getenv("VULKAN2_TAA")) m_Settings.taa = std::atoi(taa) != 0;
@@ -1406,7 +1409,7 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	// ---
 	VkDescriptorSet terrainSets[] = { m_TerrainDescriptors, m_AtmosphereManager.getRenderDescriptor(), m_Shadows.getDescriptor(m_FrameNumber) };
 	// depth first, then the material shader only on the visible surface
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainDepthPipeline);
+	vkutil::bindGraphics(cmd, m_TerrainDepthPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainLayout, 0, 3, terrainSets, 0, nullptr);
 	drawTerrain(cmd, m_Projection * m_View);
 	split("terrain depth prepass");
@@ -1422,7 +1425,7 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	split("rocks & logs");
 	m_GroundCover.draw(cmd);
 	split("ground cover");
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainPipeline);
+	vkutil::bindGraphics(cmd, m_TerrainPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainLayout, 0, 3, terrainSets, 0, nullptr);
 	drawTerrain(cmd, m_Projection * m_View);
 	split("terrain");
@@ -1439,11 +1442,14 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 		vkinit::attachment_info(m_ShadowFilter.getDirectView(), nullptr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
 	};
 	for(auto& attachment : skyAttachments) attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // lighting.comp writes the rest
+	// the wireframe view: black between the lines (the sky below the horizon is nearly white, the terrain's edges
+	// were lost in it)
+	if(vkutil::g_Wireframe) for(auto& attachment : skyAttachments) { attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; attachment.clearValue.color = { { 0.0f, 0.0f, 0.0f, 0.0f } }; }
 	VkRenderingAttachmentInfo depthAttachment = vkinit::attachment_info(m_DepthBuffer.imageView, nullptr, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
 	VkRenderingInfo skyInfo = vkinit::rendering_info(m_DrawExtent, skyAttachments, &depthAttachment);
 	skyInfo.colorAttachmentCount = 2;
 	vkCmdBeginRendering(cmd, &skyInfo);
-	m_AtmosphereManager.draw(cmd);
+	if(!vkutil::g_Wireframe) m_AtmosphereManager.draw(cmd);
 	vkCmdEndRendering(cmd);
 	mark(cmd, "sky");
 
@@ -1993,7 +1999,7 @@ void Application::drawLighting(VkCommandBuffer cmd) {
 	pc.invViewProj = glm::inverse(m_Projection * m_View);
 	pc.viewProj = m_Projection * m_View;
 	pc.frame = static_cast<float>(m_FrameNumber % 64);
-	pc.effects = glm::vec4(m_ContactShadows ? 1.0f : 0.0f, 0.0f, m_SSAO ? 1.0f : 0.0f, m_BounceLight ? m_BounceStrength : 0.0f);
+	pc.effects = glm::vec4(m_ContactShadows ? 1.0f : 0.0f, vkutil::g_Wireframe ? 1.0f : 0.0f, m_SSAO ? 1.0f : 0.0f, m_BounceLight ? m_BounceStrength : 0.0f);
 	pc.campos = m_CameraPos;
 	pc.terrainSize = m_WorldSize * m_TerrainScale;
 	pc.sundir = m_SunDir;
@@ -2323,7 +2329,7 @@ void Application::draw() {
 	ShadowLightKeys shadowKeys = m_AtmosphereManager.getShadowLight(m_Shadows.getLightStep());
 	m_Shadows.update(m_View, shadowKeys, m_TerrainPC.factor, m_FrameNumber);
 	m_ShadowCascadesRendered[m_FrameNumber % FRAME_OVERLAP] = m_Shadows.render(cmd, [&](VkCommandBuffer cmd, const ShadowCascadeDraw& draw) {
-		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainShadowPipeline);
+		vkutil::bindGraphics(cmd, m_TerrainShadowPipeline);
 		drawTerrain(cmd, draw.viewProj, &draw);
 		if(draw.cascade < SHADOW_TERRAIN_ONLY) m_Trees.drawShadow(cmd, draw.viewProj); // the far ones are terrain only
 		if(draw.cascade == 0) m_Foliage.drawShadow(cmd, draw.viewProj); // grass shadows only matter up close

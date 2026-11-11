@@ -102,7 +102,7 @@ void Application::drawLoadingFrame() {
 	vkCmdSetViewport(cmd, 0, 1, &viewport);
 	VkRect2D scissor = { { 0, 0 }, m_SwapchainExtent };
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Loading.pipeline);
+	vkutil::bindGraphics(cmd, m_Loading.pipeline);
 	LoadingPushConstants pc{ glm::vec2(m_SwapchainExtent.width, m_SwapchainExtent.height),
 							 static_cast<float>(SDL_GetPerformanceCounter() - m_Loading.start) / static_cast<float>(SDL_GetPerformanceFrequency()) };
 	vkCmdPushConstants(cmd, m_Loading.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);

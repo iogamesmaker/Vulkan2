@@ -1,4 +1,5 @@
-﻿#include <vk_pipelines.h>
+﻿#include <unordered_map>
+#include <vk_pipelines.h>
 
 #include "vk_initializers.h"
 #include <fstream>
@@ -34,6 +35,28 @@ void PipelineBuilder::clear()
 //< pipe_clear
 
 //> build_pipeline_1
+namespace {
+	std::unordered_map<VkPipeline, VkPipeline>& wireframeTwins() {
+		static std::unordered_map<VkPipeline, VkPipeline> twins;
+		return twins;
+	}
+}
+
+bool vkutil::g_Wireframe = false;
+
+void vkutil::bindGraphics(VkCommandBuffer cmd, VkPipeline pipeline) {
+	if (g_Wireframe) {
+		auto it = wireframeTwins().find(pipeline);
+		if (it != wireframeTwins().end()) pipeline = it->second;
+	}
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+}
+
+void vkutil::destroyWireframeTwins(VkDevice device) {
+	for (auto& [solid, twin] : wireframeTwins()) vkDestroyPipeline(device, twin, nullptr);
+	wireframeTwins().clear();
+}
+
 VkPipeline PipelineBuilder::build_pipeline(VkDevice device)
 {
     // make viewport state from our stored viewport and scissor.
@@ -109,9 +132,23 @@ VkPipeline PipelineBuilder::build_pipeline(VkDevice device)
         != VK_SUCCESS) {
         fmt::println("failed to create pipeline");
         return VK_NULL_HANDLE; // failed to create graphics pipeline
-    } else {
-        return newPipeline;
     }
+	// the wireframe twin: scene geometry only (reversed z: GREATER for the prepasses, EQUAL after them; the shadow
+	// maps and the impostor bakes are regular z and stay solid, so the lighting still has its shadows)
+	VkCompareOp op = _depthStencil.depthCompareOp;
+	if (!_noWireframe && _depthStencil.depthTestEnable && (op == VK_COMPARE_OP_GREATER || op == VK_COMPARE_OP_EQUAL)
+		&& !_rasterizer.depthBiasEnable && _rasterizer.polygonMode == VK_POLYGON_MODE_FILL) {
+		VkPipelineRasterizationStateCreateInfo solid = _rasterizer;
+		VkPipelineRasterizationStateCreateInfo lines = _rasterizer;
+		lines.polygonMode = VK_POLYGON_MODE_LINE;
+		lines.lineWidth = 1.0f;
+		pipelineInfo.pRasterizationState = &lines;
+		VkPipeline twin;
+		if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &twin) == VK_SUCCESS)
+			wireframeTwins()[newPipeline] = twin;
+		pipelineInfo.pRasterizationState = &solid;
+	}
+	return newPipeline;
     //< build_pipeline_4
 }
 

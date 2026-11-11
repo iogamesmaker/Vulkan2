@@ -46,8 +46,18 @@ public:
 	void set_depth_format(VkFormat format);
 	void disable_depthtest();
     void enable_depthtest(bool depthWriteEnable,VkCompareOp op);
+	// the wireframe setting: every scene geometry pipeline (drawn into the reversed z depth buffer, not a shadow
+	// map) gets a line drawing twin built alongside it, bindGraphics picks it while the setting is on. a fullscreen
+	// pass that happens to look like one (the sky) opts out
+	bool _noWireframe = false;
 };
 
 namespace vkutil {
 bool load_shader_module(const char* filePath, VkDevice device, VkShaderModule* outShaderModule);
+
+// the wireframe setting (PipelineBuilder::build_pipeline makes the twins)
+extern bool g_Wireframe;
+// binds a graphics pipeline, or its wireframe twin while the setting is on
+void bindGraphics(VkCommandBuffer cmd, VkPipeline pipeline);
+void destroyWireframeTwins(VkDevice device);
 }

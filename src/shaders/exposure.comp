@@ -48,6 +48,9 @@ void main() {
 		vec3 color = imageLoad(image, ivec2(uv * vec2(size))).rgb;
 		float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
 		float weight = clamp(1.2 - length((uv - 0.5) * vec2(1.6, 1.0)) * 1.4, 0.15, 1.0); // centre weighted
+		// (exactly black is the wireframe view's empty background, nothing in a real scene: not metered, or the few
+		// lines got exposed up until they glowed)
+		if (luminance <= 0.0) weight = 0.0;
 		logSum += log2(max(luminance, 1e-5)) * weight;
 		weightSum += weight;
 	}
@@ -63,6 +66,7 @@ void main() {
 	}
 
 	if (index == 0u) {
+		if (sumWeight[0] <= 0.0) return; // all black: keep the exposure it has
 		float luminance = exp2(sumLog[0] / sumWeight[0]);
 		// below dusk (NIGHT_KNEE) the eye follows less of the way still: nights end up darker without the daylight,
 		// overcast and forest exposures changing at all

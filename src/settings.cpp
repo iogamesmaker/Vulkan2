@@ -245,6 +245,9 @@ void Application::drawSettings() {
 		ImGui::SetItemTooltip("Skips trees hidden behind hills. Only turn off to compare, it's free performance");
 		check("Far terrain cache", &s.terrainCache);
 		ImGui::SetItemTooltip("Bakes the distant terrain's look into a texture. Off shades every pixel in full: slower, a touch sharper far away");
+		// (a debug view, not a quality setting: it doesn't touch the preset)
+		ImGui::Checkbox("Wireframe", &vkutil::g_Wireframe);
+		ImGui::SetItemTooltip("Draws the terrain, trees, rocks and plants as their triangles' edges (the LODs and the tessellation). Shadows stay solid");
 	}
 
 	if(ImGui::Button("Everything off")) {

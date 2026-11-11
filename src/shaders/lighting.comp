@@ -52,7 +52,7 @@ layout(push_constant) uniform constants {
 	float frame;	   // noise rotation, TAA averages it
 	ivec2 mapOffset;   // heightmap texel offset, for the horizon AO lookup (same as the terrain's)
 	vec2 cloudWind;	   // km the clouds have drifted
-	vec4 effects;	   // x = contact shadows, y = unused, z = SSAO, w = bounce light strength (0 = off)
+	vec4 effects;	   // x = contact shadows, y = the wireframe view (black between the lines), z = SSAO, w = bounce light strength (0 = off)
 	vec4 extra;		   // z = 1: denoise the SSAO (x, y, w unused)
 } pc;
 
@@ -218,6 +218,8 @@ void main() {
 	float depth = texelFetch(depthBuffer, p, 0).r;
 	bool volumetricClouds = ubo.clouds > 0.5 || ubo.volumetricFog > 0.5; // clouds.comp ran (the far fog too)
 	if (depth <= 0.0) {
+		// the wireframe view: nothing between the lines (no sky, clouds or fog: the haze below the horizon is white)
+		if (pc.effects.y > 0.5) { imageStore(colorImage, p, vec4(0.0)); return; }
 		// sky (reversed z): the sky pass drew it, the cumulus go on top
 		vec2 uv = (vec2(p) + 0.5) / vec2(size);
 		vec4 sky = imageLoad(colorImage, p);

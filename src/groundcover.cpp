@@ -318,7 +318,7 @@ void GroundCover::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 
 void GroundCover::draw(VkCommandBuffer cmd) {
 	if(!m_Enabled || m_Meshes.empty()) return;
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipeline);
+	vkutil::bindGraphics(cmd, m_RenderPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_RenderPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
 	VkDeviceSize offset = 0;
@@ -332,7 +332,7 @@ void GroundCover::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj
 	if(!m_Enabled || m_Meshes.empty()) return;
 	FoliagePushConstants pc = m_PushConstants;
 	pc.viewproj = lightViewProj;
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipeline);
+	vkutil::bindGraphics(cmd, m_ShadowPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_RenderPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &pc);
 	VkDeviceSize offset = 0;

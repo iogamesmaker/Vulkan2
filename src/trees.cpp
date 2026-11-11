@@ -360,7 +360,7 @@ void Trees::bakeImpostors(Application* engine, const std::function<PipelineBuild
 		renderInfo.colorAttachmentCount = 2;
 		vkCmdBeginRendering(cmd, &renderInfo);
 
-		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bakePipeline);
+		vkutil::bindGraphics(cmd, bakePipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 		VkDeviceSize offset = 0;
 		vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &offset);
@@ -476,12 +476,12 @@ void Trees::drawPrepass(VkCommandBuffer cmd) {
 	VkDeviceSize vertexOffset = 0;
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_VertexBuffer.buffer, &vertexOffset);
 	vkCmdBindIndexBuffer(cmd, m_IndexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PrepassPipeline);
+	vkutil::bindGraphics(cmd, m_PrepassPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
 	vkCmdDrawIndexedIndirect(cmd, m_Commands.buffer, 0, LODS * MESHES, sizeof(VkDrawIndexedIndirectCommand)); // every LOD's bins (multiDrawIndirect)
 
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ImpostorPrepassPipeline);
+	vkutil::bindGraphics(cmd, m_ImpostorPrepassPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ImpostorPipelineLayout, 0, 1, &m_ImpostorSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_ImpostorPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
 	vkCmdDrawIndirect(cmd, m_ImpostorCommands.buffer, 0, 1, sizeof(VkDrawIndirectCommand));
@@ -492,7 +492,7 @@ void Trees::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescripto
 		if(split) split(); // the timers still need their boundary
 		return;
 	}
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipeline);
+	vkutil::bindGraphics(cmd, m_RenderPipeline);
 	VkDescriptorSet sets[] = { m_RenderSet, atmosphereSet, shadowSet };
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipelineLayout, 0, 3, sets, 0, nullptr);
 	vkCmdPushConstants(cmd, m_RenderPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
@@ -503,7 +503,7 @@ void Trees::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescripto
 	if(split) split();
 
 	// far trees as impostors
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ImpostorPipeline);
+	vkutil::bindGraphics(cmd, m_ImpostorPipeline);
 	VkDescriptorSet impostorSets[] = { m_ImpostorSet, atmosphereSet, shadowSet };
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ImpostorPipelineLayout, 0, 3, impostorSets, 0, nullptr);
 	vkCmdPushConstants(cmd, m_ImpostorPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
@@ -514,7 +514,7 @@ void Trees::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {
 	if(!m_Enabled) return;
 	FoliagePushConstants pc = m_PushConstants;
 	pc.viewproj = lightViewProj;
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipeline);
+	vkutil::bindGraphics(cmd, m_ShadowPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &pc);
 	VkDeviceSize offset = 0;

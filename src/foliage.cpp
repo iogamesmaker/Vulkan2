@@ -231,7 +231,7 @@ void Foliage::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 // once. recorded before the terrain's material pass, so the ground under a meadow isn't shaded either
 void Foliage::drawPrepass(VkCommandBuffer cmd) {
 	if(!m_Enabled) return;
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PrepassPipeline);
+	vkutil::bindGraphics(cmd, m_PrepassPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
 	vkCmdDrawIndirect(cmd, m_Indirect.buffer, 0, 1, sizeof(VkDrawIndirectCommand));
@@ -241,7 +241,7 @@ void Foliage::drawPrepass(VkCommandBuffer cmd) {
 
 void Foliage::draw(VkCommandBuffer cmd, VkDescriptorSet atmosphereSet, VkDescriptorSet shadowSet) {
 	if(!m_Enabled) return;
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipeline);
+	vkutil::bindGraphics(cmd, m_RenderPipeline);
 	VkDescriptorSet sets[] = { m_RenderSet, atmosphereSet, shadowSet };
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipelineLayout, 0, 3, sets, 0, nullptr);
 	vkCmdPushConstants(cmd, m_RenderPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
@@ -254,7 +254,7 @@ void Foliage::drawShadow(VkCommandBuffer cmd, const glm::mat4& lightViewProj) {
 	if(!m_Enabled || !m_CastShadows) return;
 	FoliagePushConstants pc = m_PushConstants;
 	pc.viewproj = lightViewProj;
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipeline);
+	vkutil::bindGraphics(cmd, m_ShadowPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ShadowPipelineLayout, 0, 1, &m_RenderSet, 0, nullptr);
 	vkCmdPushConstants(cmd, m_ShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConstants), &pc);
 	vkCmdDrawIndirect(cmd, m_Indirect.buffer, sizeof(VkDrawIndirectCommand), 1, sizeof(VkDrawIndirectCommand));

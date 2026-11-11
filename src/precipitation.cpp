@@ -58,7 +58,7 @@ void Precipitation::draw(VkCommandBuffer cmd, const PrecipitationPushConstants& 
 	vkCmdSetViewport(cmd, 0, 1, &viewport);
 	VkRect2D scissor = { { 0, 0 }, extent };
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
+	vkutil::bindGraphics(cmd, m_Pipeline);
 	VkDescriptorSet sets[] = { m_Set, atmosphereSet };
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout, 0, 2, sets, 0, nullptr);
 	vkCmdPushConstants(cmd, m_PipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);

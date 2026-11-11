@@ -706,7 +706,7 @@ glm::vec2 Atmosphere::getExposureState() const {
 }
 
 void Atmosphere::draw(VkCommandBuffer cmd) {
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SkyPipeline);
+	vkutil::bindGraphics(cmd, m_SkyPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_SkyLayout, 0, 1, &m_SkyDescriptor, 0, nullptr);
 	vkCmdPushConstants(cmd, m_SkyLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(AtmospherePushConstants), &m_PushConstants);
 	vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -767,6 +767,7 @@ void Atmosphere::initSkyPipeline(Application* engine) {
 	pipelineBuilder.set_multisampling_none();
 	pipelineBuilder.disable_blending();
 	pipelineBuilder.enable_depthtest(false, VK_COMPARE_OP_EQUAL); // only where the terrain didn't draw (depth still 0, reversed z)
+	pipelineBuilder._noWireframe = true; // a fullscreen pass, not geometry
 
 	pipelineBuilder.set_color_attachment_format(engine->m_DrawImage.imageFormat);
 	pipelineBuilder.add_color_attachment(DIRECT_LIGHT_FORMAT); // sun / moon light + shadow, see ShadowFilter
