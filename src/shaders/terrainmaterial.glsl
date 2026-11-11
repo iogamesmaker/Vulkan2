@@ -500,10 +500,22 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 
 	// snow on the upper half of most mountains (lower where it's cold), only the steepest cliffs stay bare
 	float snowline = snowlineHeight(climate) + (lineNoise - 0.5) * 0.08; // (biometools.glsl: none in the desert)
-	// snow settles on ledges and gentle ground and collects in gullies, steep faces and wind blown ridges stay bare.
-	// a crisp edge (the noise only moves it around) instead of soft blotches
+	// the shaded side holds its snow further down, the sunny side melts out higher up (z = north, the sun goes
+	// round the south: atmosphere.cpp sunDirAt). the normal's z
+	float northness = -dzdy / sqrt(1.0 + slope);
+	snowline -= northness * 0.035;
+	// how it lies: near the snowline it's patchy, lingering in the gullies and couloirs and gone from the ridges and
+	// the steeper ground: streaks down the mountain. well above the line it's a closed cover that only the real
+	// cliffs (> ~50 degrees, where snow can't hold) and the most wind scoured crests break through
+	// (it used the rock's steepness, which on a mountain starts at ~25 degrees: a whole peak was steep enough, the
+	// snow survived in the gullies only and the entire top was stripes)
 	float snowHeight = smoothstep(snowline - 0.03, snowline + 0.06, terrainHeight);
-	float snowCover = snowHeight * (1.0 - steepRock * 0.8) + gully * snowHeight * 0.6 - ridge * 0.25;
+	float deepSnow = smoothstep(snowline + 0.04, snowline + 0.16, terrainHeight);
+	float snowShed = smoothstep(mix(0.7, 1.2, deepSnow), mix(1.4, 2.4, deepSnow), rockSlope); // tan^2: 40-50 degrees near the line, 48-57 high up
+	float snowCover = snowHeight * (1.0 - snowShed * 0.85)
+					+ gully * snowHeight * 0.6 * (1.0 - 0.6 * deepSnow)
+					- ridge * 0.25 * (1.0 - 0.6 * deepSnow)
+					- steepRock * 0.35 * (1.0 - deepSnow) * snowHeight; // the patchy band: the steeper the barer
 	// a soft, frayed edge (noise at ~7m and ~1.5m): snow thins out and melts away into the rock and grass in patches,
 	// the height blend then lets it settle in the cracks first. a crisp edge cut it out like a sticker
 	// (on the continuous world position: in the wrapped detail space the pattern jumped whenever it wrapped)
