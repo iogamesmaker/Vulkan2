@@ -57,10 +57,27 @@ void main() {
 		vec2 fieldXZ = (inPosition.xz + pc.offsetWorld) * 0.25;
 		float ripeness = fract(sin(dot(floor(fieldXZ), vec2(12.9898, 78.233))) * 43758.5453) * 0.5 + inMoisture * 0.5;
 		vec3 gold = mix(WHEAT_GOLD, WHEAT_GOLD * vec3(0.85, 1.05, 0.8), smoothstep(0.55, 0.9, ripeness)); // a little greener where it's wetter
+		// wild oats: green in some stretches of the prairie, gold in others, every shade between (community.glsl)
+		float ripe = prairieMix(inPosition.xz + pc.offsetWorld).z;
+		gold = mix(vec3(0.13, 0.19, 0.06), gold, smoothstep(0.1, 0.9, ripe)) * mix(0.9, 1.08, fract(inSeed * 3.1));
 		albedo = mix(photo, gold * detail, 0.85) * mix(0.88, 1.1, inSeed);
+	} else if (inKind == 4) {
+		// wild oats: the same photographed plant, but not ripened by a farmer: a pale green going to straw, more or
+		// less per meadow and plant, and taking on the ground's colour like the grass does
+		vec3 photo = pow(texel.rgb, vec3(2.2));
+		float detail = dot(photo, vec3(0.3, 0.59, 0.11)) / 0.152;
+		float ripe = clamp(latticeNoise((inPosition.xz + pc.offsetWorld) / 22.0 + 5.0) * 0.8 + inSeed * 0.4 - 0.2, 0.0, 1.0);
+		vec3 colour = mix(vec3(0.14, 0.17, 0.06), vec3(0.32, 0.27, 0.13), ripe);
+		if (inGroundAlbedo.w > 0.5) colour = mix(colour, inGroundAlbedo.rgb * vec3(1.25, 1.15, 0.8), 0.35);
+		albedo = colour * mix(1.0, detail, 0.8) * mix(0.85, 1.1, inSeed);
 	} else if (inKind == 3) {
 		// mostly white daisies, some tinted petals for a bit of colour in the meadow
-		vec3 tint = inSeed < 0.6 ? vec3(1.0) : (inSeed < 0.75 ? vec3(1.0, 0.85, 0.35) : (inSeed < 0.9 ? vec3(0.75, 0.55, 1.0) : vec3(1.0, 0.55, 0.6)));
+		// each meadow has a colour of its own (foliagecommon.glsl's communities, ~200m): white daisies in one, yellow,
+		// violet or pink in the next, with a few of the others among them
+		vec2 meadow = (inPosition.xz + pc.offsetWorld);
+		float regional = latticeNoise(meadow / 30.0 + 57.0) * 0.75 + latticeNoise(meadow / 9.0 - 23.0) * 0.25;
+		float pick = fract(inSeed * 3.71) < 0.7 ? clamp((regional - 0.2) / 0.6, 0.0, 0.999) : inSeed;
+		vec3 tint = pick < 0.4 ? vec3(1.0) : (pick < 0.6 ? vec3(1.0, 0.85, 0.35) : (pick < 0.8 ? vec3(0.75, 0.55, 1.0) : vec3(1.0, 0.55, 0.6)));
 		float petal = smoothstep(0.55, 0.8, dot(texel.rgb, vec3(0.33))); // the white parts, not the yellow middle
 		albedo = pow(texel.rgb, vec3(2.2)) * mix(vec3(1.0), tint, petal) * 0.85;
 	} else {
@@ -75,6 +92,9 @@ void main() {
 		vec2 speciesXZ = (inPosition.xz + pc.offsetWorld) * 0.4;
 		vec2 speciesCell = floor(speciesXZ + vec2(hash42(floor(speciesXZ * 0.5)).x) * 0.8);
 		float species = hash42(speciesCell + 7.0).y;
+		// and each meadow mostly one of them (~200m regions), the others in patches among it
+		float meadowSpecies = latticeNoise((inPosition.xz + pc.offsetWorld) / 32.0 + 11.0);
+		if (hash42(speciesCell + 3.0).z < 0.65) species = clamp((meadowSpecies - 0.2) / 0.6, 0.0, 0.999);
 		vec3 base = vec3(0.04, 0.075, 0.02), tip = vec3(0.14, 0.22, 0.05);
 		if (species > 0.75) { base = vec3(0.035, 0.07, 0.03); tip = vec3(0.11, 0.2, 0.085); }	// fescue (blue green, not teal)
 		else if (species > 0.5) { base = vec3(0.06, 0.08, 0.02); tip = vec3(0.2, 0.24, 0.06); }	// yellow green
@@ -116,7 +136,8 @@ void main() {
 	if (inKind != 3) {
 		float sheen = inGust * smoothstep(0.15, 0.9, inHeight);
 		float luma = dot(albedo, vec3(0.3, 0.59, 0.11));
-		albedo = mix(albedo, mix(vec3(luma), albedo, 0.7) * 1.4, sheen * 0.7);
+		// (stronger, and the grass between the gusts a touch darker, so the waves read from further away)
+		albedo = mix(albedo, mix(vec3(luma), albedo, 0.65) * 1.5, sheen * 0.9) * mix(0.93, 1.0, smoothstep(0.0, 0.3, inGust));
 	}
 
 	// darker near the roots, the clump shadows itself

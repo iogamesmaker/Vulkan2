@@ -12,13 +12,14 @@ layout (local_size_x = 16, local_size_y = 16) in;
 layout (r16, set = 0, binding = 0) uniform writeonly image2D heightmap; // R16 unorm: the height, 0..1
 // rgb = climate (temperature, moisture, ruggedness) 0..1, half resolution: it's smooth over kilometres (terrain.frag,
 // the trees, grass and rocks, the weather on the ground read it). it used to share an RGBA16 texel with the height,
-// 302 MB at 6144^2, these two are ~112 MB
-layout (rgba8, set = 0, binding = 1) uniform writeonly image2D climateMap;
+// 302 MB at 6144^2, these two are ~150 MB. 16 bit (application.cpp: 8 bit stair stepped the biome borders)
+layout (rgba16, set = 0, binding = 1) uniform writeonly image2D climateMap;
 
 layout ( push_constant ) uniform constants {
     ivec2 offset;
 	ivec2 dirtyMin;
 	ivec2 updateSize;
+	ivec2 seedOffset; // the world seed: where in the noise this world is (Application::applySeed), 0 = the original
 } pc;
 
 #define TAU 6.28318530717959
@@ -273,6 +274,52 @@ float dunes(vec2 p) {
 	return ridges;
 }
 
+// the desert's own land (added to the base level, h = the eroded lowland hills): sand seas of big dunes with stony
+// plains between them, flat topped mesas and buttes standing out of the plains, dry riverbeds cut through
+//   - the sand seas (ergs, a slow regional noise): dunes across the wind, an asymmetric profile per crest (a long
+//     gentle windward back, a short steep slip face on the lee side), the crests bent and each its own height, the
+//     small dunes on top, flat sand between the crests
+//   - the stony plains (regs): nearly flat, mesas in two terraces with frayed cliff edges (terrainmaterial.glsl
+//     shows the steepest of those as rock, the dunes' slip faces stay sand), wadis winding through
+// (it was flat ground with low dunes everywhere: one even sand plain)
+// one set of dunes across a wind direction (angle, radians): asymmetric crests (a long windward back, the slip face on
+// the lee side), bent, and broken up into separate dunes of their own heights with flat sand between. 0..1
+float duneField(vec2 p, float angle, vec2 frequency, float seed) {
+	vec2 wind = vec2(cos(angle), sin(angle)), side = vec2(-wind.y, wind.x);
+	vec2 q = vec2(dot(p, wind), dot(p, side)) * frequency;
+	q += vec2(simplex(q * 0.23 + seed), simplex(q * 0.19 - seed * 1.7)) * vec2(1.1, 1.6); // bent, uneven spacing
+	float t = fract(q.x);
+	const float BACK = 0.62; // the windward part of the wavelength
+	float profile = t < BACK ? smoothstep(0.0, BACK, t) : 1.0 - smoothstep(BACK, 1.0, t);
+	profile = pow(profile, 1.6); // flat sand between the crests
+	// every crest broken into dunes of a couple of wavelengths each, some gone (zero where the crest index changes:
+	// the profile is 0 there)
+	float crest = simplex(vec2(floor(q.x) * 1.73 + seed, q.y * 0.55)) * 0.5 + 0.5;
+	return profile * smoothstep(0.3, 0.75, crest);
+}
+
+float desertLand(vec2 p, float h) {
+	float erg = smoothstep(0.38, 0.62, fbm(p * 0.7 + vec2(31.7, -12.4), 2) * 0.5 + 0.5);
+
+	// the dunes: two prevailing winds blended region by region (each a fixed direction: turning the coordinates by an
+	// angle that varies over the land swung the pattern around the origin, far out its crests piled into tight
+	// concentric rings), a weaker set across each (a network of dunes rather than one comb), the small dunes on top.
+	// low and gentle: the first version's long straight crests with short slip faces read as parallel ramps
+	float region = smoothstep(0.3, 0.7, fbm(p * 0.35 + vec2(7.1, -3.3), 2) * 0.5 + 0.5);
+	float windA = duneField(p, 0.42, vec2(13.0, 9.0), 3.3) * 0.022 + duneField(p, 1.57, vec2(9.0, 7.0), 11.7) * 0.01;
+	float windB = duneField(p, 1.25, vec2(11.0, 10.0), 5.9) * 0.02 + duneField(p, 2.4, vec2(8.0, 7.5), 17.3) * 0.011;
+	float sea = mix(windA, windB, region) + dunes(p) * 0.005;
+
+	// the stony plain: mesas (two terraces, frayed edges) and wadis
+	float m = fbm(p * 2.4 + vec2(-5.3, 19.1), 3) + simplex(p * 30.0) * 0.035;
+	float mesas = smoothstep(0.34, 0.38, m) * 0.032 + smoothstep(0.52, 0.555, m) * 0.026;
+	vec2 wp = p * 1.6 + vec2(simplex(p * 3.1 + 1.7), simplex(p * 3.1 - 4.2)) * 0.25;
+	float wadi = smoothstep(0.92, 0.985, 1.0 - abs(simplex(wp))) * 0.012;
+	float reg = (h - 0.5) * 0.06 + mesas - wadi + dunes(p) * 0.004;
+
+	return mix(reg, sea, erg);
+}
+
 // the erosion filter carves gullies down every slope: the mountains (and the foothills, by the mountain weight) in
 // full, the lowland biomes only lightly. (stronger, up to 2x, cut long narrow scarps along every lowland hill)
 #define LOWLAND_EROSION 0.25 // times EROSION_STRENGTH: the lowlands are only lightly weathered, the mountains get it in full
@@ -283,7 +330,7 @@ float lowlandMix(float cover[BIOME_COUNT], float h, float hSmooth, float dune) {
 	const float baseLevel = 0.3;
 	return cover[BIOME_PLAINS] * (baseLevel + (h - 0.5) * 0.25)				 // gentle rolling grassland
 		 + cover[BIOME_WHEAT]  * (baseLevel - 0.02 + (hSmooth - 0.5) * 0.07)	 // nearly flat farmland, not eroded
-		 + cover[BIOME_DESERT] * (baseLevel + (h - 0.5) * 0.08 + dune)		 // flat with low dunes
+		 + cover[BIOME_DESERT] * (baseLevel + dune)							 // dunes, plains, mesas (desertLand)
 		 + cover[BIOME_TAIGA]  * (baseLevel + 0.03 + (h - 0.5) * 0.4)		 // hilly forest
 		 + cover[BIOME_SNOW]   * (baseLevel + 0.05 + (h - 0.5) * 0.35);		 // tundra
 }
@@ -302,7 +349,7 @@ float getHeight(vec2 p, vec3 climate, vec3 base) {
 	float hSmooth = base.x + u;
 	float h = getLowlandHeight(p, base, u, LOWLAND_EROSION);
 
-	float lowland = lowlandMix(cover, h, hSmooth, cover[BIOME_DESERT] > 0.0 ? dunes(p) * 0.017 : 0.0);
+	float lowland = lowlandMix(cover, h, hSmooth, cover[BIOME_DESERT] > 0.0 ? desertLand(p, h) : 0.0);
 	if (mountains <= 0.0) return lowland;
 
 	// the mountains rise out of the lowland instead of a straight crossfade between the two (that was a ramp with the
@@ -350,7 +397,7 @@ void main() {
 	ivec2 size = imageSize(heightmap);
 	if (gl_GlobalInvocationID.x >= pc.updateSize.x ||  gl_GlobalInvocationID.y >= pc.updateSize.y) return;
 
-	vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset);
+	vec2 worldPos = vec2(ivec2(gl_GlobalInvocationID.xy) + pc.offset + pc.seedOffset);
 	vec2 p = vec2(worldPos * 4.0) / size;
 
 	vec3 climate = climateAt(p);

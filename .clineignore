@@ -1,0 +1,17 @@
+node_modules/
+.venv/
+venv/
+__pycache__/
+dist/
+build/
+.next/
+*.lock
+*.log
+*.csv
+*.sqlite
+vcpkg_installed
+imgui.ini
+readme.md
+vulkan-1.dll
+Vulkan2.exe
+.git

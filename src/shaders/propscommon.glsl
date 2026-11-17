@@ -20,7 +20,23 @@
 
 struct PropInstance {
 	vec4 posScale; // xyz terrain space, w = size in world units
-	vec4 params;   // x = yaw, y = tilt (logs lie on the slope), z = seed, w = moss (how wet / shaded it is)
+	vec4 params;   // x = yaw, y = tilt (logs lie on the slope), z = seed + 1 + its dither range (propDitherPack), w = moss (how wet / shaded it is)
 };
+
+// the LOD hand over: across a band around each switch both LODs are drawn, each keeping the pixels whose dither
+// value (props.frag, different every frame, TAA averages it) falls in its part of [0, 1), so one fades into the other
+// instead of popping. the far edge (a speck, a small rock's reach) fades out the same way. the range [a, b) goes
+// into the seed's integer part in PROP_DITHER_LEVELS steps (the seed is a fraction, it gets the fraction back)
+#define PROP_DITHER_LEVELS 16.0
+float propDitherPack(float seed, float a, float b) {
+	float qa = floor(clamp(a, 0.0, 1.0) * PROP_DITHER_LEVELS + 0.5), qb = floor(clamp(b, 0.0, 1.0) * PROP_DITHER_LEVELS + 0.5);
+	return fract(seed) + 1.0 + qa * (PROP_DITHER_LEVELS + 1.0) + qb;
+}
+// -> xy = [a, b), z = the seed
+vec3 propDitherUnpack(float packed) {
+	float code = floor(packed) - 1.0;
+	float qa = floor(code / (PROP_DITHER_LEVELS + 1.0));
+	return vec3(qa, code - qa * (PROP_DITHER_LEVELS + 1.0), PROP_DITHER_LEVELS * fract(packed)) / PROP_DITHER_LEVELS;
+}
 
 #endif

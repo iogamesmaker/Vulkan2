@@ -42,9 +42,10 @@ void main() {
 	float roughY = placement.height * pc.factor - pc.factor * 0.5;
 	float dist = length(vec2(distXZ, roughY - pc.campos.y));
 	if (dist > PROP_RADIUS) return;
-	// small rocks only near the camera, big ones further out
+	// small rocks only near the camera, big ones further out (fading out over the last part, below)
 	float visibleTo = scale > 0.4 ? PROP_RADIUS : PROP_RADIUS * clamp(scale * 2.5, 0.25, 1.0);
 	if (dist > visibleTo) return;
+	float reachFade = 1.0 - smoothstep(visibleTo * 0.8, visibleTo, dist);
 
 	// horizontal distance, like terrain.tese (the 3D one floated / buried the rocks when the camera was above them)
 	float groundY = terrainHeight(heightmap, placement.uv, distXZ, terrainSpacing(distXZ, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
@@ -61,8 +62,8 @@ void main() {
 	}
 	PropInstance instance;
 	// rocks sink in a bit (over uneven ground their base would float), logs lie on the ground
-	instance.posScale = vec4(xz.x, groundY - (mesh < PROP_FIRST_LOG ? ROCK_SINK : (mesh < PROP_FIRST_STUMP ? LOG_SINK : 0.01)) * scale, xz.y, scale);
-	instance.params = vec4(placement.yaw, placement.tilt, placement.seed, placement.moss);
+	instance.posScale = vec4(xz.x, groundY - placement.sink * scale, xz.y, scale);
+	instance.params = vec4(placement.yaw, placement.tilt, propDitherPack(placement.seed, 0.0, 1.0), placement.moss);
 
 	if (dist < PROP_SHADOW_DISTANCE) append(uint(PROP_MESHES * 2) + mesh, instance);
 
@@ -74,9 +75,24 @@ void main() {
 	// a log kept its 5000 triangles out to ~450m and the cheap LOD went on to the edge of the ring: millions of
 	// triangles on rocks a pixel wide, ~4ms of a forest frame on an integrated GPU
 	float radiusPixels = radius * pc.projScale / max(dist, 1e-3);
-	if (radiusPixels < 1.5) return;
 	// (a third LOD, ~1/5 of the cheap one, once it's a few pixels across: the 300-700 triangles went on to the
 	// edge of the ring, dense little knots of triangles on every distant rock)
-	if (radiusPixels < PROP_LOD2_PIXELS) append(uint(PROP_MESHES * 3) + mesh, instance);
-	else append(mesh * 2u + (radiusPixels > PROP_LOD_PIXELS ? 0u : 1u), instance);
+	// no hard switches (they popped, the scans' LODs differ in silhouette): across +-20% of each threshold both
+	// LODs draw, dithered (propscommon.glsl), and the speck / the end of its reach fades out to nothing
+	float visible = smoothstep(1.0, 2.5, radiusPixels) * reachFade;
+	if (visible <= 0.0) return;
+	float detailed = smoothstep(PROP_LOD_PIXELS * 0.8, PROP_LOD_PIXELS * 1.2, radiusPixels);	   // LOD 0 over LOD 1
+	float medium = smoothstep(PROP_LOD2_PIXELS * 0.8, PROP_LOD2_PIXELS * 1.2, radiusPixels);   // LOD 1 over LOD 2
+	float w0 = detailed * visible, w1 = (1.0 - detailed) * medium * visible;
+	uint bins[3] = uint[](mesh * 2u, mesh * 2u + 1u, uint(PROP_MESHES * 3) + mesh);
+	float from = 0.0;
+	float to[3] = float[](w0, w0 + w1, visible);
+	for (int lod = 0; lod < 3; lod++) {
+		// (a share under one dither step isn't worth drawing a copy for)
+		if (to[lod] - from >= 0.5 / PROP_DITHER_LEVELS) {
+			instance.params.z = propDitherPack(placement.seed, from, to[lod]);
+			append(bins[lod], instance);
+		}
+		from = to[lod];
+	}
 }

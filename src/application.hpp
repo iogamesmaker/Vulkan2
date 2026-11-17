@@ -11,6 +11,7 @@
 #include <memory>
 #include <span>
 #include <mutex>
+#include <atomic>
 
 #include "utils.hpp"
 
@@ -38,6 +39,7 @@
 #include "gbuffer.hpp"
 #include "bloom.hpp"
 #include "props.hpp"
+#include "wildlife.hpp"
 #include "groundcover.hpp"
 #include "collision.hpp"
 #include "settings.hpp"
@@ -45,6 +47,7 @@
 #include "terraincache.hpp"
 #include "debugview.hpp"
 #include "interaction.hpp"
+#include "snowtrail.hpp"
 #include "precipitation.hpp"
 #include "weather.hpp"
 
@@ -54,6 +57,7 @@ struct HeightmapPushConstants {
 	glm::ivec2 offset;
 	glm::ivec2 dirtyMin;
 	glm::ivec2 updateSize;
+	glm::ivec2 seedOffset{ 0 }; // the world seed (Application::applySeed): where in the noise this world is, texels
 };
 
 struct TessellationPushConstants {
@@ -208,10 +212,24 @@ private:
 		Uint64 start;
 	} m_Loading{};
 	bool m_QuitRequested = false; // the window was closed while loading
+	// the world seed (loading.cpp): asked for on the start screen before the world loads. a number, or any text
+	// (hashed). 0 is the original world. VULKAN2_SEED=<seed> skips the screen, the captures (VULKAN2_SHOT) do too
+	// everything that doesn't depend on the seed (textures, models, pipelines) loads behind the screen meanwhile, the
+	// worker waits for it (waitForSeed) right before the terrain is generated
+	glm::vec3 m_ClimateHere{ 0.5f }; // the climate under the camera (worldgen.hpp, updateWeather): the wind's particles
+	std::string m_SeedText = "0";
+	uint32_t m_Seed = 0;
+	std::atomic<bool> m_SeedChosen{ false }; // the seed is set (main thread), the worker may generate the terrain
+	std::atomic<bool> m_PreloadDone{ false }; // the worker has loaded everything it can without the seed
+	struct SeedScreen { char text[128] = {}; bool focus = true; uint32_t random = 0; int framesLeft = -1; } m_SeedScreen;
+	bool prepareSeed();	   // false: no screen (VULKAN2_SEED, or a capture run), the seed is set already
+	bool seedScreenFrame(); // one frame of the screen, true once Start is pressed
+	void waitForSeed();	   // on the worker
+	void applySeed(); // m_SeedText -> m_Seed -> the heightmap's seed offset
 	void initLoadingScreen();
 	void destroyLoadingScreen();
-	void runWhileLoading(const std::function<void()>& work);
-	void drawLoadingFrame();
+	void runWhileLoading(const std::function<void()>& work, bool seedScreen = false); // seedScreen: the seed prompt until it's chosen
+	void drawLoadingFrame(bool seedScreen = false); // seedScreen: no spinner, the ImGui frame on top
 	
 	void initPipelines();
 	void initSkyPipeline();
@@ -231,6 +249,9 @@ private:
 	void createSwapchain(uint32_t width, uint32_t height, bool vsync = true);
 	void resizeSwapchain(bool vsync = true);
 	void destroySwapchain();
+	void toggleFullscreen(); // F11: borderless fullscreen at the desktop resolution <-> the window
+	void handleWindowEvent(const SDL_Event& event); // F11 + resizes, in the main loop and the loading screen
+	void resizeLoadingSwapchain(); // the loading / seed screen's resize: only the swapchain (loading.cpp)
 	
 	void drawTerrain(VkCommandBuffer cmd, const glm::mat4& viewproj, const ShadowCascadeDraw* shadow = nullptr);
 	void drawGeometry(VkCommandBuffer cmd);
@@ -267,6 +288,7 @@ private:
 	// the depth each cloud texel was marched to (cloudresolve.comp writes it, copied for the next frame): history from
 	// something else (a tree that walked past in front of the sky) is thrown out instead of lingering
 	AllocatedImage m_CloudDepth, m_CloudDepthHistory;
+	AllocatedImage m_CloudMarchDepth; // where the cloud each texel sees is (clouds.comp), the sky's reprojection depth
 	VkDescriptorSetLayout m_CloudResolveLayout;
 	VkDescriptorSet m_CloudResolveSet = VK_NULL_HANDLE;
 	ComputeEffect m_CloudResolveEffect;
@@ -317,6 +339,8 @@ private:
 	Bloom m_Bloom;
 	Props m_Props; // rocks, boulders, fallen logs
 	GroundCover m_GroundCover; // ferns, bushes, weeds, dead branches
+	Wildlife m_Wildlife; // birds, bats, butterflies
+	WildlifePushConstants m_WildlifePC{}; // this frame's, filled in draw() with the foliage's
 	VkDescriptorSetLayout m_LightingLayout;
 	VkDescriptorSet m_LightingSet = VK_NULL_HANDLE;
 	ComputeEffect m_LightingEffect;
@@ -473,6 +497,7 @@ private:
 	ShadowMaps m_Shadows{};
 	Foliage m_Foliage{};
 	PlayerTrail m_PlayerTrail{}; // where your feet went: grass and low leaves bend away (interaction.glsl)
+	SnowTrail m_SnowTrail{};	 // the prints you leave in the deep snow (snow.glsl)
 	Weather m_Weather; // weather.hpp: rain, storms, snow, sandstorms
 	void updateWeather(float dt); // every frame (settings.cpp)
 	Precipitation m_Precipitation; // what falls, precipitation.hpp

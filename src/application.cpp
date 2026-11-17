@@ -6,11 +6,41 @@
 #include "application.hpp"
 #include <glm/gtc/packing.hpp>
 #include <sstream>
+#include <cstring>
 #include <filesystem>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-constexpr bool useValidationLayers = true; // ?
+// the validation layers check every Vulkan call: worth it while developing, a large CPU cost per frame otherwise. on
+// in unoptimised builds (no NDEBUG), off in release ones; VULKAN2_VALIDATION=0/1 overrides either way
+static bool useValidationLayers() {
+	if(const char* v = std::getenv("VULKAN2_VALIDATION")) return std::atoi(v) != 0;
+#ifdef NDEBUG
+	return false;
+#else
+	return true;
+#endif
+}
+
+// vk-bootstrap's default messenger's output, minus two kinds of message that are noise here:
+//  - the loader failing to open an implicit layer's manifest another program registered and later removed (the Epic
+//    overlay): nothing to do with this app, the loader skips it (fixed by repairing / reinstalling that program)
+//  - "Output ... no corresponding Input": the vertex / tessellation shaders are shared between the material passes and
+//    the depth prepasses / shadow passes, whose fragment shaders don't read everything. the unused outputs are
+//    dropped when the pipeline links, they cost nothing
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type,
+													 const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
+	const char* message = data && data->pMessage ? data->pMessage : "";
+	if(std::strstr(message, "loader_get_json: Failed to open JSON file")) return VK_FALSE;
+	if(std::strstr(message, "but there is no corresponding Input declared")) return VK_FALSE;
+	const char* level = severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ? "ERROR"
+					  : severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ? "WARNING"
+					  : severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT ? "INFO" : "VERBOSE";
+	const char* kind = (type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) ? "Validation"
+					 : (type & VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT) ? "Performance" : "General";
+	fmt::print("[{}: {}]\n{}\n", level, kind, message);
+	return VK_FALSE;
+}
 
 Application::Application(uint32_t width, uint32_t height) : m_Width(width), m_Height(height) {
 	initWindow();
@@ -57,7 +87,9 @@ Application::Application(uint32_t width, uint32_t height) : m_Width(width), m_He
 
 	initImGui(); // on this thread, ImGui's SDL backend talks to the window
 
-	runWhileLoading([this]() { initDefaultData(); }); // textures, the heightmap, the foliage / trees / props
+	// textures, the heightmap, the foliage / trees / props. the seed prompt shows while everything that doesn't need
+	// the seed loads behind it (loading.cpp), the terrain is generated once it's chosen
+	runWhileLoading([this]() { initDefaultData(); }, prepareSeed()); // textures, the heightmap, the foliage / trees / props
 	destroyLoadingScreen();
 	m_InitDone = true;
 }
@@ -85,10 +117,12 @@ Application::~Application() {
 		m_DebugView.destroy(); // before imgui shuts down (the deletion queue), it removes its imgui texture
 		m_Props.destroy();
 		m_GroundCover.destroy();
+		m_Wildlife.destroy();
 		m_Precipitation.destroy();
 		m_Foliage.destroy();
 		m_Trees.destroy();
 		m_PlayerTrail.destroy();
+		m_SnowTrail.destroy();
 
 		m_DeletionQueue.flush();
 	}
@@ -121,8 +155,8 @@ void Application::initVulkan() {
 	vkb::InstanceBuilder builder; // Vulkan Bootstrapper my goat
 	
 	auto instance_return = builder.set_app_name("Vulkan Attempt 2")
-								  .request_validation_layers(useValidationLayers)
-								  .use_default_debug_messenger()
+								  .request_validation_layers(useValidationLayers())
+								  .set_debug_callback(debugCallback)
 								  .require_api_version(1, 3, 0)
 								  .build();
 								  
@@ -213,43 +247,15 @@ void Application::initSwapchain(bool vsync) {
 	drawImageUsages |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	drawImageUsages |= VK_IMAGE_USAGE_SAMPLED_BIT; // bloom reads it filtered
 	
-	VkImageCreateInfo imageCI = vkinit::image_create_info(m_DrawImage.imageFormat, drawImageUsages, drawImageExtent);
+	m_DrawImage = vkutil::create_image(m_Device, m_Allocator, m_DrawImage.imageFormat, drawImageUsages, drawImageExtent);
 
-	VmaAllocationCreateInfo imageAllocinfo = {};
-	imageAllocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-	imageAllocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-	
-	vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &m_DrawImage.image, &m_DrawImage.allocation, nullptr);
-
-	VkImageViewCreateInfo rview_info = vkinit::imageview_create_info(m_DrawImage.imageFormat, m_DrawImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
-	
-	VK_CHECK(vkCreateImageView(m_Device, &rview_info, nullptr, &m_DrawImage.imageView));
-	
-	// depth buffer creation
-	
-	m_DepthBuffer.imageFormat = VK_FORMAT_D32_SFLOAT;
-	m_DepthBuffer.imageExtent = drawImageExtent;
-	
-	VkImageUsageFlags depthBufferUsages{};
-	depthBufferUsages |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-	depthBufferUsages |= VK_IMAGE_USAGE_SAMPLED_BIT; // godrays read it
-
-	VkImageCreateInfo depthBufferCI = vkinit::image_create_info(m_DepthBuffer.imageFormat, depthBufferUsages, drawImageExtent);
-	
-	vmaCreateImage(m_Allocator, &depthBufferCI, &imageAllocinfo, &m_DepthBuffer.image, &m_DepthBuffer.allocation, nullptr);
-	
-	VkImageViewCreateInfo depthViewCI = vkinit::imageview_create_info(m_DepthBuffer.imageFormat, m_DepthBuffer.image, VK_IMAGE_ASPECT_DEPTH_BIT);
-	
-	VK_CHECK(vkCreateImageView(m_Device, &depthViewCI, nullptr, &m_DepthBuffer.imageView));
+	// depth buffer (sampled: godrays read it)
+	m_DepthBuffer = vkutil::create_image(m_Device, m_Allocator, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+										 drawImageExtent, VK_IMAGE_ASPECT_DEPTH_BIT);
 
 	// G-buffer, written by the opaque materials, read by the lighting pass
 	auto createTarget = [&](AllocatedImage& target, VkFormat format) {
-		target.imageFormat = format;
-		target.imageExtent = drawImageExtent;
-		VkImageCreateInfo targetCI = vkinit::image_create_info(format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, drawImageExtent);
-		VK_CHECK(vmaCreateImage(m_Allocator, &targetCI, &imageAllocinfo, &target.image, &target.allocation, nullptr));
-		VkImageViewCreateInfo targetViewCI = vkinit::imageview_create_info(format, target.image, VK_IMAGE_ASPECT_COLOR_BIT);
-		VK_CHECK(vkCreateImageView(m_Device, &targetViewCI, nullptr, &target.imageView));
+		target = vkutil::create_image(m_Device, m_Allocator, format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, drawImageExtent);
 	};
 	createTarget(m_GAlbedo, GBUFFER_ALBEDO);
 	createTarget(m_GNormal, GBUFFER_NORMAL);
@@ -258,26 +264,13 @@ void Application::initSwapchain(bool vsync) {
 
 	// TAA / TSR history (ping-pong) at the OUTPUT resolution, read bilinear + written as storage
 	VkExtent3D outputExtent = { m_SwapchainExtent.width, m_SwapchainExtent.height, 1 };
-	for(AllocatedImage& history : m_History) {
-		history.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-		history.imageExtent = outputExtent;
-		VkImageCreateInfo historyCI = vkinit::image_create_info(history.imageFormat, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, outputExtent);
-		VK_CHECK(vmaCreateImage(m_Allocator, &historyCI, &imageAllocinfo, &history.image, &history.allocation, nullptr));
-		VkImageViewCreateInfo historyViewCI = vkinit::imageview_create_info(history.imageFormat, history.image, VK_IMAGE_ASPECT_COLOR_BIT);
-		VK_CHECK(vkCreateImageView(m_Device, &historyViewCI, nullptr, &history.imageView));
-	}
+	for(AllocatedImage& history : m_History)
+		history = vkutil::create_image(m_Device, m_Allocator, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, outputExtent);
 	m_HistoryValid = false;
 
-	// the output image (window resolution): TSR result, post processing, copied to the swapchain
-	{
-		m_OutputImage.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-		m_OutputImage.imageExtent = outputExtent;
-		VkImageCreateInfo outputCI = vkinit::image_create_info(m_OutputImage.imageFormat,
-			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, outputExtent); // (the rain draws onto it)
-		VK_CHECK(vmaCreateImage(m_Allocator, &outputCI, &imageAllocinfo, &m_OutputImage.image, &m_OutputImage.allocation, nullptr));
-		VkImageViewCreateInfo outputViewCI = vkinit::imageview_create_info(m_OutputImage.imageFormat, m_OutputImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
-		VK_CHECK(vkCreateImageView(m_Device, &outputViewCI, nullptr, &m_OutputImage.imageView));
-	}
+	// the output image (window resolution): TSR result, post processing, copied to the swapchain (the rain draws onto it)
+	m_OutputImage = vkutil::create_image(m_Device, m_Allocator, VK_FORMAT_R16G16B16A16_SFLOAT,
+		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, outputExtent);
 
 	// SSAO and the volumetric clouds: half resolution, or full on Ultra (each its own setting; the shaders work out
 	// the ratio from the image sizes)
@@ -286,46 +279,26 @@ void Application::initSwapchain(bool vsync) {
 		VkExtent3D ssaoExtent = m_FullResSSAO ? drawImageExtent : half;
 		VkExtent3D quarter = { std::max(drawImageExtent.width / 4, 1u), std::max(drawImageExtent.height / 4, 1u), 1 };
 		VkExtent3D cloudExtent = m_CloudResolution >= 2 ? drawImageExtent : (m_CloudResolution == 1 ? half : quarter);
-		m_SSAOImage.imageFormat = VK_FORMAT_R8G8_UNORM; // AO + light shaft visibility
-		m_SSAOImage.imageExtent = ssaoExtent;
-		VkImageCreateInfo ssaoCI = vkinit::image_create_info(m_SSAOImage.imageFormat, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, ssaoExtent);
-		VK_CHECK(vmaCreateImage(m_Allocator, &ssaoCI, &imageAllocinfo, &m_SSAOImage.image, &m_SSAOImage.allocation, nullptr));
-		VkImageViewCreateInfo ssaoViewCI = vkinit::imageview_create_info(m_SSAOImage.imageFormat, m_SSAOImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
-		VK_CHECK(vkCreateImageView(m_Device, &ssaoViewCI, nullptr, &m_SSAOImage.imageView));
+		// AO + light shaft visibility
+		// (b = the depth it was measured at: lighting.comp's denoise weighs by it instead of re-reading the depth buffer)
+		m_SSAOImage = vkutil::create_image(m_Device, m_Allocator, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, ssaoExtent);
 
-		// the volumetric clouds
-		m_CloudImage.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT; // in-scattered light, transmittance
-		m_CloudImage.imageExtent = cloudExtent;
+		// the volumetric clouds: in-scattered light, transmittance
 		// (the resolved result: the march goes into m_CloudRaw, cloudresolve.comp accumulates it over frames into
 		// this one, which is then copied into m_CloudHistory for the next frame)
-		VkImageCreateInfo cloudCI = vkinit::image_create_info(m_CloudImage.imageFormat, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, cloudExtent);
-		VK_CHECK(vmaCreateImage(m_Allocator, &cloudCI, &imageAllocinfo, &m_CloudImage.image, &m_CloudImage.allocation, nullptr));
-		VkImageViewCreateInfo cloudViewCI = vkinit::imageview_create_info(m_CloudImage.imageFormat, m_CloudImage.image, VK_IMAGE_ASPECT_COLOR_BIT);
-		VK_CHECK(vkCreateImageView(m_Device, &cloudViewCI, nullptr, &m_CloudImage.imageView));
+		m_CloudImage = vkutil::create_image(m_Device, m_Allocator, VK_FORMAT_R16G16B16A16_SFLOAT,
+											VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, cloudExtent);
 		std::pair<AllocatedImage*, VkImageUsageFlags> cloudTargets[] = {
 			{ &m_CloudRaw, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT },
 			{ &m_CloudHistory, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT },
 		};
-		for(auto& [image, usage] : cloudTargets) {
-			image->imageFormat = m_CloudImage.imageFormat;
-			image->imageExtent = cloudExtent;
-			VkImageCreateInfo imageCI = vkinit::image_create_info(image->imageFormat, usage, cloudExtent);
-			VK_CHECK(vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &image->image, &image->allocation, nullptr));
-			VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(image->imageFormat, image->image, VK_IMAGE_ASPECT_COLOR_BIT);
-			VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &image->imageView));
-		}
+		for(auto& [image, usage] : cloudTargets) *image = vkutil::create_image(m_Device, m_Allocator, m_CloudImage.imageFormat, usage, cloudExtent);
 		std::pair<AllocatedImage*, VkImageUsageFlags> cloudDepthTargets[] = {
 			{ &m_CloudDepth, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT },
 			{ &m_CloudDepthHistory, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT },
+			{ &m_CloudMarchDepth, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT },
 		};
-		for(auto& [image, usage] : cloudDepthTargets) {
-			image->imageFormat = VK_FORMAT_R32_SFLOAT;
-			image->imageExtent = cloudExtent;
-			VkImageCreateInfo imageCI = vkinit::image_create_info(image->imageFormat, usage, cloudExtent);
-			VK_CHECK(vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &image->image, &image->allocation, nullptr));
-			VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(image->imageFormat, image->image, VK_IMAGE_ASPECT_COLOR_BIT);
-			VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &image->imageView));
-		}
+		for(auto& [image, usage] : cloudDepthTargets) *image = vkutil::create_image(m_Device, m_Allocator, VK_FORMAT_R32_SFLOAT, usage, cloudExtent);
 		m_CloudHistoryValid = false;
 	}
 
@@ -562,6 +535,8 @@ void Application::initTessellationPipeline() {
 	builder.add_binding(6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1);		  // terrain cache: where each level is baked
 	builder.add_binding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1); // terrain cache: albedo
 	builder.add_binding(8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1); // terrain cache: normal
+	builder.add_binding(9, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1);		  // deep snow: where the trail texture is (snowtrail.hpp)
+	builder.add_binding(10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1); // deep snow: the prints
 	
 	// tesc reads the heightmap for LOD, the terrain cache's bake (compute) the textures
 	m_TerrainDescriptorLayout = builder.build(m_Device, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
@@ -704,6 +679,7 @@ void Application::initPipelines() {
 	m_AtmosphereManager.setBloom(m_Bloom.getView(), m_Bloom.getSampler());
 	m_HiZ.init(this);
 	m_TerrainCache.init(this, m_TerrainDescriptors, m_TerrainDescriptorLayout, m_AtmosphereManager.getRenderDescriptorLayout());
+	m_SnowTrail.init(this, m_TerrainDescriptors);
 }
 
 void Application::initImGui() {
@@ -780,8 +756,6 @@ void Application::initDefaultData() {
 	
 	loadTextures();
 	
-	generateHeightmap();
-
 	initProbe();
 	parseShots();
 
@@ -796,9 +770,15 @@ void Application::initDefaultData() {
 	m_Props.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_AlbedoMaps[0].imageView, m_Sampler, m_Shadows.getFormat());
 	m_Collision.setShapes(m_Props.collisionShapes()); // walking on the rocks / logs as they're shaped
 	m_GroundCover.init(this, m_TextureLoader, m_Heightmap, m_ClimateMap, m_HeightmapSampler, m_Sampler, m_Shadows.getFormat(), m_PlayerTrail.buffer());
+	m_Wildlife.init(this, m_Heightmap, m_ClimateMap, m_HeightmapSampler);
 	m_Trees.setOcclusionSource(m_HiZ.getView(), m_HiZ.getSampler());
 	m_Precipitation.init(this, m_OutputImage.imageFormat, m_AtmosphereManager.getRenderDescriptorLayout());
 	m_Precipitation.setDepth(m_DepthBuffer.imageView, m_NearestSampler);
+
+	// all of the above only binds the heightmap / climate images, nothing reads them yet: it loads while the seed is
+	// being picked (loading.cpp). the terrain itself needs the seed
+	waitForSeed();
+	generateHeightmap();
 
 	m_TerrainPC.factor = m_WorldSize * TERRAIN_HEIGHT_SCALE * m_TerrainScale;
 	m_Camera.position.y = m_TerrainPC.factor * 0.5f;
@@ -826,6 +806,36 @@ void Application::initDefaultData() {
 	if(const char* taa = std::getenv("VULKAN2_TAA")) m_Settings.taa = std::atoi(taa) != 0;
 	// VULKAN2_GROUNDCOVER=0: ground cover off (comparison captures; how much grows is the world's call, not a setting)
 	if(const char* groundCover = std::getenv("VULKAN2_GROUNDCOVER")) m_Settings.groundCover = std::atof(groundCover) > 0.0f;
+	// VULKAN2_SET=name=value,name=value: any of these settings over the preset (profiling captures: what a pass costs)
+	if(const char* set = std::getenv("VULKAN2_SET")) {
+		std::stringstream all(set);
+		std::string entry;
+		while(std::getline(all, entry, ',')) {
+			size_t eq = entry.find('=');
+			if(eq == std::string::npos) continue;
+			std::string name = entry.substr(0, eq);
+			float value = static_cast<float>(std::atof(entry.substr(eq + 1).c_str()));
+			GraphicsSettings& s = m_Settings;
+			if(name == "tessellation") s.tessellation = value;
+			else if(name == "triplanar") s.triplanar = value != 0.0f;
+			else if(name == "detailBumps") s.detailBumps = value != 0.0f;
+			else if(name == "deepSnow") s.deepSnow = value != 0.0f;
+			else if(name == "macroLayer") s.macroLayer = value != 0.0f;
+			else if(name == "cliffNoTile") s.cliffNoTile = value != 0.0f;
+			else if(name == "pomDistance") s.pomDistance = value;
+			else if(name == "pomSteps") s.pomSteps = static_cast<int>(value);
+			else if(name == "terrainCache") s.terrainCache = value != 0.0f;
+			else if(name == "shadows") s.shadows = value != 0.0f;
+			else if(name == "ssao") s.ssao = value != 0.0f;
+			else if(name == "contactShadows") s.contactShadows = value != 0.0f;
+			else if(name == "bounceLight") s.bounceLight = value != 0.0f;
+			else if(name == "softShadows") s.softShadows = value != 0.0f;
+			else if(name == "shadowResolution") s.shadowResolution = static_cast<int>(value);
+			else if(name == "renderScale") s.renderScale = value;
+			else if(name == "wildlife") s.wildlife = value != 0.0f;
+			else fmt::print("VULKAN2_SET: unknown setting '{}'\n", name);
+		}
+	}
 	if(!m_Shots.empty()) m_Settings.vsync = false; // see parseShots
 	applySettings();
 }
@@ -1121,6 +1131,18 @@ void Application::resizeSwapchain(bool vsync) {
 	m_Resized = false;
 }
 
+void Application::toggleFullscreen() {
+	bool fullscreen = (SDL_GetWindowFlags(m_pWindow) & SDL_WINDOW_FULLSCREEN) != 0;
+	SDL_SetWindowFullscreenMode(m_pWindow, nullptr); // (borderless at the desktop resolution, no mode switch)
+	SDL_SetWindowFullscreen(m_pWindow, !fullscreen);
+	m_Resized = true; // (the resize events follow too, this covers a toggle that keeps the same pixel size)
+}
+
+void Application::handleWindowEvent(const SDL_Event& event) {
+	if(event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) m_Resized = true;
+	if(event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F11 && !event.key.repeat) toggleFullscreen();
+}
+
 void Application::destroySwapchain() {
 	vkDestroySwapchainKHR(m_Device, m_Swapchain, nullptr);
 	
@@ -1138,7 +1160,7 @@ void Application::destroySwapchain() {
 	vkDestroyImageView(m_Device, m_DepthBuffer.imageView, nullptr);
 	vmaDestroyImage(m_Allocator, m_DepthBuffer.image, m_DepthBuffer.allocation);
 
-	for(AllocatedImage* target : { &m_GAlbedo, &m_GNormal, &m_GMaterial, &m_GVelocity, &m_History[0], &m_History[1], &m_SSAOImage, &m_CloudImage, &m_CloudRaw, &m_CloudHistory, &m_CloudDepth, &m_CloudDepthHistory, &m_OutputImage }) {
+	for(AllocatedImage* target : { &m_GAlbedo, &m_GNormal, &m_GMaterial, &m_GVelocity, &m_History[0], &m_History[1], &m_SSAOImage, &m_CloudImage, &m_CloudRaw, &m_CloudHistory, &m_CloudDepth, &m_CloudDepthHistory, &m_CloudMarchDepth, &m_OutputImage }) {
 		vkDestroyImageView(m_Device, target->imageView, nullptr);
 		vmaDestroyImage(m_Allocator, target->image, target->allocation);
 	}
@@ -1429,6 +1451,8 @@ void Application::drawGeometry(VkCommandBuffer cmd) {
 	split("rocks & logs");
 	m_GroundCover.draw(cmd);
 	split("ground cover");
+	m_Wildlife.draw(cmd);
+	split("birds & butterflies");
 	vkutil::bindGraphics(cmd, m_TerrainPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_TerrainLayout, 0, 3, terrainSets, 0, nullptr);
 	drawTerrain(cmd, m_Projection * m_View);
@@ -1647,6 +1671,7 @@ void Application::initClouds() {
 	builder.add_binding(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // coverage map
 	builder.add_binding(4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);		   // where the map is
 	builder.add_binding(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // the heightmap (the far fog's ground)
+	builder.add_binding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);		   // where the clouds are (m_CloudMarchDepth)
 	m_CloudLayout = builder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_CloudSet = g_DescriptorAllocator.allocate(m_Device, m_CloudLayout);
 	VkPushConstantRange range{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4) + sizeof(glm::vec4) * 4 };
@@ -1667,6 +1692,7 @@ void Application::initClouds() {
 	resolveBuilder.add_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);		  // the result (m_CloudImage)
 	resolveBuilder.add_binding(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // last frame's depth per texel
 	resolveBuilder.add_binding(5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE);		  // this frame's (m_CloudDepth)
+	resolveBuilder.add_binding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); // where the clouds are (m_CloudMarchDepth)
 	m_CloudResolveLayout = resolveBuilder.build(m_Device, VK_SHADER_STAGE_COMPUTE_BIT);
 	m_CloudResolveSet = g_DescriptorAllocator.allocate(m_Device, m_CloudResolveLayout);
 	VkPushConstantRange resolveRange{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::mat4) + sizeof(glm::vec4) };
@@ -1746,33 +1772,35 @@ void Application::writeLightingDescriptors() {
 	}
 
 	if(m_CloudSet != VK_NULL_HANDLE) {
-		VkDescriptorImageInfo cloudInfos[3] = {
+		VkDescriptorImageInfo cloudInfos[4] = {
 			{ m_NearestSampler, m_DepthBuffer.imageView, read },
 			{ VK_NULL_HANDLE, m_CloudRaw.imageView, VK_IMAGE_LAYOUT_GENERAL },
 			{ m_CloudNoiseSampler, m_CloudNoise.imageView, read },
+			{ VK_NULL_HANDLE, m_CloudMarchDepth.imageView, VK_IMAGE_LAYOUT_GENERAL }, // binding 6
 		};
-		VkWriteDescriptorSet cloudWrites[3] = {};
-		for(uint32_t i = 0; i < 3; i++) {
+		VkWriteDescriptorSet cloudWrites[4] = {};
+		for(uint32_t i = 0; i < 4; i++) {
 			cloudWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			cloudWrites[i].dstSet = m_CloudSet;
-			cloudWrites[i].dstBinding = i;
+			cloudWrites[i].dstBinding = i == 3 ? 6 : i;
 			cloudWrites[i].descriptorCount = 1;
-			cloudWrites[i].descriptorType = i == 1 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+			cloudWrites[i].descriptorType = (i == 1 || i == 3) ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			cloudWrites[i].pImageInfo = &cloudInfos[i];
 		}
-		vkUpdateDescriptorSets(m_Device, 3, cloudWrites, 0, nullptr);
+		vkUpdateDescriptorSets(m_Device, 4, cloudWrites, 0, nullptr);
 	}
 	if(m_CloudResolveSet != VK_NULL_HANDLE) {
-		VkDescriptorImageInfo resolveInfos[6] = {
+		VkDescriptorImageInfo resolveInfos[7] = {
 			{ m_NearestSampler, m_CloudRaw.imageView, read },
 			{ m_AtmosphereSampler, m_CloudHistory.imageView, read }, // linear, clamped
 			{ m_NearestSampler, m_DepthBuffer.imageView, read },
 			{ VK_NULL_HANDLE, m_CloudImage.imageView, VK_IMAGE_LAYOUT_GENERAL },
 			{ m_NearestSampler, m_CloudDepthHistory.imageView, read },
 			{ VK_NULL_HANDLE, m_CloudDepth.imageView, VK_IMAGE_LAYOUT_GENERAL },
+			{ m_NearestSampler, m_CloudMarchDepth.imageView, read },
 		};
-		VkWriteDescriptorSet resolveWrites[6] = {};
-		for(uint32_t i = 0; i < 6; i++) {
+		VkWriteDescriptorSet resolveWrites[7] = {};
+		for(uint32_t i = 0; i < 7; i++) {
 			resolveWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 			resolveWrites[i].dstSet = m_CloudResolveSet;
 			resolveWrites[i].dstBinding = i;
@@ -1780,7 +1808,7 @@ void Application::writeLightingDescriptors() {
 			resolveWrites[i].descriptorType = i == 3 || i == 5 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 			resolveWrites[i].pImageInfo = &resolveInfos[i];
 		}
-		vkUpdateDescriptorSets(m_Device, 6, resolveWrites, 0, nullptr);
+		vkUpdateDescriptorSets(m_Device, 7, resolveWrites, 0, nullptr);
 	}
 
 	VkDescriptorImageInfo ssaoInfos[3] = {
@@ -1939,6 +1967,7 @@ void Application::drawLighting(VkCommandBuffer cmd) {
 	if(!marchClouds) m_CloudHistoryValid = false;
 	if(marchClouds) {
 		vkutil::transition_image(cmd, m_CloudRaw.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+		vkutil::transition_image(cmd, m_CloudMarchDepth.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
 		struct {
 			glm::mat4 invViewProj; glm::vec3 campos; float frame; glm::vec3 sundir; float terrainSize; glm::vec2 cloudWind, mapOffset;
 			glm::vec4 fog; // the far fog: density, valley mist, the weather's haze, terrain height scale
@@ -1962,12 +1991,13 @@ void Application::drawLighting(VkCommandBuffer cmd) {
 
 		// the accumulation: ~10 frames of marches (each starts at a different random offset) average the noise out
 		vkutil::transition_image(cmd, m_CloudRaw.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		vkutil::transition_image(cmd, m_CloudMarchDepth.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		if(!m_CloudHistoryValid) {
 			vkutil::transition_image(cmd, m_CloudHistory.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 			vkutil::transition_image(cmd, m_CloudDepthHistory.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 		}
 		vkutil::transition_image(cmd, m_CloudDepth.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
-		struct { glm::mat4 reproject; float valid, blend; glm::vec2 pad; } resolve{};
+		struct { glm::mat4 reproject; float valid, blend, cloudReprojection, clearDistance; } resolve{};
 		resolve.reproject = m_PreviousViewProj * glm::inverse(m_UnjitteredProjection * m_View); // as clouds.comp marched (unjittered)
 		// a lightning flash (and the frame after it): no history, or the strike's light lingered and smeared
 		float flash = m_Weather.state().strikeFlash;
@@ -1975,6 +2005,17 @@ void Application::drawLighting(VkCommandBuffer cmd) {
 		m_CloudFlashLastFrame = flash;
 		resolve.valid = m_CloudHistoryValid && !flashing ? 1.0f : 0.0f;
 		resolve.blend = 0.08f;
+		// VULKAN2_CLOUD_REPROJ=0: the sky's history reprojected as if infinitely far, as it was (comparison captures)
+		static const bool cloudReprojection = !std::getenv("VULKAN2_CLOUD_REPROJ") || std::atoi(std::getenv("VULKAN2_CLOUD_REPROJ")) != 0;
+		resolve.cloudReprojection = cloudReprojection ? 1.0f : 0.0f;
+		// how far (world units) nothing the march draws can be in front of a surface: within the camera's height under
+		// the cloud base every point is under it too, before the far fog (fogDistance) and the rain curtains (1.5km)
+		// start, and no bolt (lightningBolt reaches down to the ground). the resolve leaves those texels empty
+		{
+			const AtmosphereUBO& a = m_AtmosphereManager.m_AtmosphereData;
+			float underBase = (a.cloudAltitude - 0.05f - (a.baseAltitude + m_CameraPos.y * a.worldScale)) / a.worldScale;
+			resolve.clearDistance = flashing ? 0.0f : std::max(0.0f, std::min({ underBase, a.fogDistance * 0.95f, 1.4f / a.worldScale }));
+		}
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudResolveEffect.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_CloudResolveEffect.layout, 0, 1, &m_CloudResolveSet, 0, nullptr);
 		vkCmdPushConstants(cmd, m_CloudResolveEffect.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(resolve), &resolve);
@@ -2093,7 +2134,7 @@ void Application::run() {
 		
 		while(SDL_PollEvent(&event)) {
 			if(event.type == SDL_EVENT_QUIT) quit = true;
-			if(event.type == SDL_EVENT_WINDOW_RESIZED) m_Resized = true;
+			handleWindowEvent(event);
 			if(event.type == SDL_EVENT_KEY_UP) {
 				if(event.key.key == SDLK_ESCAPE) m_Mouselock = !m_Mouselock;
 				if(event.key.key == SDLK_F) m_Camera.walking = !m_Camera.walking;
@@ -2295,7 +2336,42 @@ void Application::draw() {
 		m_PlayerTrail.m_Wind = m_Weather.state().wind; // the vegetation sways in the weather's wind
 		m_PlayerTrail.record(cmd, foliagePC.offsetWorld);
 		mark(cmd, "grass trail");
+		// the prints in the deep snow (snowtrail.hpp): pressed before the terrain (and its shadows) draw
+		double metres = static_cast<double>(m_Camera.metersPerUnit);
+		bool pressing = m_Settings.deepSnow && m_Camera.walking && m_Camera.onGround;
+		glm::dvec3 pressAt(feet);
+		// VULKAN2_SNOWTEST=1 (captures): someone walks off into the view during each shot, a slight curve, ~1.3m/s
+		static const bool snowTest = std::getenv("VULKAN2_SNOWTEST") != nullptr;
+		if(snowTest && !m_Shots.empty() && m_Settings.deepSnow) {
+			double yaw = m_Camera.yaw, t = m_ShotFrames * 0.045 / metres; // world units walked
+			glm::dvec2 forward(std::sin(yaw), -std::cos(yaw)), right(std::cos(yaw), std::sin(yaw));
+			glm::dvec2 at = glm::dvec2(m_Camera.position.x, m_Camera.position.z) + forward * (1.2 / metres + t) + right * (0.6 / metres - t * 0.25);
+			pressAt = glm::dvec3(at.x, feet.y, at.y);
+			pressing = m_ShotFrames > 2;
+		}
+		m_SnowTrail.update(pressAt, pressing, metres);
+		m_SnowTrail.record(cmd, glm::dvec2(m_CameraPos.x, m_CameraPos.z) + glm::dvec2(foliagePC.offsetWorld), metres, m_Settings.deepSnow);
+		mark(cmd, "snow prints");
 	}
+	{
+		// the birds and butterflies (wildlife.hpp): they keep away from rain, snow and strong wind
+		const WeatherState& weather = m_Weather.state();
+		WildlifePushConstants& w = m_WildlifePC;
+		w.viewproj = foliagePC.viewproj;
+		w.campos = foliagePC.campos;
+		w.time = m_Time;
+		w.offsetWorld = foliagePC.offsetWorld;
+		w.offset = foliagePC.offset;
+		w.terrainSize = foliagePC.terrainSize;
+		w.factor = foliagePC.factor;
+		w.unitsPerMeter = 1.0f / m_Camera.metersPerUnit;
+		w.projScale = foliagePC.projScale;
+		w.previousTime = foliagePC.sundir.x;
+		w.sunHeight = m_SunDir.y;
+		w.calm = (1.0f - std::clamp(std::max(weather.rain, weather.snow) * 1.5f, 0.0f, 1.0f)) * (1.0f - 0.7f * glm::smoothstep(0.5f, 1.0f, weather.wind));
+	}
+	m_Wildlife.update(cmd, m_WildlifePC);
+	mark(cmd, "wildlife posing");
 	m_Foliage.update(cmd, foliagePC);
 	mark(cmd, "grass scatter");
 	m_Props.update(cmd, foliagePC);
@@ -2322,6 +2398,7 @@ void Application::draw() {
 		m_Trees.m_NearShadow = glm::vec2(m_Shadows.nearCascadeReach(), shadowLight.y);
 		m_Trees.m_NearShadowLightXZ = glm::vec2(shadowLight.x, shadowLight.z);
 	}
+	m_Trees.m_GroundCoverDensity = m_GroundCover.m_Density; // the shrubs come from the ground cover's pick
 	m_Trees.update(cmd, foliagePC);
 	mark(cmd, "tree placement");
 
@@ -2522,6 +2599,10 @@ bool Application::updateShots() {
 	// clouds with parallax: ghosting in the histories)
 	static const float strafe = std::getenv("VULKAN2_SHOT_STRAFE") ? static_cast<float>(std::atof(std::getenv("VULKAN2_SHOT_STRAFE"))) : 0.0f;
 	m_Camera.position += glm::vec3(std::cos(shot.yaw), 0.0f, std::sin(shot.yaw)) * strafe * static_cast<float>(m_ShotFrames);
+	// VULKAN2_SHOT_FLY=<units per frame>: the camera flies level the way it looks during the shot (towards the clouds:
+	// their history has to follow the parallax)
+	static const float fly = std::getenv("VULKAN2_SHOT_FLY") ? static_cast<float>(std::atof(std::getenv("VULKAN2_SHOT_FLY"))) : 0.0f;
+	m_Camera.position += glm::vec3(std::sin(shot.yaw), 0.0f, -std::cos(shot.yaw)) * fly * static_cast<float>(m_ShotFrames);
 	// VULKAN2_SHOT_PAN=<radians per frame>: the camera turns during the shot (trees sweeping past the clouds: ghosting)
 	static const float pan = std::getenv("VULKAN2_SHOT_PAN") ? static_cast<float>(std::atof(std::getenv("VULKAN2_SHOT_PAN"))) : 0.0f;
 	m_Camera.yaw = shot.yaw + pan * static_cast<float>(m_ShotFrames);
@@ -2553,7 +2634,7 @@ void Application::writeCapture() {
 	for(const GpuTimer& t : m_GpuTimers) fmt::print(" {} {:.2f} |", t.name, t.ms);
 	GpuMemory memory = gpuMemory();
 	const double MB = 1024.0 * 1024.0;
-	fmt::print(" memory {:.0f} / {:.0f} MB, ours {:.0f} MB\n", memory.used / MB, memory.available / MB, memory.ours / MB);
+	fmt::print(" memory {:.0f} / {:.0f} MB, ours {:.0f} MB | CPU {:.2f} ms\n", memory.used / MB, memory.available / MB, memory.ours / MB, m_CpuFrameMs);
 	if(m_ShowDrawStats) { // (VULKAN2_DEBUGTEX_CYCLE turns them on)
 		fmt::print("  draws:");
 		for(const DrawStat& s : m_DrawStats) fmt::print(" {} {} ({:.2f}M tris) |", s.name, s.instances, s.triangles / 1e6);
@@ -2623,16 +2704,8 @@ void Application::dispatchHorizonAO(VkCommandBuffer cmd, glm::ivec2 heightmapSta
 // ------------------------------------------------------------------ heightmap resolution / filtering
 
 void Application::createHeightmapImages() {
-	VmaAllocationCreateInfo allocCI = {};
-	allocCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-	allocCI.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 	auto create = [&](AllocatedImage& image, VkFormat format, VkImageUsageFlags usage, uint32_t size) {
-		image.imageFormat = format;
-		image.imageExtent = { size, size, 1 };
-		VkImageCreateInfo imageCI = vkinit::image_create_info(format, usage, image.imageExtent);
-		VK_CHECK(vmaCreateImage(m_Allocator, &imageCI, &allocCI, &image.image, &image.allocation, nullptr));
-		VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(format, image.image, VK_IMAGE_ASPECT_COLOR_BIT);
-		VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &image.imageView));
+		image = vkutil::create_image(m_Device, m_Allocator, format, usage, { size, size, 1 });
 	};
 	uint32_t size = static_cast<uint32_t>(m_HeightmapSize);
 	// the height (heightmap.comp). its sampled view puts the height in .a, where every shader reads it from (they used
@@ -2645,8 +2718,10 @@ void Application::createHeightmapImages() {
 		viewCI.components = { VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R };
 		VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &m_Heightmap.imageView));
 	}
-	// rgb = climate (temperature, moisture, ruggedness), half resolution: smooth over kilometres
-	create(m_ClimateMap, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, size / 2);
+	// rgb = climate (temperature, moisture, ruggedness), half resolution: smooth over kilometres. 16 bit: it changes
+	// so slowly that 8 bit held each value over ~80m plateaus, and the biomes' steep thresholds turned those into
+	// stair stepped borders (+37 MB at 6144^2)
+	create(m_ClimateMap, VK_FORMAT_R16G16B16A16_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, size / 2);
 	// horizon AO, half the resolution (horizonao.comp)
 	create(m_SkyVisibility, VK_FORMAT_R16G16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, size / 2);
 }

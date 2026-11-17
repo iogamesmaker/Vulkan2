@@ -77,17 +77,7 @@ namespace {
 	}
 
 	AllocatedImage createAtlas(Application* engine, VkFormat format, VkImageUsageFlags usage, uint32_t width, uint32_t height, VkImageAspectFlags aspect) {
-		AllocatedImage image;
-		image.imageFormat = format;
-		image.imageExtent = { width, height, 1 };
-		VkImageCreateInfo imageCI = vkinit::image_create_info(format, usage, image.imageExtent);
-		VmaAllocationCreateInfo allocCI = {};
-		allocCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-		allocCI.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-		VK_CHECK(vmaCreateImage(engine->getAllocator(), &imageCI, &allocCI, &image.image, &image.allocation, nullptr));
-		VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(format, image.image, aspect);
-		VK_CHECK(vkCreateImageView(engine->m_Device, &viewCI, nullptr, &image.imageView));
-		return image;
+		return vkutil::create_image(engine->m_Device, engine->getAllocator(), format, usage, { width, height, 1 }, aspect);
 	}
 }
 
@@ -440,11 +430,13 @@ void Trees::update(VkCommandBuffer cmd, const FoliagePushConstants& pc) {
 
 	// re-place once the camera moved far enough (placement covers a much bigger area than what's needed)
 	glm::vec2 camWorld = glm::vec2(pc.campos.x, pc.campos.z) + pc.offsetWorld;
-	bool replace = m_ForcePlace || glm::distance(camWorld, m_LastPlaceCenter) > PLACE_STEP || m_Density != m_LastDensity;
+	bool replace = m_ForcePlace || glm::distance(camWorld, m_LastPlaceCenter) > PLACE_STEP || m_Density != m_LastDensity
+				|| m_GroundCoverDensity != m_LastGroundCoverDensity;
 	if(replace) {
 		m_ForcePlace = false;
 		m_LastPlaceCenter = camWorld;
 		m_LastDensity = m_Density;
+		m_LastGroundCoverDensity = m_GroundCoverDensity;
 		uint32_t zero = 0;
 		vkCmdUpdateBuffer(cmd, m_PlacedCount.buffer, 0, sizeof(zero), &zero);
 	}
@@ -457,8 +449,11 @@ vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFE
 	if(replace) {
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Place.pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Place.layout, 0, 1, &m_PlaceSet, 0, nullptr);
-		vkCmdPushConstants(cmd, m_Place.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FoliagePushConstants), &m_PushConstants);
-		vkCmdDispatch(cmd, (PLACE_GRID_SIDE * PLACE_GRID_SIDE + 63) / 64, 1, 1);
+		FoliagePushConstants placePC = m_PushConstants;
+		placePC.sundir.y = m_GroundCoverDensity; // trees_place.comp: the shrubs' pick (groundcoverpick.glsl)
+		vkCmdPushConstants(cmd, m_Place.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FoliagePushConstants), &placePC);
+		// trees, the shrubs, the shrubs' far layer
+		vkCmdDispatch(cmd, (PLACE_GRID_SIDE * PLACE_GRID_SIDE + SHRUB_GRID_SIDE * SHRUB_GRID_SIDE + SHRUB_FAR_GRID_SIDE * SHRUB_FAR_GRID_SIDE + 63) / 64, 1, 1);
 		vkutil::memoryBarrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 	}
 

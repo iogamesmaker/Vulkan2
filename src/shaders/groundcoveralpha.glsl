@@ -3,10 +3,11 @@
 #ifndef GROUNDCOVER_ALPHA_GLSL
 #define GROUNDCOVER_ALPHA_GLSL
 
-layout(set = 0, binding = 1) uniform sampler2D textures[GC_SPECIES * 2];
+layout(set = 0, binding = 1) uniform sampler2D textures[GC_TEXTURE_PAIRS * 2];
 
-bool groundCoverCovered(int species, vec2 uv, out vec4 texel) {
-	texel = texture(textures[species * 2], uv);
+// pair: the vertex's texture pair (GroundCover::init), not the species
+bool groundCoverCovered(int pair, vec2 uv, out vec4 texel) {
+	texel = texture(textures[nonuniformEXT(pair * 2)], uv);
 	// sharpened by its screen space rate of change (foliagealpha.glsl), the leaves don't thin out in the mips
 	float alpha = (texel.a - 0.5) / max(fwidth(texel.a), 1e-4) + 0.5;
 	return alpha >= 0.5;

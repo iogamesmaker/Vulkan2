@@ -80,7 +80,7 @@ void main() {
 				float endB = terrainHeight(heightmap, prop.uv + axisUV, 0.0, 0.0, pc.factor, pc.terrainSize);
 				propGround = min(propGround, 0.5 * (endA + endB));
 			}
-			float sink = prop.mesh < PROP_FIRST_LOG ? ROCK_SINK : (prop.mesh < PROP_FIRST_STUMP ? LOG_SINK : 0.01);
+			float sink = prop.sink;
 			a = vec4(prop.xz.x + pc.offsetWorld.x, propGround - sink * prop.scale, prop.xz.y + pc.offsetWorld.y, prop.yaw);
 			b = vec4(prop.scale, prop.tilt, float(prop.mesh), 1.0);
 		}

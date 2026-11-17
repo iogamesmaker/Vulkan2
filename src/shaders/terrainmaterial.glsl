@@ -11,30 +11,11 @@
 // the uvs small (precise), and the cache bakes the same texture wherever the map offset happens to be
 #define TERRAIN_DETAIL_PERIOD 1050.0
 
+#include "community.glsl" // the prairie's mix (prairieMix)
+#include "noise.glsl"
+#include "normalmap.glsl"
+
 // ------------------------------------------------------------------ texturing helpers
-
-float hash12(vec2 p) {
-	// exact integer math on the lattice point: the float hash (fract chains) is chaotic, the compiler fusing its
-	// multiply-adds differently for the cells either side of a border gave different values for the same point,
-	// hard seams in the noise (the snow edge's stripes), worse the further from the world's origin
-	uvec2 q = uvec2(ivec2(p)) * uvec2(1597334673u, 3812015801u);
-	uint n = (q.x ^ q.y) * 1597334673u;
-	return float(n >> 8) * (1.0 / 16777216.0);
-}
-
-float valueNoise(vec2 p) {
-	vec2 i = floor(p);
-	vec2 f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), u.x),
-			   mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), u.x), u.y);
-}
-
-// normal maps are BC5 (x and y only), z comes back from the unit length
-vec3 unpackNormal(vec2 xy) {
-	vec2 n = xy * 2.0 - 1.0;
-	return vec3(n, sqrt(max(1.0 - dot(n, n), 0.0)));
-}
 
 struct Material {
 	vec3 albedo;
@@ -71,7 +52,7 @@ void sampleOffset(inout Material m, int index, DetailUV layer, vec2 offset, floa
 	addLayer(m, index, DetailUV(layer.uv + offset, layer.dx, layer.dy), weight, needHeight);
 }
 void addLayerNoTile(inout Material m, int index, DetailUV layer, float weight, bool needHeight, float noiseScale) {
-	float k = valueNoise(layer.uv * noiseScale) * 8.0;
+	float k = latticeNoise(layer.uv * noiseScale) * 8.0;
 	float i = floor(k), f = fract(k);
 	vec2 offsetA = sin(vec2(3.0, 7.0) * i), offsetB = sin(vec2(3.0, 7.0) * (i + 1.0));
 	// (the contrast shifts the fade by up to 0.15 either way. a narrow band: it's on all the ground now, inside it
@@ -97,7 +78,7 @@ bool g_TopNoTile = false;
 vec2 g_TopA = vec2(0.0), g_TopB = vec2(0.0);
 float g_TopT = 0.0;
 void topNoTileBegin(vec2 uv) {
-	float k = valueNoise(uv * 0.6) * 8.0;
+	float k = latticeNoise(uv * 0.6) * 8.0;
 	float i = floor(k), f = fract(k);
 	g_TopA = sin(vec2(3.0, 7.0) * i);
 	g_TopB = sin(vec2(3.0, 7.0) * (i + 1.0));
@@ -110,11 +91,25 @@ void addLayerPair(inout Material m, int index, DetailUV layer, float weight, boo
 	sampleOffset(m, index, layer, g_TopA, weight * (1.0 - g_TopT), needHeight);
 	sampleOffset(m, index, layer, g_TopB, weight * g_TopT, needHeight);
 }
+// the parallax' height reads: one mip picked up front instead of the gradients per read. the trace and its self
+// shadow read the height map ~40 times a pixel, and a read with explicit gradients costs several plain ones (most of
+// all on Intel). the mip: what a 4x anisotropic filter would read (the minor axis, at most 4x finer than the major),
+// heights don't need the full anisotropic sharpness, a blurrier one only softens the relief a little
+float g_PomTexels = 1024.0; // the height maps' size (parallaxOcclusion sets it from the first material's)
+bool g_PomLod = false;
+float pomLod(vec2 dx, vec2 dy) {
+	float a = length(dx) * g_PomTexels, b = length(dy) * g_PomTexels;
+	return log2(max(max(min(a, b), max(a, b) * 0.25), 1e-6));
+}
+float heightRead(int index, vec2 uv, vec2 dx, vec2 dy, float lod) {
+	return g_PomLod ? textureLod(pom[nonuniformEXT(index)], uv, lod).r : textureGrad(pom[nonuniformEXT(index)], uv, dx, dy).r;
+}
 // a height map read the same way (ubo.cliffNoTile off: plain)
 float pairHeight(int index, vec2 uv, vec2 dx, vec2 dy) {
-	if (!g_TopNoTile) return textureGrad(pom[nonuniformEXT(index)], uv, dx, dy).r;
-	float a = g_TopT < 0.999 ? textureGrad(pom[nonuniformEXT(index)], uv + g_TopA, dx, dy).r : 0.0;
-	float b = g_TopT > 0.001 ? textureGrad(pom[nonuniformEXT(index)], uv + g_TopB, dx, dy).r : 0.0;
+	float lod = g_PomLod ? pomLod(dx, dy) : 0.0;
+	if (!g_TopNoTile) return heightRead(index, uv, dx, dy, lod);
+	float a = g_TopT < 0.999 ? heightRead(index, uv + g_TopA, dx, dy, lod) : 0.0;
+	float b = g_TopT > 0.001 ? heightRead(index, uv + g_TopB, dx, dy, lod) : 0.0;
 	return mix(a, b, g_TopT);
 }
 
@@ -283,9 +278,19 @@ vec2 parallaxOcclusion(int first, int second, float wFirst, DetailUV near, vec3 
 	// on a still deep height field shows up as stacked slices right where the effect fades out
 	float maxSteps = clamp(ubo.pomSteps, 2.0, float(POM_STEP_LIMIT));
 	float steps = max(ceil(mix(maxSteps, min(4.0, maxSteps), abs(viewTS.z))), 2.0);
-	float layer = 1.0 / steps;
 	// the shift is capped at grazing angles, past that it only stretches the texture into streaks
-	vec2 delta = viewTS.xy / max(viewTS.z, 0.35) * scale * layer;
+	vec2 shift = viewTS.xy / max(viewTS.z, 0.35) * scale;
+	// and no more steps than the whole shift is pixels long: finer than a pixel the trace finds nothing new (the
+	// binary search below pins the crossing down between two steps anyway). further out, and on the shallower
+	// materials, the shift is a few pixels: a handful of steps instead of all of them
+	float pixelUV = max(min(length(near.dx), length(near.dy)), 1e-7); // uv per pixel, the finer axis
+	float shiftPixels = length(shift) / pixelUV;
+	// all of it under half a pixel (further out in the range, looking down): the trace would end where it starts.
+	// the height here once, for the self shadow (which can still be pixels long under a low sun)
+	if (shiftPixels < 0.5) { depth = 1.0 - blendedHeight(first, second, wFirst, near, near.uv); return near.uv; }
+	steps = clamp(ceil(shiftPixels), 3.0, steps);
+	float layer = 1.0 / steps;
+	vec2 delta = shift * layer;
 
 	vec2 uv = near.uv;
 	float rayDepth = 0.0;
@@ -301,10 +306,11 @@ vec2 parallaxOcclusion(int first, int second, float wFirst, DetailUV near, vec3 
 	if (!crossed || rayDepth == 0.0) { depth = rayDepth; return uv; }
 
 	// the crossing is somewhere in the last step: a few binary search steps pin it down, the linear guess
-	// between two coarse steps is what shows up as stair stepping / layered slices
+	// between two coarse steps is what shows up as stair stepping / layered slices. (3: the steps are at most a
+	// pixel apart, that's an eighth of one)
 	vec2 uvAbove = uv + delta, uvBelow = uv;
 	float depthAbove = rayDepth - layer, depthBelow = rayDepth;
-	for (int i = 0; i < 5; i++) {
+	for (int i = 0; i < 3; i++) {
 		vec2 uvMid = (uvAbove + uvBelow) * 0.5;
 		float depthMid = (depthAbove + depthBelow) * 0.5;
 		if (depthMid >= 1.0 - blendedHeight(first, second, wFirst, near, uvMid)) { uvBelow = uvMid; depthBelow = depthMid; }
@@ -346,11 +352,15 @@ struct TerrainSurface {
 // point (pebbles shade their own foot, a ridge further off only darkens). returns 1 lit .. ~0.45 in shadow (the sky still lights it)
 float parallaxShadow(int first, int second, float wFirst, DetailUV near, vec2 uv, float depth, vec3 lightTS, float scale) {
 	if (lightTS.z <= 0.02 || depth <= 0.0) return 1.0;
-	const int STEPS = 8;
+	// up to 8 steps, fewer when the whole way to the light is only a few pixels long (as the trace)
+	vec2 shift = lightTS.xy / max(lightTS.z, 0.2) * scale * depth; // (capped like the view ray at grazing light)
+	float pixelUV = max(min(length(near.dx), length(near.dy)), 1e-7);
+	int STEPS = int(clamp(ceil(length(shift) / pixelUV * 0.5), 2.0, 8.0));
 	float stepDepth = depth / float(STEPS);
-	vec2 delta = lightTS.xy / max(lightTS.z, 0.2) * scale * stepDepth; // (capped like the view ray at grazing light)
+	vec2 delta = shift / float(STEPS);
 	float occlusion = 0.0;
-	for (int i = 1; i <= STEPS; i++) {
+	for (int i = 1; i <= 8; i++) {
+		if (i > STEPS) break;
 		float rayDepth = depth - stepDepth * float(i);
 		float surfaceDepth = 1.0 - blendedHeight(first, second, wFirst, near, uv + delta * float(i));
 		occlusion = max(occlusion, (rayDepth - surfaceDepth) * (1.0 - float(i - 1) / float(STEPS)) * 3.5);
@@ -378,13 +388,13 @@ struct RockCover {
 // cliff's structure, they don't hide it), the base rock where neither is
 RockCover rockCover(vec2 worldXZ, float mask) {
 	RockCover r;
-	r.cliffMix = mask * 0.85 * smoothstep(0.38, 0.6, detailValueNoise(worldXZ * 0.03 + 41.0));
-	r.cliffBig = smoothstep(0.3, 0.7, detailValueNoise(worldXZ * 0.05 - 71.0));
-	float k = detailValueNoise(worldXZ * 0.035 - 13.0) * 3.0;
+	r.cliffMix = mask * 0.85 * smoothstep(0.38, 0.6, latticeNoise(worldXZ * 0.03 + 41.0));
+	r.cliffBig = smoothstep(0.3, 0.7, latticeNoise(worldXZ * 0.05 - 71.0));
+	float k = latticeNoise(worldXZ * 0.035 - 13.0) * 3.0;
 	float within = fract(k);
 	r.kind = TERRAIN_ROCK_KINDS_FIRST + min(int(k), 2);
 	r.kindMix = mask * 0.6 * smoothstep(0.0, 0.2, within) * (1.0 - smoothstep(0.8, 1.0, within))
-			  * smoothstep(0.35, 0.6, detailValueNoise(worldXZ * 0.06 + 7.0));
+			  * smoothstep(0.35, 0.6, latticeNoise(worldXZ * 0.06 + 7.0));
 	return r;
 }
 
@@ -435,26 +445,37 @@ float heightmapExact(vec2 uv) {
 	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
+// the 2x2 heightmap texels whose lower left is b, exact (a gather ignores the filter, the REPEAT sampler wraps them
+// like heightmapExact): w = b, z = b + (1, 0), x = b + (0, 1), y = b + (1, 1)
+vec4 heightTexels(ivec2 b, vec2 size) { return textureGather(heightmap, (vec2(b) + 1.0) / size, 3); }
+float bilinearTexels(vec4 t, vec2 f) { return mix(mix(t.w, t.z, f.x), mix(t.x, t.y, f.x), f.y); }
+
 TerrainSurface shadeTerrain(TerrainShading s) {
 	vec2 size = vec2(textureSize(heightmap, 0));
 	vec2 readCoord = s.readCoord;
 
 	// (exact filtering: the slope and the normal are differences of nearly equal heights, scaled up a lot)
-	float hR = heightmapExact(readCoord + vec2(1.0, 0.0) / size);
-	float hL = heightmapExact(readCoord - vec2(1.0, 0.0) / size);
-	float hT = heightmapExact(readCoord + vec2(0.0, 1.0) / size);
-	float hB = heightmapExact(readCoord - vec2(0.0, 1.0) / size);
+	// heightmapExact one texel to each side and here: 4 gathers hold all 12 texels the five need (they were 20
+	// single fetches with the wrapping done by hand)
+	vec2 texelCoord = readCoord * size - 0.5;
+	ivec2 i0 = ivec2(floor(texelCoord));
+	vec2 f0 = texelCoord - vec2(i0);
+	vec4 tR = heightTexels(i0 + ivec2(1, 0), size), tL = heightTexels(i0 + ivec2(-1, 0), size);
+	vec4 tT = heightTexels(i0 + ivec2(0, 1), size), tB = heightTexels(i0 + ivec2(0, -1), size);
+	float hR = bilinearTexels(tR, f0), hL = bilinearTexels(tL, f0);
+	float hT = bilinearTexels(tT, f0), hB = bilinearTexels(tB, f0);
+	float hHere = mix(mix(tL.z, tR.w, f0.x), mix(tL.y, tR.x, f0.x), f0.y); // (its texels are L's right and R's left column)
 
 	float dzdx = (hR - hL) * heightmapSlopeScale(size.x);
 	float dzdy = (hT - hB) * heightmapSlopeScale(size.x);
 	float slope = dzdx * dzdx + dzdy * dzdy;
 
-	vec4 terrainData = vec4(textureLod(climateMap, readCoord, 0.0).rgb, heightmapExact(readCoord)); // climate (half resolution), height
+	vec4 terrainData = vec4(textureLod(climateMap, readCoord, 0.0).rgb, hHere); // climate (half resolution), height
 	vec3 climate = terrainData.rgb;
 	float terrainHeight = terrainData.a;
 
 	// low frequency noise to make the rock / snow lines and the colour variation less uniform
-	float lineNoise = valueNoise(readCoord * 180.0) * 0.65 + valueNoise(readCoord * 900.0) * 0.35;
+	float lineNoise = latticeNoise(readCoord * 180.0) * 0.65 + latticeNoise(readCoord * 900.0) * 0.35;
 
 	// what grows here according to the climate. mountains don't have their own cover, their slopes keep the
 	// local one (no farmland though), rock shows up on cliffs and above a rock line, snow above a snow line
@@ -475,9 +496,9 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	if (mountains > 0.01 || slope > 0.3) {
 		// exact bilinear (texel fetches, filtered in fp32): the difference of nearly equal heights times ~160 amplified
 		// the hardware filter's coarse sub-texel weights into blocky steps in the snow cover
-		vec2 curvatureStep = 3.0 / size;
-		float around = heightmapExact(readCoord + vec2(curvatureStep.x, 0.0)) + heightmapExact(readCoord - vec2(curvatureStep.x, 0.0))
-					 + heightmapExact(readCoord + vec2(0.0, curvatureStep.y)) + heightmapExact(readCoord - vec2(0.0, curvatureStep.y));
+		// (three texels to each side: a gather each)
+		float around = bilinearTexels(heightTexels(i0 + ivec2(3, 0), size), f0) + bilinearTexels(heightTexels(i0 + ivec2(-3, 0), size), f0)
+					 + bilinearTexels(heightTexels(i0 + ivec2(0, 3), size), f0) + bilinearTexels(heightTexels(i0 + ivec2(0, -3), size), f0);
 		curvature = (around * 0.25 - terrainHeight) * s.factor / (3.0 * ubo.terrainSize / size.x);
 	}
 	float gully = smoothstep(0.01, 0.12, curvature), ridge = smoothstep(-0.01, -0.12, curvature);
@@ -488,10 +509,11 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// outline of the slope's contour, lime blobs painted on the scree)
 	// (slow noise only, and a wide ramp: noise added to the slope makes the threshold flip over a short distance, a
 	// fine one cut the grass out of the rock like paper; the wide ramp gives the material blend room to fade)
-	float rockFray = valueNoise(s.worldXZ * 0.35 + 3.0);
+	float rockFray = latticeNoise(s.worldXZ * 0.35 + 3.0);
 	float rockSlope = slope + (lineNoise - 0.5) * 0.25 + (rockFray - 0.5) * 0.2;
 	float steepRock = smoothstep(mix(0.55, 0.2, mountains), mix(1.6, 1.0, mountains), rockSlope);
-	steepRock *= 1.0 - weights[BIOME_DESERT] * (1.0 - mountains); // dune and wadi walls are sand, not stone
+	// dune and wadi walls are sand, not stone, only the desert's real cliffs (the mesas, heightmap.comp) are rock
+	steepRock *= 1.0 - weights[BIOME_DESERT] * (1.0 - mountains) * (1.0 - smoothstep(1.1, 2.2, slope));
 	float rockline = 0.58 + (lineNoise - 0.5) * 0.12;
 	float highRock = smoothstep(rockline, rockline + 0.06, terrainHeight) * mountains;
 	float rock = max(steepRock, highRock);
@@ -520,7 +542,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// the height blend then lets it settle in the cracks first. a crisp edge cut it out like a sticker
 	// (on the continuous world position: in the wrapped detail space the pattern jumped whenever it wrapped)
 	vec2 snowPos = s.worldXZ;
-	float snowFray = valueNoise(snowPos * 0.9) * 0.6 + valueNoise(snowPos * 3.7 + 5.0) * 0.4;
+	float snowFray = latticeNoise(snowPos * 0.9) * 0.6 + latticeNoise(snowPos * 3.7 + 5.0) * 0.4;
 	float snowCap = smoothstep(0.3, 0.7, snowCover + (lineNoise - 0.5) * 0.2 + (snowFray - 0.5) * 0.4) * mountains;
 	for (int i = 0; i < BIOME_COUNT; i++) weights[i] *= 1.0 - snowCap;
 	weights[BIOME_SNOW] += snowCap;
@@ -619,10 +641,15 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	float wA = wFirst / max(wFirst + wSecond, 1e-4);
 	// break up the border between two materials with a little world space noise (~10-20m), only inside transitions,
 	// so it meanders organically instead of following the smooth climate / slope gradient as a clean line
-	float edgeNoise = valueNoise(s.worldXZ * 0.35) * 0.65 + valueNoise(s.worldXZ * 1.3 + 17.0) * 0.35;
+	float edgeNoise = latticeNoise(s.worldXZ * 0.35) * 0.65 + latticeNoise(s.worldXZ * 1.3 + 17.0) * 0.35;
 	// grass against bare rock: frayed harder and finer (tongues and islands of turf in the scree), a smooth line
 	// read as a painted lime blob on the mountainside
-	wA = clamp(wA + (edgeNoise - 0.5) * 0.45 * smoothstep(0.0, 0.25, wA * (1.0 - wA)), 0.0, 1.0);
+	// (the push in a fixed order of the two materials, the lower index's share up: wA is the stronger one's share, and
+	// where the two weights cross the stronger one swaps. pushing "the stronger one" flipped the push's direction right
+	// there, the mix jumped by twice the noise along the whole contour: the long straight seams at the desert's edges,
+	// stair stepped by the climate map's texels)
+	float pushOrder = first < second ? 1.0 : -1.0;
+	wA = clamp(wA + pushOrder * (edgeNoise - 0.5) * 0.45 * smoothstep(0.0, 0.25, wA * (1.0 - wA)), 0.0, 1.0);
 	float pomMaterial = mix(mix(mix(POM_MATERIAL_DEPTH[second], POM_MATERIAL_DEPTH[first], wA), 0.5, g_LitterOver), POM_MATERIAL_DEPTH[BIOME_SNOW], g_SnowOver);
 	// faded over the outer 70% of the range
 	float pomFade = ubo.pomDistance > 0.0 && ubo.pomDepth > 0.0 ? 1.0 - smoothstep(ubo.pomDistance * 0.3, ubo.pomDistance, viewDistance) : 0.0;
@@ -635,6 +662,8 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 		float scale = ubo.pomDepth * pomMaterial / ubo.textureRepeatNear * pomFade; // uv units
 		float depth;
 		vec2 uvBefore = near.uv;
+		g_PomTexels = float(textureSize(pom[nonuniformEXT(first)], 0).x);
+		g_PomLod = true;
 		near.uv = parallaxOcclusion(first, second, wA, near, viewTS, scale, pomFade, depth);
 		// the same shift for every other layer sampled here (the side projections on slopes, the far / macro
 		// scales): only the near top layer moved, the cliff texturing's blend band showed two textures sliding
@@ -652,6 +681,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 		vec3 light = s.sundir.y > 0.0 ? s.sundir : -s.sundir;
 		vec3 lightTS = vec3(dot(light, va), dot(light, vb), dot(light, normal));
 		pomShadow = mix(1.0, parallaxShadow(first, second, wA, near, near.uv, depth, lightTS, scale), pomFade);
+		g_PomLod = false; // (the textures below sample with their gradients, anisotropic)
 	}
 
 	RockCover rockDetail = rockCover(s.worldXZ, rock * smoothstep(0.2, 0.5, slope) * (1.0 - snowCap));
@@ -695,7 +725,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	vec3 albedo = pow(albedoSum / max(wSum, 1e-4), vec3(2.2)); // textures are srgb, light in linear
 
 	// large scale brightness / tint variation so big areas of one material don't look copy pasted
-	float macro = valueNoise(readCoord * 60.0) * 0.6 + lineNoise * 0.4;
+	float macro = latticeNoise(readCoord * 60.0) * 0.6 + lineNoise * 0.4;
 	albedo *= mix(vec3(0.78, 0.8, 0.84), vec3(1.12, 1.1, 1.04), macro);
 	// the land's shape in its colour: gullies darker (shaded, wetter, debris), ridges lighter (weathered), strongest
 	// on bare rock. far away this is most of what tells a mountainside's structure apart
@@ -722,15 +752,15 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 		float forestHere = smoothstep(0.08, 0.45, trees.x + trees.y); // groundcover.comp's forest mask
 		float plantsGone = smoothstep(1.5, 5.0, s.viewDistance);	  // (world units: the small plants are gone by 3.5, most ferns by 5)
 		vec2 w = s.worldXZ;
-		float ferns = smoothstep(0.3, 0.7, lineValueNoise(w / 2.0 + 37.0) * 0.7 + lineValueNoise(w / 0.74 - 11.0) * 0.3);
-		float small = smoothstep(0.35, 0.65, lineValueNoise(w / 0.9 + 185.0) * 0.7 + lineValueNoise(w / 0.333 - 55.0) * 0.3); // ~periwinkle / sorrel
+		float ferns = smoothstep(0.3, 0.7, latticeNoise(w / 2.0 + 37.0) * 0.7 + latticeNoise(w / 0.74 - 11.0) * 0.3);
+		float small = smoothstep(0.35, 0.65, latticeNoise(w / 0.9 + 185.0) * 0.7 + latticeNoise(w / 0.333 - 55.0) * 0.3); // ~periwinkle / sorrel
 		float cover = clamp(0.25 + ferns * 0.65 + small * 0.25, 0.0, 1.0) * forestHere * plantsGone
 					* (1.0 - rock) * (1.0 - snowCap) * (1.0 - weights[BIOME_WHEAT]) * (1.0 - weights[BIOME_DESERT]);
 		if (cover > 0.0) {
 			// the fern atlas' average, a little darker: from afar a stand of ferns is as much its own shade as its fronds
 			// the patches darker and denser, the gaps between them lighter and thinner (a flat olive read as a tint,
 			// not as plants), and a mottle of fronds catching the light over their own shade
-			float mottle = lineValueNoise(w / 0.45 + 71.0);
+			float mottle = latticeNoise(w / 0.45 + 71.0);
 			vec3 fronds = vec3(0.05, 0.08, 0.022) * mix(1.15, 0.75, ferns) * mix(0.75, 1.25, mottle);
 			float l = dot(albedo, vec3(0.3, 0.59, 0.11));
 			albedo = mix(albedo, fronds * clamp(l / 0.1, 0.7, 1.3), cover * mix(0.55, 0.9, ferns));
@@ -741,18 +771,41 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// the meadow ground leans towards the grass blades' own colour, so where the grass rings thin out (or end) the
 	// ground underneath doesn't show as a paler band
 	albedo = mix(albedo, vec3(0.085, 0.15, 0.035) * (0.7 + 0.6 * dot(albedo, vec3(0.3, 0.59, 0.11)) / 0.12), grassiness * 0.35);
-	float dryPatches = smoothstep(0.45, 0.8, valueNoise(snowPos * 0.08 + 31.0) * 0.7 + valueNoise(snowPos * 0.4) * 0.3);
+	float dryPatches = smoothstep(0.45, 0.8, latticeNoise(snowPos * 0.08 + 31.0) * 0.7 + latticeNoise(snowPos * 0.4) * 0.3);
 	albedo *= mix(vec3(1.0), vec3(1.12, 1.04, 0.72), dryPatches * grassiness * 0.6);
 	// the meadows from afar were one smooth green, a golf course: break them up at every scale. slow drifts between
 	// lush and sun-dried (~150m), darker clumps of scrub, tall grass and bracken (a few metres, where the grass rings
 	// don't reach they're what reads as vegetation), and a fine mottle in between
-	float lush = valueNoise(snowPos * 0.012 + 57.0) * 0.65 + valueNoise(snowPos * 0.05 - 9.0) * 0.35;
+	float lush = latticeNoise(snowPos * 0.012 + 57.0) * 0.65 + latticeNoise(snowPos * 0.05 - 9.0) * 0.35;
 	albedo *= mix(vec3(1.0), mix(vec3(0.82, 1.0, 0.86), vec3(1.16, 1.02, 0.74), smoothstep(0.25, 0.75, lush)), grassiness * 0.7);
-	float clumps = valueNoise(snowPos * 0.55 + 3.3) * 0.6 + valueNoise(snowPos * 2.1 - 7.7) * 0.4;
-	float scrub = smoothstep(0.6, 0.78, clumps) * smoothstep(0.35, 0.7, valueNoise(snowPos * 0.07 + 21.0));
+	float clumps = latticeNoise(snowPos * 0.55 + 3.3) * 0.6 + latticeNoise(snowPos * 2.1 - 7.7) * 0.4;
+	float scrub = smoothstep(0.6, 0.78, clumps) * smoothstep(0.35, 0.7, latticeNoise(snowPos * 0.07 + 21.0));
 	albedo *= mix(vec3(1.0), vec3(0.52, 0.58, 0.45), scrub * grassiness * 0.85);
-	float mottle = valueNoise(snowPos * 0.22 + 41.0) * 0.6 + valueNoise(snowPos * 0.9) * 0.4;
+	float mottle = latticeNoise(snowPos * 0.22 + 41.0) * 0.6 + latticeNoise(snowPos * 0.9) * 0.4;
 	albedo *= mix(1.0, mix(0.86, 1.1, mottle), grassiness);
+	// turf: past where the grass blades thin out the meadow was smooth flat colour, plastic. a fine grain of tufts and
+	// the shade between them (~1.2m, ~0.45m, ~0.2m), each scale only while it's bigger than a couple of pixels (no
+	// shimmer further out, the coarser ones carry on), and the normal tilted with it so the light breaks up too.
+	// under the near blades it's unseen, it takes over from ~10m
+	if (grassiness > 0.0) {
+		float footprint = max(length(s.dPdx), length(s.dPdy)); // world units per pixel
+		vec2 tp = s.worldXZ;
+		float w0 = 1.0 - smoothstep(0.12, 0.3, footprint);
+		float w1 = 1.0 - smoothstep(0.05, 0.12, footprint), w2 = 1.0 - smoothstep(0.02, 0.045, footprint), w3 = 1.0 - smoothstep(0.008, 0.02, footprint);
+		float t0 = latticeNoise(tp * 2.0 + 29.0);
+		float t1 = latticeNoise(tp * 5.0 + 13.0), t2 = latticeNoise(tp * 13.0 - 7.0), t3 = latticeNoise(tp * 30.0 + 3.0);
+		// (the tufts' tops catch the light, the hollows between them don't: a skewed curve, more dark than light)
+		float turf = (t0 - 0.5) * 0.45 * w0 + (t1 - 0.5) * 0.55 * w1 + (t2 - 0.5) * 0.4 * w2 + (t3 - 0.5) * 0.3 * w3;
+		turf = turf < 0.0 ? turf * 1.3 : turf * 0.8;
+		float shown = grassiness * smoothstep(1.0, 2.5, s.viewDistance) * (1.0 - g_LitterOver);
+		albedo *= 1.0 + turf * 1.5 * shown;
+		// (the tilt from the two coarser scales' slopes, finite differences)
+		const float E = 0.02;
+		vec2 slope1 = vec2(latticeNoise((tp + vec2(E, 0.0)) * 5.0 + 13.0) - t1, latticeNoise((tp + vec2(0.0, E)) * 5.0 + 13.0) - t1) / E;
+		vec2 slope2 = vec2(latticeNoise((tp + vec2(E, 0.0)) * 13.0 - 7.0) - t2, latticeNoise((tp + vec2(0.0, E)) * 13.0 - 7.0) - t2) / E;
+		vec2 tilt = (slope1 * 0.012 * w1 + slope2 * 0.006 * w2) * shown;
+		normal = normalize(normal - vec3(tilt.x, 0.0, tilt.y));
+	}
 
 	// wheat canopy: past the foliage rings (~108m, the cards shrink away from 13.5 world units) a field would be
 	// bare soil, so the ground itself turns into the tops of the plants. the oat atlas' average colour and some
@@ -761,13 +814,19 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 	// no snow, not up on the mountains. up close (under the plants) the floor is straw / stubble, not black soil:
 	// partly tinted (canopyNear). further out it's the canopy itself, nearly all of it (at half strength the soil
 	// showed through as a dark muddy band between the near plants and the distance)
-	float canopy = wheatField *(1.0 - smoothstep(0.2, 0.3, slope)) * (1.0 - rock) * (1.0 - snowCap)
-				 * (1.0 - step(0.4, mountains) * step(0.56, terrainHeight)) * s.canopyNear;
-	if (canopy > 0.0) {
-		float patches = valueNoise(s.worldXZ * 0.35) * 0.6 + valueNoise(s.worldXZ * 2.1) * 0.4;
-		vec3 straw = vec3(0.46, 0.33, 0.11) * 0.85; // foliage.frag's WHEAT_GOLD, a little darker (the canopy's depth)
-		straw *= mix(vec3(0.82, 0.85, 0.75), vec3(1.1, 1.05, 1.0), patches);
-		albedo = mix(albedo, straw, canopy);
+	float fieldHere = wheatField * (1.0 - smoothstep(0.2, 0.3, slope)) * (1.0 - rock) * (1.0 - snowCap)
+					* (1.0 - step(0.4, mountains) * step(0.56, terrainHeight));
+	float canopy = 0.0;
+	if (fieldHere > 0.0) {
+		// the wild oat prairie (community.glsl, the plants follow the same): the oats' tops where they grow, the grass
+		// between them, and the soil showing through the bare patches. green to gold by the stretch, no edges
+		vec3 prairie = prairieMix(s.worldXZ);
+		float patches = latticeNoise(s.worldXZ * 0.35) * 0.6 + latticeNoise(s.worldXZ * 2.1) * 0.4;
+		vec3 oats = mix(vec3(0.13, 0.18, 0.06), vec3(0.46, 0.33, 0.11) * 0.85, smoothstep(0.1, 0.9, prairie.z)); // (foliage.frag's)
+		vec3 turf = vec3(0.09, 0.145, 0.04) * mix(0.85, 1.12, patches);
+		vec3 cover = mix(turf, oats * mix(vec3(0.82, 0.85, 0.75), vec3(1.1, 1.05, 1.0), patches), prairie.x);
+		canopy = fieldHere * (1.0 - prairie.y) * s.canopyNear * mix(0.7, 1.0, prairie.x);
+		albedo = mix(albedo, cover, canopy);
 	}
 
 	TerrainSurface surface;
@@ -782,7 +841,7 @@ TerrainSurface shadeTerrain(TerrainShading s) {
 // the bands don't run as straight stripes to the horizon, and softer (mostly a hint of motion this far out)
 float canopyGust(vec2 worldXZ, float time) {
 	vec2 windDir = normalize(vec2(0.8, 0.35)); // foliage.vert
-	float patches = valueNoise(worldXZ * 0.35) * 0.6 + valueNoise(worldXZ * 2.1) * 0.4;
+	float patches = latticeNoise(worldXZ * 0.35) * 0.6 + latticeNoise(worldXZ * 2.1) * 0.4;
 	float gust = sin(time * 1.3 + dot(worldXZ, windDir) * 2.5 + patches * 6.0) * 0.5 + 0.5;
 	return mix(0.94, 1.04, gust);
 }

@@ -4,24 +4,13 @@
 // needs atmosphere.glsl (ubo) included first
 #ifndef CLOUDS_GLSL
 #define CLOUDS_GLSL
-
-float cloudHash(vec2 p) {
-	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-	p3 += dot(p3, p3.yzx + 33.33);
-	return fract((p3.x + p3.y) * p3.z);
-}
-
-float cloudNoise(vec2 p) {
-	vec2 i = floor(p), f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(cloudHash(i), cloudHash(i + vec2(1.0, 0.0)), u.x), mix(cloudHash(i + vec2(0.0, 1.0)), cloudHash(i + vec2(1.0, 1.0)), u.x), u.y);
-}
+#include "noise.glsl"
 
 float cloudFbm(vec2 p, int octaves) {
 	float sum = 0.0, amplitude = 0.5;
 	const mat2 rotation = mat2(0.8, 0.6, -0.6, 0.8);
 	for (int i = 0; i < octaves; i++) {
-		sum += cloudNoise(p) * amplitude;
+		sum += fractNoise(p) * amplitude;
 		p = rotation * p * 2.02 + 17.3;
 		amplitude *= 0.5;
 	}
@@ -34,15 +23,15 @@ float cloudFbm(vec2 p, int octaves) {
 float cloudShape(vec2 worldKm, int octaves, out vec2 p) {
 	// big clouds about half the time (they were the exception: a sky of similar small puffs), and the sky in fields:
 	// a slow regional swing of the coverage, so there are banks of cloud with real clear gaps between them
-	float sizeMix = smoothstep(0.2, 0.6, cloudNoise(worldKm * 0.08 + vec2(-33.1, 5.9)));
-	float region = cloudNoise(worldKm * 0.045 + vec2(71.3, -12.7)) * 0.7 + cloudNoise(worldKm * 0.017 + vec2(-5.3, 40.1)) * 0.3 - 0.5;
+	float sizeMix = smoothstep(0.2, 0.6, fractNoise(worldKm * 0.08 + vec2(-33.1, 5.9)));
+	float region = fractNoise(worldKm * 0.045 + vec2(71.3, -12.7)) * 0.7 + fractNoise(worldKm * 0.017 + vec2(-5.3, 40.1)) * 0.3 - 0.5;
 	p = worldKm * 0.8;
-	p += (vec2(cloudNoise(p * 0.35 + 3.1), cloudNoise(p * 0.35 - 8.7)) - 0.5) * 1.6; // billowy, irregular outlines
+	p += (vec2(fractNoise(p * 0.35 + 3.1), fractNoise(p * 0.35 - 8.7)) - 0.5) * 1.6; // billowy, irregular outlines
 	float small = sizeMix < 0.999 ? cloudFbm(p, octaves) : 0.0;
 	float large = 0.0;
 	if (sizeMix > 0.001) {
 		vec2 q = worldKm * 0.28 + vec2(57.1, -21.4);
-		q += (vec2(cloudNoise(q * 0.35 + 3.1), cloudNoise(q * 0.35 - 8.7)) - 0.5) * 1.6;
+		q += (vec2(fractNoise(q * 0.35 + 3.1), fractNoise(q * 0.35 - 8.7)) - 0.5) * 1.6;
 		large = cloudFbm(q, octaves);
 	}
 	// two independent noises averaged lose contrast where they mix (fewer clouds in between), scaled back up
@@ -58,7 +47,7 @@ float cloudShape(vec2 worldKm, int octaves, out vec2 p) {
 // exactly (the rain where you stand, where lightning strikes): keep the two in step
 float weatherCells(vec2 worldKm) {
 	vec2 p = worldKm * 0.09 + vec2(13.7, -41.2);
-	return cloudNoise(p) * 0.65 + cloudNoise(p * 2.03 + vec2(7.1, 3.3)) * 0.35;
+	return fractNoise(p) * 0.65 + fractNoise(p * 2.03 + vec2(7.1, 3.3)) * 0.35;
 }
 // how much a place is inside a cell (0 .. 1), the core of the storm at 1
 float weatherCellCore(float cells) { return smoothstep(0.55, 0.78, cells); }
@@ -77,7 +66,7 @@ float localPrecipitation(float cells) {
 }
 
 // fine noise eating into the thin parts of a cloud (the edges turn cauliflower instead of airbrushed)
-float cloudBillowNoise(vec2 p) { return cloudNoise(p * 7.3 + 41.0); }
+float cloudBillowNoise(vec2 p) { return fractNoise(p * 7.3 + 41.0); }
 
 // the shape into a density at the current coverage: 0 = nothing, 1 = overcast moves the threshold. a ramp, not a
 // clamp, so the inside of a cloud still has structure for the lighting to pick up. billow < 0: none
@@ -125,7 +114,7 @@ float cloudBaseNoise(vec2 worldKm) { // the cumulus' uneven bases (volclouds.gls
 	if (cloudMapCovers(worldKm)) return textureLod(cloudCoverageMap, cloudMapUV(worldKm), 0.0).a;
 #endif
 	vec2 p = worldKm * 0.8;
-	p += (vec2(cloudNoise(p * 0.35 + 3.1), cloudNoise(p * 0.35 - 8.7)) - 0.5) * 1.6;
+	p += (vec2(fractNoise(p * 0.35 + 3.1), fractNoise(p * 0.35 - 8.7)) - 0.5) * 1.6;
 	return cloudBillowNoise(p);
 }
 

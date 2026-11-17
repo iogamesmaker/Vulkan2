@@ -2,6 +2,7 @@
 // says otherwise) to be ShadowMaps' descriptor set
 #ifndef SHADOW_SAMPLING_GLSL
 #define SHADOW_SAMPLING_GLSL
+#include "noise.glsl"
 
 #define SHADOW_CASCADES 4
 #ifndef SHADOW_SET
@@ -24,10 +25,6 @@ layout(set = SHADOW_SET, binding = 1) uniform ShadowUBO {
 	vec4 cascadeBlend;  // x = fraction of each cascade's range that crossfades into the next one, y = soft shadows (PCSS) on
 } shadowData;
 layout(set = SHADOW_SET, binding = 2) uniform sampler2DArray shadowDepth; // the same maps, raw depth for the blocker search
-
-float interleavedGradientNoise(vec2 p) {
-	return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
-}
 
 // vogel disk: a golden angle spiral, covers the disk evenly for any tap count (the per pixel rotation is applied
 // on top, the trig here is constant folded since the loops have fixed counts)

@@ -17,17 +17,9 @@ layout(location = 0) out vec4 outAlbedo;
 layout(location = 1) out vec4 outNormal;
 
 #include "treecommon.glsl" // pc.sundir = direction towards the bake's viewer
+#include "normalmap.glsl"
 
 layout(set = 0, binding = 1) uniform sampler2D treeTextures[TREE_PACKS * 4]; // per pack: bark, bark normal, leaves, leaf normal
-
-// the side of a surface that faces the camera, from the triangle's own orientation (its screen space derivatives):
-// gl_FrontFacing can't be trusted for it here (the projection flips y, so the side facing the camera counts as the
-// back face and every visible bark / leaf got its normal reversed: lit from the side away from the sun)
-vec3 normalTowardsCamera(vec3 normal, vec3 dp1, vec3 dp2, vec3 toCamera) {
-	vec3 face = cross(dp1, dp2);
-	if (dot(face, toCamera) < 0.0) face = -face;
-	return dot(normal, face) < 0.0 ? -normal : normal;
-}
 
 void main() {
 	bool leaves = (inMaterial & 1) == 1;

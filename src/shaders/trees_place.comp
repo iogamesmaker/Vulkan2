@@ -7,15 +7,83 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 #include "biometools.glsl"
 #include "treecommon.glsl"
 #include "terrainheight.glsl"
+#include "groundcoverpick.glsl" // the shrubs: the ground cover's own pick
+#include "propplacement.glsl"	  // (not up through the rocks and logs, like the ground cover)
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
 layout(set = 0, binding = 3) uniform sampler2D climateMap; // half resolution
 layout(std430, set = 0, binding = 1) writeonly buffer Placed { TreeInstance placed[]; };
 layout(std430, set = 0, binding = 2) buffer Counter { uint placedCount; };
 
+// the shrubs and small trees that were ground cover (lilacs, big green bushes, cacti): the ground cover's far grid
+// makes its pick (groundcoverpick.glsl) and leaves out the ones it gives to the tree pipeline (gcTreeKind), this
+// makes the same pick in the same cells and places those. pc.sundir.y = the ground cover's density (Trees::update),
+// the trees' own density thins them on top
+// far: the sparse far layer (treecommon.glsl SHRUB_FAR_*), one hashed ground cover cell per SHRUB_FAR_SUB^2 block
+void placeShrub(uint local, bool far) {
+	uint side = far ? SHRUB_FAR_GRID_SIDE : SHRUB_GRID_SIDE;
+	if (local >= side * side) return;
+	vec2 camWorld = pc.campos.xz + pc.offsetWorld;
+	float cell = GC_CELL[SHRUB_GRID];
+	vec2 cellIndex;
+	if (far) {
+		float block = cell * float(SHRUB_FAR_SUB);
+		vec2 blockIndex = floor(camWorld / block) - float(side / 2u) + vec2(local % side, local / side);
+		vec2 sub = min(floor(hash42(blockIndex * 0.91 + 17.0).xy * float(SHRUB_FAR_SUB)), vec2(float(SHRUB_FAR_SUB - 1u)));
+		cellIndex = blockIndex * float(SHRUB_FAR_SUB) + sub;
+	} else cellIndex = floor(camWorld / cell) - float(side / 2u) + vec2(local % side, local / side);
+	GroundCoverCell gc = groundCoverCell(SHRUB_GRID, cellIndex);
+	vec2 xz = gc.world - pc.offsetWorld;
+	float dist = distance(xz, pc.campos.xz);
+	if (dist > (far ? SHRUB_FAR_RADIUS : SHRUB_PLACE_RADIUS)) return;
+
+	vec2 size = vec2(textureSize(heightmap, 0));
+	vec2 uv = terrainUV(xz, pc.offset, pc.terrainSize, size); // (groundcover.comp's heightmapUV)
+	vec4 data;
+	float snowClimate;
+	int gcKind = groundCoverKind(heightmap, climateMap, SHRUB_GRID, gc, uv, pc.sundir.y, data, snowClimate);
+	if (gcKind < 0) return;
+	int kind = gcTreeKind(gcKind);
+	if (kind < 0) return;
+	if (pc.density < 1.0 && hash42(cellIndex * 0.47 + 71.0).y >= pc.density) return;
+	if (insideProp(heightmap, climateMap, xz, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, 0.0)) return;
+
+	vec4 rnd = gc.rnd, rnd2 = gc.rnd2;
+	uint count = SHRUB_COUNT[kind];
+	uint mesh = SHRUB_FIRST[kind] + min(uint(rnd.w * float(count)), count - 1u);
+	// the ground cover's size variation for these (groundcover.comp minScale / maxScale), on the model's real size
+	const float minScale[SHRUB_KINDS] = float[](0.8, 0.6, 0.8, 0.8, 0.7);
+	const float maxScale[SHRUB_KINDS] = float[](1.15, 1.0, 1.2, 1.2, 1.3);
+	float height = MESH_SIZE[mesh] * mix(minScale[kind], maxScale[kind], rnd2.x);
+
+	// standing on the terrain mesh like the trees (sunk by the slope across the trunk)
+	float groundY = terrainHeight(heightmap, uv, dist, terrainSpacing(dist, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
+	float dist3D = length(vec2(dist, groundY - pc.campos.y));
+	groundY -= meshSag(heightmap, uv, terrainSpacing(dist3D, pc.lodPixels, pc.projScale), pc.factor, pc.terrainSize);
+	float hR = textureLodOffset(heightmap, uv, 0.0, ivec2(1, 0)).a, hL = textureLodOffset(heightmap, uv, 0.0, ivec2(-1, 0)).a;
+	float hT = textureLodOffset(heightmap, uv, 0.0, ivec2(0, 1)).a, hB = textureLodOffset(heightmap, uv, 0.0, ivec2(0, -1)).a;
+	float slope = pow((hR - hL) * heightmapSlopeScale(size.x), 2.0) + pow((hT - hB) * heightmapSlopeScale(size.x), 2.0);
+	float slopeWorld = sqrt(slope) * pc.factor / 256.0 / (pc.terrainSize / size.x) * 0.5;
+	float y = groundY - slopeWorld * trunkRadius(mesh, height) - 0.01 * height;
+
+	float weights[BIOME_COUNT];
+	groundCover(data.rgb, true, weights);
+	float dryness = treeDryness(data, weights, mountainWeight(data.rgb));
+
+	uint slot = atomicAdd(placedCount, 1u);
+	if (slot >= MAX_PLACED_TREES) return;
+	placed[slot].posScale = vec4(xz + pc.offsetWorld, y, height).xzyw; // world xz
+	// a little off plumb at random (0-3 degrees), not leaning out over the slope like the trees
+	vec2 lean = vec2(cos(rnd.z * 6.2831853), sin(rnd.z * 6.2831853)) * 0.05 * rnd2.y;
+	placed[slot].params = vec4(packYawLean(rnd2.z * 6.2831853, lean), dryness, rnd2.w * 700.0 + (far ? SHRUB_FAR_SEED : 0.0), float(mesh));
+}
+
 void main() {
 	uint id = gl_GlobalInvocationID.x;
-	if (id >= PLACE_GRID_SIDE * PLACE_GRID_SIDE) return;
+	// the trees' grid, the shrubs' near grid, their sparse far one (consecutive thread ranges)
+	const uint TREES = PLACE_GRID_SIDE * PLACE_GRID_SIDE, NEAR = SHRUB_GRID_SIDE * SHRUB_GRID_SIDE;
+	if (id >= TREES + NEAR) { placeShrub(id - TREES - NEAR, true); return; }
+	if (id >= TREES) { placeShrub(id - TREES, false); return; }
 
 	vec2 camWorld = pc.campos.xz + pc.offsetWorld;
 	vec2 cellIndex = floor(camWorld / TREE_CELL_SIZE) - float(PLACE_GRID_SIDE / 2u) + vec2(id % PLACE_GRID_SIDE, id / PLACE_GRID_SIDE);

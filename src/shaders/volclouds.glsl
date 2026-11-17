@@ -137,6 +137,24 @@ float cloudShadowRay(vec2 underKm, vec3 sunDir) {
 // across, the map re-centres every km)
 const float CLOUD_SHADOW_REACH = 22.5;
 
+#ifdef CLOUD_COVERAGE_MAP
+// the baked shadow (the coverage map's g), b-spline filtered: 4 bilinear taps (GPU Gems 2, ch. 20). its texels are
+// ~94m, one bilinear tap drew every shadow edge as a staircase of blocks and diamonds wherever it's seen up close
+float cloudShadowBaked(vec2 worldKm) {
+	vec2 size = vec2(textureSize(cloudCoverageMap, 0));
+	vec2 coord = cloudMapUV(worldKm) * size - 0.5;
+	vec2 f = fract(coord);
+	coord -= f;
+	vec2 f2 = f * f, f3 = f2 * f;
+	vec2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0, w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+	vec2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0, w3 = f3 / 6.0;
+	vec2 s0 = w0 + w1, s1 = w2 + w3;
+	vec2 t0 = (coord - 0.5 + w1 / s0) / size, t1 = (coord + 1.5 + w3 / s1) / size;
+	return (textureLod(cloudCoverageMap, vec2(t0.x, t0.y), 0.0).g * s0.x + textureLod(cloudCoverageMap, vec2(t1.x, t0.y), 0.0).g * s1.x) * s0.y
+		 + (textureLod(cloudCoverageMap, vec2(t0.x, t1.y), 0.0).g * s0.x + textureLod(cloudCoverageMap, vec2(t1.x, t1.y), 0.0).g * s1.x) * s1.y;
+}
+#endif
+
 // the clouds' shadow on whatever is at worldKm (the cloud wind included), altitudeKm above the ground
 float cloudShadow(vec2 worldKm, float altitudeKm, vec3 sunDir) {
 	if (ubo.clouds < 0.5 || (ubo.cloudCoverage <= 0.0 && ubo.weather3.x <= 0.0) || sunDir.y <= 0.03) return 1.0;
@@ -149,7 +167,7 @@ float cloudShadow(vec2 worldKm, float altitudeKm, vec3 sunDir) {
 	float through;
 #ifdef CLOUD_COVERAGE_MAP
 	if (cloudMapInfo.w > 0.5 && all(lessThan(abs(under - cloudMapInfo.xy), vec2(CLOUD_SHADOW_REACH))))
-		through = textureLod(cloudCoverageMap, cloudMapUV(under), 0.0).g; // baked (cloudshadow.comp)
+		through = cloudShadowBaked(under); // baked (cloudshadow.comp)
 	else
 #endif
 		through = cloudShadowRay(under, sunDir);
@@ -207,9 +225,11 @@ vec3 lightningBolt(vec3 dir, float camAltKm, vec2 boltRel, float tMax) {
 // front to back through the cumulus slab, from the camera up to tMax km along the ray (the scene's depth, or far
 // for the sky). returns the in-scattered light (premultiplied) and the opacity. on the way the rain falling out of the clouds
 // (curtains under the showers and storms) and lightning
-// cloudEnter: where the ray enters the cloud slab (km), -1 if it doesn't
-vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, vec2 camWorldKm, vec2 wind, vec3 dir, float tMax, vec3 sunDir, float jitter, out float cloudEnter) {
+// cloudEnter: where the ray enters the cloud slab (km), -1 if it doesn't. cloudDepth: where along the ray the cloud
+// it sees is (km, the opacity weighted mean distance), -1 if none: the accumulation reprojects the history from there
+vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, vec2 camWorldKm, vec2 wind, vec3 dir, float tMax, vec3 sunDir, float jitter, out float cloudEnter, out float cloudDepth) {
 	cloudEnter = -1.0;
+	cloudDepth = -1.0;
 	// (the pass also runs for the far fog alone, volumetric clouds off: no slab then)
 	bool anyClouds = ubo.clouds > 0.5 && (ubo.cloudCoverage > 0.0 || ubo.weather3.x > 0.0);
 	if (!anyClouds) return vec4(0.0);
@@ -303,6 +323,7 @@ vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, 
 		float baseDt = clamp((tExit - tEnter) / 42.0, 0.055, 0.25);
 		float t = tEnter + jitter * baseDt;
 		bool skipping = false;
+		float depthSum = 0.0, depthWeight = 0.0;
 		for (int i = 0; i < 96 && t < tExit; i++) {
 			vec3 p = camKm + dir * t;
 			float hKm = length(p) - bottom;
@@ -342,10 +363,13 @@ vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, 
 
 			float stepTransmittance = exp(-sigma * dt);
 			cloudScattered += cloudTransmittance * luminance * (1.0 - stepTransmittance);
+			depthSum += t * cloudTransmittance * (1.0 - stepTransmittance);
+			depthWeight += cloudTransmittance * (1.0 - stepTransmittance);
 			cloudTransmittance *= stepTransmittance;
 			if (cloudTransmittance < 0.02) break;
 			t += dt;
 		}
+		if (depthWeight > 0.01) cloudDepth = depthSum / depthWeight;
 		float alpha = 1.0 - cloudTransmittance;
 		if (alpha > 0.0) {
 			// far clouds sink into the haze (their colour, not their opacity: thinned out far clouds let the cirrus
@@ -366,7 +390,7 @@ vec4 marchCumulus(sampler2D transmittanceLut, sampler2D skyviewLut, vec3 camKm, 
 }
 
 // the cirrus: thin streaks stretched along the wind, very high up. the sky only (nothing gets that high)
-// one value noise octave for the cirrus: the same smoothstep interpolated lattice as cloudNoise, but where the sky
+// one value noise octave for the cirrus: the same smoothstep interpolated lattice as fractNoise, but where the sky
 // binds the baked lattice the hardware's bilinear filter does the interpolation (the smoothstep goes into the
 // coordinate), one lookup instead of four hashes. the lattice repeats every 256 units, finer octaves are rotated
 float cirrusNoise(vec2 p) {
@@ -374,7 +398,7 @@ float cirrusNoise(vec2 p) {
 	vec2 i = floor(p), f = fract(p);
 	return textureLod(CIRRUS_NOISE_TEXTURE, (i + f * f * (3.0 - 2.0 * f) + 0.5) / 256.0, 0.0).r;
 #else
-	return cloudNoise(p);
+	return fractNoise(p);
 #endif
 }
 

@@ -9,6 +9,7 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 #include "biometools.glsl"
 #include "terrainheight.glsl"
 #include "culling.glsl"
+#include "propplacement.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
 layout(set = 0, binding = 3) uniform sampler2D climateMap; // half resolution
@@ -19,7 +20,7 @@ struct DrawCommand { uint vertexCount; uint instanceCount; uint firstVertex; uin
 layout(std430, set = 0, binding = 2) buffer Indirect { DrawCommand commands[4]; }; // [3] = the outer rings (foliagecommon.glsl)
 
 // the far terrain cache (terraincache.hpp, terrain.frag): the finished ground colour, the grass takes its colour from it
-#define TERRAIN_CACHE_LEVELS 5
+#define TERRAIN_CACHE_LEVELS 6
 layout(set = 0, binding = 4) uniform TerrainCacheInfo {
 	vec4 levels[TERRAIN_CACHE_LEVELS]; // xy = the baked square's first texel, z = texel size (world units), w = 1 when baked
 	vec4 params;					   // y = 1 when on, z = texels per side
@@ -57,9 +58,11 @@ void append(uint command, uint capacity, FoliageInstance instance) {
 
 // near ring: small dense clumps, then bigger clumps further apart, then sparse wide cards out to the distance where
 // the terrain's own colour takes over (grids are RING_SIDE x RING_SIDE cells)
-const uint RING_SIDE[4] = uint[](140u, 200u, 200u, 200u);		  // Foliage::RING_SIDE_NEAR / MID / FAR / WHEAT
-const float CELL_SIZE[4] = float[](0.065, 0.18, 0.36, 0.7);	  // world units (~6m each)
-const float RING_RADIUS[4] = float[](4.5, 18.0, 36.0, 70.0); // ~27m of dense grass, ~110m of mid, ~215m in total, wheat to ~420m
+// (the far ring's cells are a bit bigger than twice the mid's: it reaches ~290m for ~40% more clumps than at ~215m,
+// foliage.vert widens its cards by the same ratio so the coverage stays)
+const uint RING_SIDE[4] = uint[](140u, 200u, 230u, 200u);		  // Foliage::RING_SIDE_NEAR / MID / FAR / WHEAT
+const float CELL_SIZE[4] = float[](0.065, 0.18, 0.42, 0.7);	  // world units (~6m each)
+const float RING_RADIUS[4] = float[](4.5, 18.0, 48.0, 70.0); // ~27m of dense grass, ~110m of mid, ~290m in total, wheat to ~420m
 
 // the grass left on the forest floor: the ground colour it follows (the terrain cache) is the meadow's green, the
 // litter isn't in it. in the shade under the crowns what survives is darker, drier, an olive straw: bright green
@@ -105,6 +108,9 @@ void main() {
 	float roughY = data.a * pc.factor - pc.factor * 0.5;
 	float dist = length(vec2(distXZ, roughY - pc.campos.y));
 	if (dist > radius) return;
+	// off screen and no shadow caster: skip the textures and the picks before the exact cull at the end (a generous
+	// sphere around the rough height: the terrain's detail bumps, the clump's size)
+	if (dist >= SHADOW_CASTER_DISTANCE && sphereOutsideView(pc.viewproj, vec3(xz.x, roughY + 0.1, xz.y), ring == 3u ? 1.4 : 0.8)) return;
 	// the hand over between rings is a density crossfade: plants keep their full size, across [0.6, 1] of the inner
 	// ring's radius the inner ring thins out at random while this one fills in at random, so the total density
 	// stays even and there's no clean circle (shrinking both rings' plants made a thin band and a visible step).
@@ -140,11 +146,18 @@ void main() {
 	// follow what the ground looks like, not the raw blend: in a transition the ground texture already shows the
 	// dominant material, so only grow grass / wheat where they clearly dominate and never near sand or snow
 	float barren = smoothstep(0.1, 0.3, weights[BIOME_DESERT] + weights[BIOME_SNOW]);
-	// wheat fields grow nothing but wheat, densely, right up to their edge
+	// the prairie's tall oats (the wheat cards), in drifts below
 	float field = smoothstep(0.35, 0.5, weights[BIOME_WHEAT] * (1.0 - mountains));
 	float wheat = field * (1.0 - barren);
 	float grass = smoothstep(0.2, 0.5, weights[BIOME_PLAINS] + weights[BIOME_WHEAT] * mountains) + smoothstep(0.5, 0.8, weights[BIOME_TAIGA]) * 0.7;
 	grass = min(grass, 1.0) * (1.0 - barren) * (1.0 - field) * (1.0 - smoothstep(0.3, 0.85, bare)); // thinning towards rock / snow
+	// the wild oat prairie (community.glsl): the tall oats in drifts, grass (and so flowers) between them, bare soil
+	// here and there. (it was one endless dense wheat field)
+	if (field > 0.0) {
+		vec3 prairie = prairieMix(world);
+		wheat *= prairie.x;
+		grass = max(grass, field * (1.0 - barren) * (1.0 - prairie.x) * (1.0 - prairie.y) * 0.85);
+	}
 
 	// flowers grow in patches in the meadows, a slow noise decides where
 	vec2 patchCell = floor(world / 4.0);
@@ -153,15 +166,29 @@ void main() {
 	float patchNoise = mix(mix(hash42(patchCell).x, hash42(patchCell + vec2(1, 0)).x, smoothFrac.x),
 						   mix(hash42(patchCell + vec2(0, 1)).x, hash42(patchCell + vec2(1, 1)).x, smoothFrac.x), smoothFrac.y);
 	float flowers = grass * smoothstep(0.6, 0.85, patchNoise) * 0.45 * (1.0 - smoothstep(0.05, 0.3, forestFloor)); // none on the forest floor
+	// meadows differ from each other (foliagecommon.glsl's communities): some are full of flowers, some have none,
+	// some grass grows tall and rough, some is a short grazed sward, some a bit sparser
+	flowers *= community(world, 31.0) * 0.9;
+	float tallness = smoothstep(0.25, 0.75, latticeNoise(world / 26.0 + 3.7));
+	grass *= mix(0.7, 1.0, smoothstep(0.2, 0.55, latticeNoise(world / 18.0 - 13.1)));
+
+	// wild grasses gone to seed, in drifts through some meadows (the near two rings: further out they're the grass'
+	// colour anyway), none on the forest floor or in the damp
+	float wildOats = ring < 2u ? grass * smoothstep(0.5, 0.8, latticeNoise(world / 3.0 + 29.0)) * community(world, 37.0) * 0.18
+								 * (1.0 - smoothstep(0.05, 0.3, forestFloor)) * (1.0 - smoothstep(0.6, 0.8, data.g)) : 0.0;
 
 	float type;
 	if (rnd.z < wheat) type = FOLIAGE_WHEAT;
 	else if (rnd.z < wheat + flowers) type = FOLIAGE_FLOWERS;
+	else if (rnd.z < wheat + flowers + wildOats) type = FOLIAGE_WILDOAT;
 	else if (rnd.z < wheat + grass) type = FOLIAGE_GRASS;
 	else return;
 	// the outermost ring is for the wheat fields only: a field is big and flat, its plants stand out against the
 	// sky far away (a meadow's grass far away is just the ground's colour)
 	if (ring == 3u && type != FOLIAGE_WHEAT) return;
+	// not up through the rocks and logs (props.comp places them, the same placement). the near ring only and the mid
+	// one's first part: further out the props are small on screen and the cards' gaps hide it
+	if (dist < 40.0 && insideProp(heightmap, climateMap, xz, pc.offsetWorld, pc.offset, pc.terrainSize, pc.factor, 0.0)) return;
 
 	// exactly the surface the terrain mesh has here (same bicubic + detail + LOD prefilter). terrain.tese fades the
 	// detail bumps and sizes the prefilter by the HORIZONTAL distance: the 3D one put the grass on a different surface
@@ -174,6 +201,7 @@ void main() {
 
 	FoliageInstance instance;
 	float clumpSize = fade * mix(0.8, 1.2, rnd.w) * mix(1.0, 0.75, forestFloor); // shaded: thinner, shorter tufts
+	if (type != FOLIAGE_WHEAT) clumpSize *= mix(0.75, 1.35, tallness); // the meadow's own height
 	float seed = hash42(cellIndex + 57.0).x * 1000.0;
 	instance.posScale = vec4(pos, clumpSize);
 	// x = the ground's normal (xz as two halves, foliage.frag lights the blades mostly like the ground they grow
@@ -185,7 +213,7 @@ void main() {
 	if (dist < SHADOW_CASTER_DISTANCE) append(1u, MAX_FOLIAGE_SHADOW_INSTANCES, instance);
 
 	// frustum cull with a generous sphere around the clump
-	if (sphereOutsideView(pc.viewproj, pos + vec3(0.0, 0.1, 0.0), ring == 3u ? 1.1 : 0.4)) return; // the clump's radius (the wheat ring's bigger)
+	if (sphereOutsideView(pc.viewproj, pos + vec3(0.0, 0.1, 0.0), ring == 3u ? 1.1 : (ring == 2u ? 0.6 : 0.5))) return; // the clump's radius (the wheat ring's bigger)
 
 	// (curved blades within ~9m, further away a blade is a few pixels tall and its bend doesn't show: out to ~15m
 	// they were ~1.5ms of a meadow at 1080p on an integrated GPU, 3x the vertices of a flat card each)

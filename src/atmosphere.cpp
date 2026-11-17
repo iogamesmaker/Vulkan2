@@ -86,43 +86,11 @@ void Atmosphere::init(VkDevice device, VmaAllocator allocator, Application* engi
 	drawImageUsages |= VK_IMAGE_USAGE_STORAGE_BIT;
 	drawImageUsages |= VK_IMAGE_USAGE_SAMPLED_BIT;
 
-	VmaAllocationCreateInfo imageAllocinfo = {};
-	imageAllocinfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-	imageAllocinfo.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-	VkImageCreateInfo imageCI;
-	VkImageViewCreateInfo iviewCI;
-	// transmittance
-	imageCI	= vkinit::image_create_info(transmittance.imageFormat, drawImageUsages, transmittance.imageExtent);
-	vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &transmittance.image, &transmittance.allocation, nullptr);
-	iviewCI = vkinit::imageview_create_info(transmittance.imageFormat, transmittance.image, VK_IMAGE_ASPECT_COLOR_BIT);
-
-	VK_CHECK(vkCreateImageView(m_Device, &iviewCI, nullptr, &transmittance.imageView));
-	// multiscattering
-	imageCI	= vkinit::image_create_info(multiscattering.imageFormat, drawImageUsages, multiscattering.imageExtent);
-	vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &multiscattering.image, &multiscattering.allocation, nullptr);
-
-	iviewCI = vkinit::imageview_create_info(multiscattering.imageFormat, multiscattering.image, VK_IMAGE_ASPECT_COLOR_BIT);
-
-	VK_CHECK(vkCreateImageView(m_Device, &iviewCI, nullptr, &multiscattering.imageView));
-	// skyview
-	imageCI	= vkinit::image_create_info(skyview.imageFormat, drawImageUsages, skyview.imageExtent);
-	vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &skyview.image, &skyview.allocation, nullptr);
-
-	iviewCI = vkinit::imageview_create_info(skyview.imageFormat, skyview.image, VK_IMAGE_ASPECT_COLOR_BIT);
-
-	VK_CHECK(vkCreateImageView(m_Device, &iviewCI, nullptr, &skyview.imageView));
-	// aerial
-	imageCI	= vkinit::image_create_info(aerial.imageFormat, drawImageUsages, aerial.imageExtent);
-	vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &aerial.image, &aerial.allocation, nullptr);
-
-	iviewCI = vkinit::imageview_create_info(aerial.imageFormat, aerial.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_3D);
-
-	VK_CHECK(vkCreateImageView(m_Device, &iviewCI, nullptr, &aerial.imageView));
-	imageCI	= vkinit::image_create_info(aerialSun.imageFormat, drawImageUsages, aerialSun.imageExtent);
-	vmaCreateImage(m_Allocator, &imageCI, &imageAllocinfo, &aerialSun.image, &aerialSun.allocation, nullptr);
-	iviewCI = vkinit::imageview_create_info(aerialSun.imageFormat, aerialSun.image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_3D);
-	VK_CHECK(vkCreateImageView(m_Device, &iviewCI, nullptr, &aerialSun.imageView));
+	// (aerial / aerialSun are 3D: froxels along the view)
+	for(AllocatedImage* lut : { &transmittance, &multiscattering, &skyview })
+		*lut = vkutil::create_image(m_Device, m_Allocator, lut->imageFormat, drawImageUsages, lut->imageExtent);
+	for(AllocatedImage* lut : { &aerial, &aerialSun })
+		*lut = vkutil::create_image(m_Device, m_Allocator, lut->imageFormat, drawImageUsages, lut->imageExtent, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_VIEW_TYPE_3D);
 
 	// allocate the UBO
 

@@ -42,6 +42,7 @@ layout(std140, set = 0, binding = 10) uniform CloudMapInfo { vec4 cloudMapInfo; 
 
 #define SHADOW_PIXEL vec2(gl_GlobalInvocationID.xy) // no gl_FragCoord in compute
 #include "shadowsampling.glsl" // set 2
+#include "noise.glsl"
 
 layout(push_constant) uniform constants {
 	mat4 invViewProj;  // terrain space (the space the geometry is drawn in)
@@ -109,8 +110,39 @@ float wrapDiffuse(vec3 n, vec3 l, float wrap) {
 	return max((dot(n, l) + wrap) / (1.0 + wrap), 0.0);
 }
 
+// snow sparkle: the crystals are tiny mirrors at random tilts, a few of them turned just right flash the sun at you
+// and move on as you walk. one level of world anchored cells (a 3D grid, the surface cuts through it), each with one
+// crystal facet: it glints when that facet's normal lines up with the half vector
+vec3 glintHash(vec3 c) {
+	uvec3 v = uvec3(ivec3(c)) * uvec3(1664525u, 1013904223u, 2654435761u);
+	v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+	v ^= v >> 16u;
+	v.x += v.y * v.z; v.y += v.z * v.x; v.z += v.x * v.y;
+	return vec3(v & 0xffffu) / 65535.0;
+}
+float glintLevel(vec3 p, vec3 N, vec3 H, float cell) {
+	vec3 c = floor(p / cell);
+	vec3 h = glintHash(c);
+	if (h.x > 0.8) return 0.0; // most cells hold no crystal facing out
+	// the crystal is a round spot around a random point in its cell (where the surface passes near it): the whole
+	// cell lit up drew a square wherever the cells were more than a pixel big, up close
+	float spot = 1.0 - smoothstep(0.15, 0.3, length(p / cell - c - glintHash(c + 29.0)));
+	if (spot <= 0.0) return 0.0;
+	vec3 facet = normalize(N + (glintHash(c + 71.0) * 2.0 - 1.0) * 0.5);
+	return smoothstep(0.9965, 0.9995, dot(facet, H)) * (0.5 + h.y) * spot;
+}
+// footprint: world units per pixel. the cells follow it in powers of two (crossfaded) so a glint stays about a pixel
+// wide at every distance instead of a cloud of sub pixel ones that alias
+float snowGlints(vec3 p, vec3 N, vec3 V, vec3 L, float footprint) {
+	const float CELL = 0.0025; // ~1.5cm up close
+	vec3 H = normalize(V + L);
+	float lod = max(log2(footprint * 1.5 / CELL), 0.0);
+	float l0 = floor(lod);
+	return mix(glintLevel(p, N, H, CELL * exp2(l0)), glintLevel(p, N, H, CELL * exp2(l0 + 1.0)), lod - l0);
+}
+
 float interleavedNoise(vec2 p) {
-	return fract(52.9829189 * fract(dot(p + pc.frame * 5.588238, vec2(0.06711056, 0.00583715))));
+	return interleavedGradientNoise(p + pc.frame * 5.588238);
 }
 
 // a short screen space ray towards the light through the depth buffer: the small shadows right where things meet
@@ -189,25 +221,14 @@ vec2 denoiseSSAO(vec2 screenUV, float viewZ) {
 		for (int x = -1; x <= 1; x++) {
 			float spatial = (x == 0 ? 1.0 : 0.6) * (y == 0 ? 1.0 : 0.6);
 			ivec2 q = clamp(centre + ivec2(x, y), ivec2(0), ivec2(texSize) - 1);
-			float z = 0.02 / max(texelFetch(depthBuffer, q * ratio, 0).r, 1e-7);
+			vec3 s = texelFetch(ssaoTexture, q, 0).rgb; // (b: the view distance ssao.comp measured at, from the same depth texel)
+			float z = s.b;
 			float w = spatial * exp(-abs(z - viewZ) / (viewZ * 0.03)) + 1e-5;
-			ssaoSum += texelFetch(ssaoTexture, q, 0).rg * w;
+			ssaoSum += s.rg * w;
 			wSum += w;
 		}
 	}
 	return ssaoSum / wSum;
-}
-
-// smooth value noise for the weather's patches (snow, puddles)
-float weatherHash(vec2 c) {
-	vec3 p3 = fract(vec3(c.xyx) * 0.1031);
-	p3 += dot(p3, p3.yzx + 33.33);
-	return fract((p3.x + p3.y) * p3.z);
-}
-float weatherValueNoise(vec2 x) {
-	vec2 i = floor(x), f = fract(x);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(weatherHash(i), weatherHash(i + vec2(1, 0)), u.x), mix(weatherHash(i + vec2(0, 1)), weatherHash(i + vec2(1, 1)), u.x), u.y);
 }
 
 void main() {
@@ -259,7 +280,9 @@ void main() {
 	if (material == MAT_LEAF) roughness = min(roughness, 0.55);
 	else if (material == MAT_IMPOSTOR) roughness = 0.65;
 	else if (material == MAT_GRASS) roughness = 0.5;
-	else if (material == MAT_TERRAIN && roughness > 0.99) roughness = mix(0.85, 0.5, smoothstep(0.4, 0.65, min(albedo.r, min(albedo.g, albedo.b))));
+	// (rock and snow are rough: at 0.5 the bright ones had a broad wet sheen and a glossy sky reflection, rock looked
+	// polished and snow like melting ice cream. snow's look is a matte surface with sparkles, snowGlints below)
+	else if (material == MAT_TERRAIN && roughness > 0.99) roughness = mix(0.92, 0.82, smoothstep(0.45, 0.7, min(albedo.r, min(albedo.g, albedo.b))));
 	// specular anti-aliasing (Kaplanyan / Tokuyoshi): where the normal changes a lot from pixel to pixel (grass
 	// blades, leaf edges, needles) a narrow highlight lands on some pixels and not their neighbours and flickers as
 	// they move. the normals' spread over the neighbours widens the lobe to what a pixel actually covers
@@ -281,7 +304,7 @@ void main() {
 	float weatherNoise = 0.0, snowable = 0.0, soakable = 0.0;
 	if (ubo.weather.w > 0.0 || ubo.weather.y > 0.0) {
 		vec2 weatherXZ = (position.xz + vec2(pc.mapOffset) * (pc.terrainSize / weatherTexels.x)) * 0.3; // world anchored, ~20m patches
-		weatherNoise = weatherValueNoise(weatherXZ) * 0.65 + weatherValueNoise(weatherXZ * 2.7 + 13.1) * 0.35;
+		weatherNoise = fractNoise(weatherXZ) * 0.65 + fractNoise(weatherXZ * 2.7 + 13.1) * 0.35;
 		// the weather is the one under the camera, the ground far off has its own climate: no snow settles in a hot desert
 		// you look at from the taiga's edge, the desert doesn't soak up a temperate rain
 		vec2 climateUV = (position.xz + 0.5 * pc.terrainSize) / pc.terrainSize + vec2(pc.mapOffset) / weatherTexels;
@@ -294,7 +317,7 @@ void main() {
 		float facingUp = smoothstep(0.35, 0.8, normal.y);
 		snowHere = smoothstep(0.25, 0.55, ubo.weather.w * snowable * facingUp * (0.6 + 0.8 * weatherNoise));
 		albedo = mix(albedo, vec3(0.8, 0.83, 0.88), snowHere);
-		roughness = mix(roughness, 0.6, snowHere);
+		roughness = mix(roughness, 0.82, snowHere);
 	}
 	float wet = ubo.weather.y * soakable * (1.0 - snowHere);
 	float puddle = 0.0;
@@ -351,9 +374,29 @@ void main() {
 	float specularF0 = 0.04;
 	if (material != MAT_BARK) {
 		float sheenScale = material == MAT_GRASS || material == MAT_LEAF ? 0.8 : 1.0;
+		// the leaves' (and impostors') normals are bent out of the crown, the same on both sides of a card: looking
+		// towards a low sun most of them face away from the camera. GGX then clamped N.V to ~0, the Fresnel went to 1
+		// at that grazing angle and every crown edge facing the sun sparkled with a mirror glint off a side you can't
+		// see. no reflection from behind the surface; what a backlit crown really shows is the light through it
+		// (backlit, above)
+		if (material == MAT_LEAF || material == MAT_IMPOSTOR) sheenScale *= smoothstep(0.0, 0.35, dot(normal, -viewDir));
 		// (only the one that's up: the other one's light is zero, its GGX was wasted work)
 		vec3 lightUp = sunDir.y > 0.0 ? sunLight : moonLight;
 		direct += lightUp * specularGGX(normal, -viewDir, shadowDir, roughness, specularF0) * sheenScale;
+	}
+	// the snow's sparkle (the terrain's / rocks' snow, the fresh snow of the weather), near the camera
+	if (material == MAT_TERRAIN || snowHere > 0.0) {
+		float snowy = max(snowHere, material == MAT_TERRAIN ? smoothstep(0.6, 0.75, min(albedo.r, min(albedo.g, albedo.b))) : 0.0);
+		float NdotL = dot(normal, shadowDir);
+		if (snowy > 0.0 && dist < 25.0 && NdotL > 0.0) {
+			// a pixel's size there: the next pixel's ray at the same depth
+			vec4 nextWorld = pc.invViewProj * vec4((screenUV + vec2(1.0 / float(size.x), 0.0)) * 2.0 - 1.0, depth, 1.0);
+			float footprint = distance(nextWorld.xyz / nextWorld.w, position);
+			vec3 anchored = position + vec3(pc.mapOffset.x, 0.0, pc.mapOffset.y) * (pc.terrainSize / float(textureSize(heightmapClimate, 0).x));
+			float glint = snowGlints(anchored, normal, -viewDir, shadowDir, footprint);
+			vec3 lightUp = sunDir.y > 0.0 ? sunLight : moonLight;
+			direct += lightUp * glint * 2.5 * snowy * smoothstep(0.0, 0.15, NdotL) * (1.0 - smoothstep(15.0, 25.0, dist));
+		}
 	}
 	direct *= directScale; // * shadow in shadowresolve.comp
 	// the sun / moon handover: the shadow map switches lights while one is right at the horizon (its shadows fade
@@ -363,7 +406,9 @@ void main() {
 	// only on solid surfaces (terrain, bark, rocks, logs): the alpha tested cards (leaves, grass, impostors) change
 	// from pixel to pixel and frame to frame, the short rays turn that into flicker
 	bool solid = material == MAT_TERRAIN || material == MAT_BARK;
-	if (pc.effects.x > 0.0 && dist < 120.0 && solid && dot(normal, shadowDir) > 0.0)
+	// (not where the shadow map already has it all in shadow, a forest floor: the direct light it would darken is
+	// multiplied by that 0 anyway)
+	if (pc.effects.x > 0.0 && dist < 120.0 && solid && shadow > 0.01 && dot(normal, shadowDir) > 0.0)
 		direct *= mix(contactShadow(position, normal, shadowDir, dist, vec2(size)), 1.0, smoothstep(80.0, 120.0, dist));
 
 	// cloud shadows drifting over the land: the sun ray from here through the cloud layer (clouds.glsl)
@@ -411,6 +456,10 @@ void main() {
 	// screen or far away)
 	// (the land's colour: grassy green-brown, a bit stronger than before, the shade under things was only sky)
 	skyLight += sunLight * max(sunDir.y, 0.0) * vec3(0.26, 0.27, 0.16) * (facingDown * 0.8 + 0.1) * pc.effects.w;
+	// snow all around bounces far more (albedo ~0.8, not the land's ~0.2): a print's or a furrow's shaded wall, a
+	// tree's shadow on a snowfield, sees the sunlit snow next to it and stays a bright blue grey, not black
+	float snowGround = material == MAT_TERRAIN || snowHere > 0.0 ? max(snowHere, smoothstep(0.6, 0.75, min(albedo.r, min(albedo.g, albedo.b)))) : 0.0;
+	skyLight += sunLight * max(sunDir.y, 0.0) * vec3(0.8, 0.83, 0.88) * (0.12 + 0.2 * (1.0 - abs(normal.y))) * snowGround * pc.effects.w;
 	// the moonlit sky: the sky LUT has next to nothing at night, so moon shadows went pitch black. a faint bluish fill
 	// (2.5x what it was: at night the land was black under a sky you could still see)
 	skyLight += moonLight * max(moonDir.y, 0.0) * vec3(0.7, 0.85, 1.25) * (normal.y * 0.3 + 0.7);
@@ -427,7 +476,14 @@ void main() {
 	// the AO / shafts and cumulus: half resolution, or full on Ultra (each its own setting)
 	float viewZ = 0.02 / depth; // reversed z, ~ view distance
 	vec2 halfRes = pc.extra.z > 0.5 ? denoiseSSAO(screenUV, viewZ) : upsampleEffect(ssaoTexture, p, screenUV, viewZ, vec4(1.0)).rg;
-	vec4 cloud = volumetricClouds ? upsampleEffect(cloudTexture, p, screenUV, viewZ, vec4(0.0, 0.0, 0.0, 1.0)) : vec4(0.0);
+	// (nothing of it can lie in front of a surface nearer than the far fog's start (clouds.comp marches it from
+	// ubo.fogDistance on) and the rain curtains' (1.5km, volclouds.glsl), with it and the camera both under the cloud
+	// base and no lightning bolt: most of the land seen from the ground, the depth aware upsample's 8 reads were all
+	// for (0, 0, 0, 1) there)
+	float higherKm = max(pc.campos.y, position.y) * ubo.worldScale + ubo.baseAltitude;
+	float nothingBefore = min(ubo.fogDistance * 0.95, 1.4 / ubo.worldScale);
+	bool cloudInFront = volumetricClouds && (dist > nothingBefore || higherKm > ubo.cloudAltitude - 0.05 || ubo.weather4.z > 0.002);
+	vec4 cloud = cloudInFront ? upsampleEffect(cloudTexture, p, screenUV, viewZ, vec4(0.0, 0.0, 0.0, 1.0)) : vec4(0.0, 0.0, 0.0, 1.0);
 	float ssao = pc.effects.z > 0.0 ? halfRes.r : 1.0;
 	if (material == MAT_GRASS) ssao = mix(1.0, ssao, 0.25); // foliage: mostly its own root darkening, the noise flickers on thin cards
 	// multi-bounce occlusion (Jimenez et al., GTAO): light bounces around inside a crevice off its own walls, so bright

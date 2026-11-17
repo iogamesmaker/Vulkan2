@@ -393,16 +393,8 @@ void ShadowFilter::destroy() {
 void ShadowFilter::setTargets(const AllocatedImage& drawImage, const AllocatedImage& depthBuffer) {
 	destroyTargets();
 
-	VmaAllocationCreateInfo allocCI = {};
-	allocCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-	allocCI.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 	auto create = [&](AllocatedImage& image, VkFormat format, VkImageUsageFlags usage) {
-		image.imageFormat = format;
-		image.imageExtent = drawImage.imageExtent;
-		VkImageCreateInfo imageCI = vkinit::image_create_info(format, usage, image.imageExtent);
-		VK_CHECK(vmaCreateImage(m_Allocator, &imageCI, &allocCI, &image.image, &image.allocation, nullptr));
-		VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(format, image.image, VK_IMAGE_ASPECT_COLOR_BIT);
-		VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &image.imageView));
+		image = vkutil::create_image(m_Device, m_Allocator, format, usage, drawImage.imageExtent);
 	};
 	create(m_Direct, DIRECT_LIGHT_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT); // sampled: the debug view
 	create(m_Temp, VK_FORMAT_R16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT); // sampled: the debug view

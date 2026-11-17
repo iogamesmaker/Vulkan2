@@ -57,10 +57,13 @@ public:
 
 	bool m_Auto = true;			 // picks the weather by itself, from the climate
 	float m_Intensity = 1.0f;	 // how hard it rains / snows / blows
-	float m_Minutes = 4.0f;		 // auto: how long a weather lasts on average (real minutes)
+	float m_Minutes = 4.0f;		 // auto: how long a weather lasts on average (real minutes), any single one random (exponential)
 	float m_WindScale = 1.0f;
-	// automatic: every new weather rolls its own intensity and wind (times the sliders above), so no two rains are alike
+	// automatic: every new weather rolls its own intensity and wind (times the sliders above), so no two rains are alike,
+	// and both keep wandering while it lasts (a rain builds and eases off, a calm day freshens)
 	float m_RolledIntensity = 1.0f, m_RolledWind = 1.0f;
+	// a fresh random sequence (every launch's weather its own). the default seed is fixed: the captures repeat
+	void reseed(uint32_t seed) { m_Random.seed(seed); }
 	// the captures: a strike held at its brightest, optionally at a fixed offset from the camera (km)
 	bool m_HoldStrike = false, m_PlaceStrike = false;
 	glm::vec2 m_PlacedStrike{ 0.0f };
@@ -79,6 +82,7 @@ private:
 	glm::vec3 m_Climate{ 0.5f };
 	bool m_Snap = false;		 // forceType: no easing on the next update
 	float m_Timer = 0.0f;		 // auto: seconds until the next change
+	float m_DriftIntensity = 0.0f, m_DriftWind = 0.0f; // auto: the wander about the rolled intensity / wind
 	float m_StrikeIn = 3.0f;	 // lightning: seconds until the next strike
 	float m_StrikeAge = 1e9f;	 // seconds since the last one
 	float m_StrikeDistance = 10.0f; // km from the camera

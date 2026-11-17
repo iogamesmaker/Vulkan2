@@ -7,7 +7,7 @@
 // kind: 0 grass blade, 1 wheat (an oat plant card), 3 flower head (foliage.vert)
 // grass blades are the photographed ones in bladeAtlas (ambientCG Foliage001), each card one blade's rect
 bool foliageCovered(int kind, vec2 uv, out vec4 texel) {
-	texel = kind == 3 ? texture(flowerAtlas, uv) : (kind == 1 ? texture(wheatAtlas, uv) : texture(bladeAtlas, uv));
+	texel = kind == 3 ? texture(flowerAtlas, uv) : (kind == 1 || kind == 4 ? texture(wheatAtlas, uv) : texture(bladeAtlas, uv));
 	// sharpen the alpha by its screen space rate of change, keeps alpha tested blades from thinning out in the
 	// mip chain (and keeps the edges crisp up close)
 	float alpha = (texel.a - 0.5) / max(fwidth(texel.a), 1e-4) + 0.5;

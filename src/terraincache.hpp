@@ -12,9 +12,11 @@ class Application;
 // modulo SIZE), so as the camera moves only the strips that come into a square are baked (terraincache.comp)
 class TerrainCache {
 public:
-	static constexpr uint32_t LEVELS = 5;		   // terrain.frag's TERRAIN_CACHE_LEVELS
+	// (it started at 55 (~330m) with 5 levels: everything nearer was shaded in full, a third of the frame on an iGPU.
+	// from 30 (~180m) with one more level it reaches as far, its texels are the same size on screen at each distance)
+	static constexpr uint32_t LEVELS = 6;		   // terrain.frag's / foliage.comp's TERRAIN_CACHE_LEVELS
 	static constexpr uint32_t SIZE = 2048;		   // texels per side
-	static constexpr float START_DISTANCE = 55.0f; // world units: where the direct shading's far texture scale is complete
+	static constexpr float START_DISTANCE = 30.0f; // world units: where the direct shading's far texture scale is complete (terrain.frag's farWeight)
 	static constexpr int SNAP = 32;				   // a level re-centres in steps of this many texels
 
 	// terrainLayout / atmosphereLayout: the bake reads the terrain's textures and the atmosphere UBO through

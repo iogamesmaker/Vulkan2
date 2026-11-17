@@ -80,6 +80,7 @@ add_executable(${PROJECT_NAME}
     src/atmosphere.cpp
 	src/shadows.cpp
 	src/foliage.cpp
+	src/meshload.cpp
 	src/trees.cpp
 	src/bloom.cpp
 	src/props.cpp
@@ -91,9 +92,11 @@ add_executable(${PROJECT_NAME}
 	src/terraincache.cpp
 	src/debugview.cpp
 	src/interaction.cpp
+	src/snowtrail.cpp
 	src/volfog.cpp
 	src/weather.cpp
 	src/precipitation.cpp
+	src/wildlife.cpp
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE vkguide_shared)

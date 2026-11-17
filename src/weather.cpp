@@ -123,7 +123,8 @@ WeatherState Weather::target(WeatherType type) const {
 	case WeatherType::Fog:			s.coverage = 0.45f; s.density = 1.2f; s.overcast = 0.35f; s.wind = 0.08f; s.haze = 0.9f; s.instability = 0.0f; s.cloudBase = 0.7f; s.mist = 6.0f; break;
 	default: break;
 	}
-	float intensity = m_Intensity * (m_Auto ? m_RolledIntensity : 1.0f), windScale = m_WindScale * (m_Auto ? m_RolledWind : 1.0f);
+	float intensity = m_Intensity * (m_Auto ? std::max(m_RolledIntensity + m_DriftIntensity, 0.2f) : 1.0f);
+	float windScale = m_WindScale * (m_Auto ? std::max(m_RolledWind + m_DriftWind, 0.15f) : 1.0f);
 	s.rainDeck *= intensity; s.rainCells *= intensity; s.sand *= intensity; s.haze *= intensity;
 	s.wind = std::min(s.wind * windScale, 1.0f);
 	return s;
@@ -243,9 +244,19 @@ void Weather::update(float dt, glm::vec3 climate, glm::vec2 cameraKm, glm::vec2 
 			// how hard this one is: a drizzle or a downpour, a calm grey day or a windy one
 			m_RolledIntensity = std::uniform_real_distribution<float>(0.55f, 1.45f)(m_Random);
 			m_RolledWind = std::uniform_real_distribution<float>(0.5f, 1.6f)(m_Random);
-			float minutes = std::uniform_real_distribution<float>(0.6f, 1.4f)(m_Random) * m_Minutes;
-			m_Timer = minutes * 60.0f;
+			// how long it lasts: memoryless (exponential around the average), so the next change can come at any
+			// moment: now and then after half a minute, sometimes after five times the average. (0.6-1.4x the average
+			// made a steady rhythm you could count on)
+			float minutes = std::exponential_distribution<float>(1.0f)(m_Random) * m_Minutes;
+			m_Timer = glm::clamp(minutes, 0.4f, m_Minutes * 6.0f) * 60.0f;
 		}
+		// and while it lasts it wanders: the intensity and the wind drift at random about what was rolled (a mean
+		// reverting random walk, ~1.5 minutes to forget, ~0.25 either way), so the same weather builds and eases off
+		std::normal_distribution<float> noise(0.0f, 1.0f);
+		const float tau = 90.0f, spread = 0.25f;
+		float k = std::sqrt(2.0f * dt / tau) * spread;
+		m_DriftIntensity += -m_DriftIntensity * dt / tau + k * noise(m_Random);
+		m_DriftWind += -m_DriftWind * dt / tau + k * 1.3f * noise(m_Random);
 	}
 
 	// the regional weather eases towards its new values over a minute or so: the deck thickens, the air turns unstable
@@ -301,9 +312,8 @@ void Weather::drawImGui() {
 	changed |= ImGui::SliderFloat("Wind", &m_WindScale, 0.0f, 2.0f, "%.1fx");
 	if(changed) { m_Regional = target(m_Type); m_Snap = true; }
 	ImGui::BeginDisabled(!m_Auto);
-	ImGui::SliderFloat("Changes every", &m_Minutes, 0.5f, 20.0f, "~%.1f min", ImGuiSliderFlags_Logarithmic);
-	ImGui::SetItemTooltip("The weather cycle: every few minutes (random around this) the next weather is picked from what fits the climate here, and everything blends over to it in about a minute");
-	if(m_Auto) { ImGui::SameLine(); ImGui::TextDisabled("next in %.0fs", std::max(m_Timer, 0.0f)); }
+	ImGui::SliderFloat("Changes about every", &m_Minutes, 0.5f, 20.0f, "~%.1f min", ImGuiSliderFlags_Logarithmic);
+	ImGui::SetItemTooltip("On average. Any single change is random: it can come after half a minute or after a long while. The next weather is picked from what fits the climate here and everything blends over to it in about a minute; while a weather lasts, its strength and wind keep drifting");
 	if(ImGui::Button("Next weather")) m_Timer = 0.0f;
 	ImGui::EndDisabled();
 	if(ImGui::Button("Dry the ground")) { m_State.wetness = 0.0f; m_State.snowCover = 0.0f; }

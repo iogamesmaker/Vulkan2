@@ -19,6 +19,8 @@ layout(location = 3) flat out int outMaterial;
 layout(location = 4) out float outAO;
 layout(location = 5) flat out float outMoss;
 layout(location = 6) flat out float outSeed;
+layout(location = 7) flat out vec2 outDither; // [a, b): the dither values this copy keeps (propscommon.glsl)
+layout(location = 8) flat out vec2 outBase;	 // the ground's height under it and its size (the desert's sand drift up its foot)
 
 void main() {
 	PropInstance inst = instances[gl_InstanceIndex];
@@ -32,6 +34,9 @@ void main() {
 	outMaterial = int(inPositionMaterial.w + 0.5);
 	outAO = inNormalAO.w;
 	outMoss = inst.params.w;
-	outSeed = inst.params.z;
+	vec3 dither = propDitherUnpack(inst.params.z);
+	outSeed = dither.z;
+	outDither = dither.xy;
+	outBase = vec2(inst.posScale.y + inst.posScale.w * 0.05, inst.posScale.w); // (about where the ground meets it)
 	gl_Position = pc.viewproj * vec4(pos, 1.0);
 }

@@ -11,6 +11,9 @@ layout(set = 0, binding = 0) uniform sampler2D depthBuffer;
 layout(rgba16f, set = 0, binding = 1) uniform writeonly image2D cloudImage;
 layout(set = 0, binding = 2) uniform sampler3D cloudNoiseLUT; // cloudnoise.comp, tiles
 layout(set = 0, binding = 5) uniform sampler2D heightmap;		  // a = height (terrainheight.glsl), repeating
+// the depth (reversed z, as the depth buffer) the cloud this texel sees sits at, 0 = none: the sky's history is
+// reprojected from there instead of from infinitely far (flying towards a cloud smeared it, the history slid the wrong way)
+layout(r32f, set = 0, binding = 6) uniform writeonly image2D cloudDepthImage;
 
 layout(set = 1, binding = 0) uniform sampler2D transmittanceLUT;
 layout(set = 1, binding = 2) uniform sampler2D skyviewLUT;
@@ -24,6 +27,7 @@ layout(std140, set = 0, binding = 4) uniform CloudMapInfo { vec4 cloudMapInfo; }
 #define CLOUD_NOISE_LUT cloudNoiseLUT
 #include "volclouds.glsl"
 #include "volfog.glsl"
+#include "noise.glsl"
 
 layout(push_constant) uniform constants {
 	mat4 invViewProj; // terrain space
@@ -120,9 +124,20 @@ void main() {
 	// the start offset: spatially interleaved gradient noise, temporally the golden ratio sequence on top of it.
 	// every pixel goes through evenly spread offsets frame after frame, so the ~12 the history holds average out
 	// far better than random ones (that left a shimmer, worse without the TAA's second accumulation on top)
-	float jitter = fract(fract(52.9829189 * fract(dot(vec2(p), vec2(0.06711056, 0.00583715)))) + pc.frame * 0.618034);
-	float cloudEnter;
-	vec4 cloud = marchCumulus(transmittanceLUT, skyviewLUT, camKm, camWorldKm, pc.cloudWind, dir, tMax, pc.sundir, jitter, cloudEnter);
+	float jitter = fract(interleavedGradientNoise(vec2(p)) + pc.frame * 0.618034);
+	float cloudEnter, cloudDepth;
+	vec4 cloud = marchCumulus(transmittanceLUT, skyviewLUT, camKm, camWorldKm, pc.cloudWind, dir, tMax, pc.sundir, jitter, cloudEnter, cloudDepth);
+	// the depth d at which this pixel's ray is cloudDepth km out: the unprojected point is A + d B (homogeneous), solved
+	// along the ray for campos + dir t
+	float ndcDepth = 0.0;
+	if (cloudDepth > 0.0) {
+		vec4 A = pc.invViewProj * vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+		vec4 B = pc.invViewProj * vec4(0.0, 0.0, 1.0, 0.0);
+		vec3 P = pc.campos + dir * (cloudDepth / ubo.worldScale);
+		float den = dot(B.xyz - P * B.w, dir);
+		ndcDepth = abs(den) > 1e-12 ? dot(P * A.w - A.xyz, dir) / den : 0.0;
+	}
+	imageStore(cloudDepthImage, p, vec4(max(ndcDepth, 0.0)));
 	vec4 fog = marchFarFog(dir, tMax, jitter);
 	// in order of distance: the far fog starts where the froxels end, a cloud nearer than that is in front of it
 	bool cloudFirst = cloudEnter >= 0.0 && cloudEnter < ubo.fogDistance * ubo.worldScale;

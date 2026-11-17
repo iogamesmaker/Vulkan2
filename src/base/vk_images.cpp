@@ -180,3 +180,19 @@ void vkutil::memoryBarrier(VkCommandBuffer cmd, VkPipelineStageFlags2 srcStage, 
 	dependency.pMemoryBarriers = &barrier;
 	vkCmdPipelineBarrier2(cmd, &dependency);
 }
+
+AllocatedImage vkutil::create_image(VkDevice device, VmaAllocator allocator, VkFormat format, VkImageUsageFlags usage, VkExtent3D extent,
+                                    VkImageAspectFlags aspect, VkImageViewType viewType)
+{
+    AllocatedImage image{};
+    image.imageFormat = format;
+    image.imageExtent = extent;
+    VkImageCreateInfo imageCI = vkinit::image_create_info(format, usage, extent);
+    VmaAllocationCreateInfo allocCI = {};
+    allocCI.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    allocCI.requiredFlags = VkMemoryPropertyFlags(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VK_CHECK(vmaCreateImage(allocator, &imageCI, &allocCI, &image.image, &image.allocation, nullptr));
+    VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(format, image.image, aspect, viewType);
+    VK_CHECK(vkCreateImageView(device, &viewCI, nullptr, &image.imageView));
+    return image;
+}

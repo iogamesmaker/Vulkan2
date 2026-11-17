@@ -91,6 +91,19 @@ void main() {
 	TreeInstance instance;
 	instance.posScale = vec4(pos, treeHeight);
 	float fade = 1.0 - smoothstep(PLACE_RADIUS * 0.85, PLACE_RADIUS, dist);
+	// the shrubs (trees_place.comp placeShrub): each out to its own reach, spread between about half its kind's
+	// and all of it so they thin out with distance like the ground cover did, dithered away over its last quarter
+	// the far layer's copy of a shrub (seed >= SHRUB_FAR_SEED) the other way round: from where its near copy is gone
+	// out to its kind's far reach (the two are the same plant, drawn identically where both dither in)
+	if (mesh >= FIRST_SHRUB_MESH) {
+		bool farCopy = tree.params.z >= SHRUB_FAR_SEED;
+		float keep = fract((tree.params.z - (farCopy ? SHRUB_FAR_SEED : 0.0)) * 1.618 + 0.31);
+		uint kind = shrubKind(mesh);
+		float reach = SHRUB_REACH[kind] * mix(0.45, 1.0, keep * keep);
+		float nearFade = 1.0 - smoothstep(reach * 0.75, reach, dist);
+		if (farCopy) fade = min(fade, (1.0 - nearFade) * (1.0 - smoothstep(SHRUB_FAR_REACH[kind] * 0.85, SHRUB_FAR_REACH[kind], dist)));
+		else fade = min(fade, nearFade);
+	}
 	if (fade <= 0.0) return;
 	instance.params = vec4(tree.params.xyz, fade);
 
@@ -119,10 +132,25 @@ void main() {
 	// behind a hill / ridge / other trees (last frame's depth): no mesh, no impostor. the shadow casters above stay
 	if (occluded(pos + vec3(0.0, treeHeight * 0.5, 0.0), treeHeight * 0.6)) return;
 
-	// the pack's LODs by distance (scaled by the tree's size: a sapling switches much sooner than a big oak)
+	// the pack's LODs by distance (scaled by the tree's size: a sapling switches much sooner than a big oak). each
+	// switch a dithered crossfade over the last LOD_BLEND of its distance, drawn as both there, the coarser one with
+	// the complementary pixels (a negative fade, treeFaded): the hard switch popped the whole crown at once, the
+	// near LODs' leaf clusters differ the most
 	float scale = clamp(treeHeight / 3.0, 0.35, 1.5) * (0.8 + 0.4 * jitter);
-	if (dist < LOD0_DISTANCE * scale) { append(mesh, instance); return; }
-	if (dist < LOD1_DISTANCE * scale) { append(uint(TREE_MESHES) + mesh, instance); return; }
+	float lod0 = LOD0_DISTANCE * scale, lod1 = LOD1_DISTANCE * scale;
+	float toLod1 = smoothstep(lod0 * (1.0 - LOD_BLEND), lod0, dist);
+	float toLod2 = smoothstep(lod1 * (1.0 - LOD_BLEND), lod1, dist);
+	if (toLod1 < 1.0) {
+		TreeInstance lodInstance = instance;
+		lodInstance.params.w = fade * (1.0 - toLod1);
+		append(mesh, lodInstance);
+	}
+	if (toLod1 > 0.0 && toLod2 < 1.0) {
+		TreeInstance lodInstance = instance;
+		lodInstance.params.w = toLod1 < 1.0 ? -fade * toLod1 : fade * (1.0 - toLod2);
+		append(uint(TREE_MESHES) + mesh, lodInstance);
+	}
+	if (toLod2 <= 0.0) return;
 
 	// mesh -> impostor: a dithered crossfade over a band instead of a hard switch, drawn as both inside it
 	// (by size too, like the LODs above: a small tree is a few pixels of tiny leaf triangles long before 70m, which
@@ -131,7 +159,8 @@ void main() {
 	float toImpostor = smoothstep(lod2 * (1.0 - IMPOSTOR_BLEND), lod2, dist);
 	if (toImpostor < 1.0) {
 		TreeInstance meshInstance = instance;
-		meshInstance.params.w = fade * (1.0 - toImpostor);
+		// (still coming in from LOD1: the complementary pixels to it)
+		meshInstance.params.w = toLod2 < 1.0 ? -fade * toLod2 : fade * (1.0 - toImpostor);
 		append(2u * uint(TREE_MESHES) + mesh, meshInstance);
 	}
 	if (toImpostor > 0.0) {

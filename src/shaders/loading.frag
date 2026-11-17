@@ -25,5 +25,6 @@ void main() {
 	float arc = (1.0 - smoothstep(0.0, 0.75, behind)) * smoothstep(1.0, 0.985, behind); // (the head's edge antialiased)
 
 	vec3 background = vec3(0.12);
+	if (pc.time < 0.0) ring = 0.0; // the seed screen: the background only, the UI goes on top
 	outColor = vec4(mix(background, vec3(0.85), ring * arc), 1.0);
 }

@@ -58,7 +58,7 @@ public:
 	void setCanopyMap(VkImageView canopy, VkSampler sampler);
 
 	bool m_Enabled = true;
-	uint32_t m_Rings = 4;	   // how far the grass reaches: 1 near (~27m), 2 + mid (~110m), 3 + far (~215m), 4 + wheat fields (~420m)
+	uint32_t m_Rings = 4;	   // how far the grass reaches: 1 near (~27m), 2 + mid (~110m), 3 + far (~290m), 4 + wheat fields (~420m)
 	bool m_CastShadows = true;
 private:
 	// init's writes of the heightmap + climate map into the sets that sample them
@@ -66,7 +66,7 @@ private:
 	VkDevice m_Device;
 	VmaAllocator m_Allocator;
 
-	static constexpr uint32_t RING_SIDE_NEAR = 140, RING_SIDE_MID = 200, RING_SIDE_FAR = 200, RING_SIDE_WHEAT = 200; // must match foliage.comp
+	static constexpr uint32_t RING_SIDE_NEAR = 140, RING_SIDE_MID = 200, RING_SIDE_FAR = 230, RING_SIDE_WHEAT = 200; // must match foliage.comp
 	static constexpr uint32_t MAX_INSTANCES = RING_SIDE_NEAR * RING_SIDE_NEAR + RING_SIDE_MID * RING_SIDE_MID + RING_SIDE_FAR * RING_SIDE_FAR
 										  + RING_SIDE_WHEAT * RING_SIDE_WHEAT; // foliagecommon.glsl
 	static constexpr uint32_t MAX_SHADOW_INSTANCES = 24000; // must match foliagecommon.glsl

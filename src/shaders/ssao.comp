@@ -12,7 +12,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform sampler2D depthBuffer;	 // full resolution
 layout(set = 0, binding = 1) uniform sampler2D gbufferNormal; // full resolution
-layout(rg8, set = 0, binding = 2) uniform writeonly image2D occlusion; // half resolution, r = AO (1 = open), g = lit air
+layout(rgba16f, set = 0, binding = 2) uniform writeonly image2D occlusion; // half resolution, r = AO (1 = open), g = lit air, b = the depth here (lighting.comp's denoise)
 
 #define SHADOW_SET 1
 #define SHADOW_PIXEL vec2(gl_GlobalInvocationID.xy)
@@ -42,10 +42,21 @@ vec3 worldPosition(vec2 uv, float depth) {
 float airSunlit(vec3 position, ivec2 pixel) {
 	if (pc.lightDir.w < 0.5 || pc.lightDir.y <= 0.0) return 1.0;
 	float jitter = interleavedGradientNoise(vec2(pixel) + 7.0 * pc.frame);
+	// (sampleShadowFast's lookup with one of the two keyframe sets per sample, dithered by how far the sun has gone
+	// between them, like sampleCascade: the 8 samples and the TAA average it into the crossfade, half the taps)
+	float strength = shadowData.blend.y;
+	if (shadowData.params.z < 0.5 || strength <= 0.0) return 1.0;
 	float lit = 0.0;
 	for (int i = 0; i < AIR_SAMPLES; i++) {
 		vec3 q = mix(pc.campos, position, (float(i) + jitter) / float(AIR_SAMPLES));
-		lit += sampleShadowFast(q, vec3(0.0, 1.0, 0.0), pc.lightDir.xyz, distance(q, pc.campos));
+		float viewDistance = distance(q, pc.campos);
+		if (viewDistance > shadowData.params.w) { lit += 1.0; continue; }
+		int cascade = viewDistance < shadowData.splits.x ? 0 : (viewDistance < shadowData.splits.y ? 1 : (viewDistance < shadowData.splits.z ? 2 : 3));
+		bool useB = shadowData.blend.x > fract(jitter * 7.13 + float(i) * 0.618034);
+		ShadowLookup s = shadowLookup(int(useB ? shadowData.blend.w : shadowData.blend.z), cascade, q, vec3(0.0, 1.0, 0.0), pc.lightDir.y);
+		float here = texture(shadowMap, vec4(s.coord.xy, s.layer, s.coord.z));
+		float fade = smoothstep(shadowData.params.w * 0.9, shadowData.params.w, viewDistance);
+		lit += mix(1.0, here, strength * (1.0 - fade));
 	}
 	return lit / float(AIR_SAMPLES);
 }
@@ -59,11 +70,14 @@ void main() {
 	ivec2 full = p * max(ivec2(round(fullSize / vec2(size))), ivec2(1)); // half resolution, or full (Ultra)
 	float depth = texelFetch(depthBuffer, full, 0).r;
 	vec2 uv = (vec2(full) + 0.5) / fullSize;
-	if (depth <= 0.0) { imageStore(occlusion, p, vec4(1.0)); return; } // sky: nothing
+	// b: the view distance here as lighting.comp measures it (0.02 / reversed depth), what its denoise weighs by. not
+	// the depth itself: far away it's ~1e-5, where a half float has almost no precision left
+	float viewZ = min(0.02 / max(depth, 1e-7), 60000.0);
+	if (depth <= 0.0) { imageStore(occlusion, p, vec4(1.0, 1.0, viewZ, 0.0)); return; } // sky: nothing
 
 	vec3 position = worldPosition(uv, depth);
 	float lit = airSunlit(position, p);
-	if (pc.intensity <= 0.0) { imageStore(occlusion, p, vec4(1.0, lit, 0.0, 0.0)); return; }
+	if (pc.intensity <= 0.0) { imageStore(occlusion, p, vec4(1.0, lit, viewZ, 0.0)); return; }
 
 	vec3 normal = normalize(texelFetch(gbufferNormal, full, 0).xyz);
 	float dist = distance(position, pc.campos);
@@ -86,5 +100,5 @@ void main() {
 		sum += max(vn - 0.01 * dist * 0.02, 0.0) / (vv + 1e-3) * max(1.0 - vv / (pc.radius * pc.radius), 0.0);
 	}
 	float ao = max(1.0 - sum * pc.radius * 2.0 * pc.intensity / float(SAMPLES), 0.0);
-	imageStore(occlusion, p, vec4(ao, lit, 0.0, 0.0));
+	imageStore(occlusion, p, vec4(ao, lit, viewZ, 0.0));
 }
