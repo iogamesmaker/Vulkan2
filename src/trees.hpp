@@ -15,7 +15,8 @@ constexpr uint32_t TREE_TEXTURES = TREE_PACKS * 4; // per pack: bark, bark norma
 // the imported trees (assets/trees, tools/import_trees.py: oak, maple, birch, pine and fir packs, each with
 // several trees and their LODs). a compute pass scatters them per biome around the camera every frame into per mesh
 // bins, and every bin is an indexed indirect draw: LOD0, LOD1, LOD2, then shadow casters near the camera (one bin
-// per mesh each), the impostors have their own draw. bushes are part of the ground cover (groundcover.hpp)
+// per mesh each), the impostors have their own draw. the big shrubs (lilacs, big green bushes, cacti) are trees too,
+// placed where the ground cover's pick puts them (trees_place.comp), the rest of the bushes are ground cover
 
 struct TreeVertex {
 	glm::vec4 positionWind;	  // xyz in tree space (size 1, see import_trees.py), w = how much it sways (0 at the base)
@@ -67,6 +68,9 @@ public:
 	bool m_Enabled = true;
 	float m_Density = 1.0f;
 	float m_DetailDistance = 1.0f; // multiplies LOD2_DISTANCE (the settings' tree detail distance)
+	// the ground cover's density (GroundCover::m_Density): the shrubs (lilacs, big bushes, cacti) come from its pick,
+	// trees_place.comp has to make it with the same density so they land exactly where the ground cover leaves them out
+	float m_GroundCoverDensity = 1.0f;
 private:
 	// init's writes of the heightmap + climate map into the sets that sample them
 	void setHeightmap(const AllocatedImage& heightmap, const AllocatedImage& climateMap, VkSampler heightmapSampler);
@@ -75,13 +79,15 @@ private:
 	static constexpr uint32_t MESHES = TREE_MESH_COUNT, LODS = TREE_LODS; // treecommon.glsl TREE_MESHES / TREE_LODS
 	static constexpr uint32_t BINS = MESHES * (LODS + 2); // indexed draws: LOD0, LOD1, LOD2, shadow, near shadow (impostors have their own commands)
 	// must match treecommon.glsl
-	static constexpr uint32_t MAX_PLACED = 1048576; // more than the placement circle holds (~994k cells), can't overflow
+	static constexpr uint32_t MAX_PLACED = 1835008; // more than the placement circle (~994k cells) + the shrub grids hold, can't overflow
 	// per mesh (sized for wall to wall pines seen from above, ~9 grown pine meshes share them), impostors are one
 	// pool for all meshes
 	static constexpr uint32_t CAPACITY[LODS + 2] = { 512, 2048, 8192, 4096, 1024 }; // LOD0, LOD1, LOD2, shadow, near shadow
 	static constexpr uint32_t CAPACITY_IMPOSTOR = MAX_PLACED;
 	static constexpr uint32_t MAX_INSTANCES = MESHES * (512 + 2048 + 8192 + 4096 + 1024) + CAPACITY_IMPOSTOR;
 	static constexpr uint32_t PLACE_GRID_SIDE = 1125;
+	static constexpr uint32_t SHRUB_GRID_SIDE = 434; // the shrubs' grid (treecommon.glsl SHRUB_GRID_SIDE), after the trees' threads
+	static constexpr uint32_t SHRUB_FAR_GRID_SIDE = 709; // their sparse far layer (SHRUB_FAR_GRID_SIDE), after those
 	static constexpr float PLACE_STEP = 25.0f; // world units the camera moves before trees get placed again
 	static constexpr uint32_t IMPOSTOR_CELL = 192;
 	static constexpr uint32_t IMPOSTOR_ELEVATIONS = 3;		// rows per mesh in the atlas, must match treecommon.glsl
@@ -106,7 +112,7 @@ private:
 	std::vector<VkDrawIndexedIndirectCommand> m_CommandTemplate; // instance counts reset to 0 every frame
 	std::vector<VkDrawIndirectCommand> m_ImpostorTemplate;
 	glm::vec2 m_LastPlaceCenter{0.0f};
-	float m_LastDensity = -1.0f;
+	float m_LastDensity = -1.0f, m_LastGroundCoverDensity = -1.0f;
 	bool m_ForcePlace = true;
 
 	AllocatedImage m_ImpostorAlbedo, m_ImpostorNormal; // a grid of meshes, a column of elevations each

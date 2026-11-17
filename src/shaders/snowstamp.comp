@@ -1,0 +1,53 @@
+#version 450
+// presses the player's prints and furrow into the deep snow's trail texture (snow.glsl, snowtrail.hpp), or clears the
+// strips coming into its window as it moves on. one dispatch per stamp over its box of texels, which wraps around the
+// toroidal texture (texel = world texel modulo its size). r = pressed down, g = the rim's reach: both only ever grow,
+// a print stays where it was pressed until the window leaves it behind
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba8, set = 0, binding = 0) uniform image2D trail; // (rgba8: a storage format every GPU has; 8 bits are ~1.4mm of snow)
+
+layout(push_constant) uniform constants {
+	ivec2 boxMin;	 // the box's first texel, modulo the texture's size
+	ivec2 boxSize;	 // texels
+	vec2 a;			 // the furrow's start (print: its centre), texels from boxMin
+	vec2 b;			 // the furrow's end (print: its heading, unit)
+	float halfWidth; // texels: the furrow's half width / the print's half width
+	float halfLength;// texels: the print's half length (0: a furrow)
+	float pressed;	 // how far it presses down, 0..1
+	int mode;		 // 0 stamp, 1 clear
+} pc;
+
+void main() {
+	ivec2 local = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(local, pc.boxSize))) return;
+	ivec2 size = imageSize(trail);
+	ivec2 texel = (pc.boxMin + local) % size;
+	if (pc.mode == 1) { imageStore(trail, texel, vec4(0.0)); return; }
+
+	vec2 p = vec2(local) + 0.5;
+	float inside; // 0 at the edge of the shape .. 1 well inside, in units of its size
+	if (pc.halfLength > 0.0) {
+		// a print: a sole, rounded at both ends and pinched a little at the arch (two overlapping circles, heel and
+		// ball of the foot, the ball wider); a plain ellipse in 4cm texels came out as a box
+		vec2 d = p - pc.a;
+		vec2 along = pc.b, across = vec2(-pc.b.y, pc.b.x);
+		vec2 q = vec2(dot(d, along), dot(d, across));
+		float heel = length(q - vec2(-pc.halfLength * 0.55, 0.0)) / (pc.halfWidth * 0.85);
+		float ball = length(q - vec2(pc.halfLength * 0.4, 0.0)) / pc.halfWidth;
+		inside = min(heel, ball);
+	} else {
+		// the furrow: a capsule from a to b
+		vec2 ab = pc.b - pc.a;
+		float t = clamp(dot(p - pc.a, ab) / max(dot(ab, ab), 1e-4), 0.0, 1.0);
+		inside = length(p - (pc.a + ab * t)) / pc.halfWidth;
+	}
+	if (inside > 2.2) return;
+	// soft walls: the furrow a rounded trough (sheer walls stood in black shade on one side), a print's edge a little
+	// firmer (a boot's sole), its floor flat
+	float press = pc.pressed * (1.0 - smoothstep(pc.halfLength > 0.0 ? 0.45 : 0.05, 1.0, inside));
+	float rim = 1.0 - smoothstep(0.9, 2.2, inside); // the snow pushed aside, out to twice its size
+	vec2 old = imageLoad(trail, texel).rg;
+	imageStore(trail, texel, vec4(max(old, vec2(press, rim)), 0.0, 0.0));
+}

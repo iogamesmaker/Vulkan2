@@ -2,9 +2,13 @@
 #ifndef FOLIAGE_COMMON_GLSL
 #define FOLIAGE_COMMON_GLSL
 
+#include "community.glsl"
+#include "noise.glsl"
+
 #define FOLIAGE_GRASS	0
 #define FOLIAGE_WHEAT	1
 #define FOLIAGE_FLOWERS 2 // a few grass blades as stems with daisies on top
+#define FOLIAGE_WILDOAT 3 // wild grass gone to seed in the meadows: the wheat's oat cards, shorter, sparser, still green
 // (3 was the undergrowth, leaf cards on forest floors: the ground cover has real ferns and bushes now)
 
 #define BLADES_PER_CLUMP 10 // BLADE_SEGMENTS quads each, the draw is BLADES_PER_CLUMP * BLADE_SEGMENTS * 6 vertices per instance
@@ -46,7 +50,7 @@ layout(push_constant) uniform constants {
 	float interaction; // how strongly blades bend away from the player, 0 when not walking
 } pc;
 
-#define MAX_FOLIAGE_INSTANCES 139600u		 // Foliage::MAX_INSTANCES
+#define MAX_FOLIAGE_INSTANCES 152500u		 // Foliage::MAX_INSTANCES
 #define MAX_FOLIAGE_SHADOW_INSTANCES 24000u // Foliage::MAX_SHADOW_INSTANCES
 #define MAX_FOLIAGE_NEAR_INSTANCES 19600u	 // Foliage::MAX_NEAR_INSTANCES, the near ring (140^2 cells)
 // the instance buffer: [what the camera sees, outer rings] [shadow casters] [what the camera sees, near ring]. the last
@@ -64,12 +68,6 @@ float hash11(float p) {
 	p *= p + 33.33;
 	p *= p + p;
 	return fract(p);
-}
-
-vec4 hash42(vec2 p) {
-	vec4 p4 = fract(vec4(p.xyxy) * vec4(0.1031, 0.1030, 0.0973, 0.1099));
-	p4 += dot(p4, p4.wzxy + 33.33);
-	return fract((p4.xxyz + p4.yzzw) * p4.zywx);
 }
 
 // terrain space position -> heightmap uv, matches the terrain patches (-size/2 .. size/2)

@@ -15,13 +15,15 @@ struct PrecipitationPushConstants {
 	glm::ivec4 counts; // x rain, y snow, z sand, w leaves
 	glm::vec4 view;	   // xy output size, z projScale
 	glm::vec3 sundir;
-	float pad = 0.0f;
+	float standingEye = 0.0f; // the ground under the camera + the eye height (the near-ground particles don't jump with you)
 	glm::vec4 motion{ 0.0f }; // xyz = the camera's velocity, world units / s
+	glm::ivec4 counts2{ 0 };  // the wind's: x motes (pollen, seed fluff, dust in the sun), y unused (0), z spindrift, w 0
 };
 
 class Precipitation {
 public:
 	static constexpr uint32_t MAX_RAIN = 60000, MAX_SNOW = 30000, MAX_SAND = 40000, MAX_LEAVES = 2500;
+	static constexpr uint32_t MAX_MOTES = 1600, MAX_DRIFT = 4500; // what the wind carries (counts2)
 
 	void init(Application* engine, VkFormat outputFormat, VkDescriptorSetLayout atmosphereLayout);
 	// after every resize: the depth buffer it tests against (SHADER_READ_ONLY when it draws)

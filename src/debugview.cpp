@@ -17,13 +17,7 @@ void DebugView::init(Application* engine, VkImageView fallback2D, VkImageView fa
 	m_FallbackArray = fallbackArray;
 	m_Fallback3D = fallback3D;
 
-	m_Output.imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
-	m_Output.imageExtent = { SIZE, SIZE, 1 };
-	VkImageCreateInfo imageCI = vkinit::image_create_info(m_Output.imageFormat, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, m_Output.imageExtent);
-	VmaAllocationCreateInfo allocCI{ .usage = VMA_MEMORY_USAGE_GPU_ONLY };
-	VK_CHECK(vmaCreateImage(m_Allocator, &imageCI, &allocCI, &m_Output.image, &m_Output.allocation, nullptr));
-	VkImageViewCreateInfo viewCI = vkinit::imageview_create_info(m_Output.imageFormat, m_Output.image, VK_IMAGE_ASPECT_COLOR_BIT);
-	VK_CHECK(vkCreateImageView(m_Device, &viewCI, nullptr, &m_Output.imageView));
+	m_Output = vkutil::create_image(m_Device, m_Allocator, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, { SIZE, SIZE, 1 });
 
 	VkSamplerCreateInfo samplerCI = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
 	samplerCI.addressModeU = samplerCI.addressModeV = samplerCI.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;

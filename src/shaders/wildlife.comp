@@ -1,0 +1,361 @@
+#version 450
+// birds, bats and butterflies (wildlife.hpp): where each one is this frame and last, which way it faces, how its wings
+// are, one thread each. wildlife.vert builds the shapes from this. no state: everything is a pure function of the
+// instance, the world cell it belongs to and the time
+//   - the birds: one flock (or none) per FLOCK_CELL square of the world, FLOCK_GRID^2 of them around the camera.
+//     what kind of flock (starlings, crows, geese in a V, buzzards circling in a thermal, pigeons) comes from the cell's
+//     hash and the land under it (more birds of prey over the mountains). each flies a slow loop around its cell, the
+//     birds of a flock swirl around its centre, flap and glide, bank into their turns
+//   - the butterflies: one (or none) per BUTTERFLY_CELL square near the camera, over the meadows where the flowers
+//     grow (the same communities as the grass' flowers), on fine days. the same cells hold bats at dusk
+
+layout(local_size_x = 64) in;
+
+#include "wildlifecommon.glsl"
+#include "biometools.glsl"
+#include "terrainheight.glsl"
+#include "community.glsl"
+
+layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 1) uniform sampler2D climateMap; // half resolution
+layout(std430, set = 0, binding = 2) writeonly buffer Critters { Critter critters[]; };
+
+// metres. a flock's loop reaches at most ~240m from its cell, the cells left out of the grid are >= 4 cells (1200m)
+// away: nothing pops in or out inside BIRD_FAR
+#define FLOCK_CELL 300.0
+#define BIRD_FAR 950.0
+#define BUTTERFLY_CELL 4.0
+
+#define SONGBIRD 0 // starlings: a dense, swirling flock of small dark birds
+#define CROW 1
+#define GOOSE 2	  // in a V, high up, flying a big loop
+#define BUZZARD 3 // circling in a thermal, wings held still
+#define PIGEON 4
+#define BAT 5 // dusk, low over the meadows and forest edges
+
+const float PI = 3.14159265;
+
+uint pcg(uint v) {
+	uint state = v * 747796405u + 2891336453u;
+	uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+	return (word >> 22u) ^ word;
+}
+vec4 cellHash(ivec2 cell, uint salt) {
+	uint h = pcg(uint(cell.x) * 1597334677u ^ pcg(uint(cell.y) ^ (salt * 3812015801u)));
+	uint a = pcg(h), b = pcg(a ^ 0x9e3779b9u), c = pcg(b ^ 0x85ebca6bu), d = pcg(c ^ 0xc2b2ae35u);
+	return vec4(uvec4(a, b, c, d) >> 8u) * (1.0 / 16777216.0);
+}
+
+vec2 heightmapUVAt(vec2 xz) {
+	return terrainUV(xz, pc.offset, pc.terrainSize, vec2(textureSize(heightmap, 0)));
+}
+// the ground under xz (terrain space), coarse: for the birds high above it
+float groundAt(vec2 xz) {
+	return textureLod(heightmap, heightmapUVAt(xz), 0.0).a * pc.factor - pc.factor * 0.5;
+}
+
+// ---- the birds
+
+struct Kind {
+	float span;		// wingspan, metres
+	float speed;	// metres / second
+	float radius;	// the flock's loop, metres
+	float flapHz;
+	float flapAmp;	// radians
+	float glide;	// how much of the time it glides instead of flapping, 0..1
+	float spread;	// metres, how far the birds of a flock swirl around its centre
+	float chord;	// wing depth relative to the span (broad buzzard wings, bat wings)
+	float neck;		// body length forward of the wings
+	vec2 altitude;	// metres above the ground, min / max
+	vec3 top, bottom; // linear albedo seen from above / below
+};
+
+Kind kindOf(int species) {
+	if (species == SONGBIRD) return Kind(0.38, 13.0, 110.0, 12.0, 0.95, 0.25, 9.0, 1.0, 1.0, vec2(30.0, 90.0), vec3(0.03, 0.03, 0.035), vec3(0.07, 0.065, 0.06));
+	if (species == CROW) return Kind(0.95, 10.0, 140.0, 4.0, 0.7, 0.3, 24.0, 1.1, 1.0, vec2(40.0, 130.0), vec3(0.015, 0.015, 0.018), vec3(0.02, 0.02, 0.024));
+	if (species == GOOSE) return Kind(1.6, 17.0, 220.0, 3.0, 0.55, 0.1, 0.0, 0.9, 1.7, vec2(150.0, 280.0), vec3(0.2, 0.18, 0.15), vec3(0.45, 0.43, 0.39));
+	if (species == BUZZARD) return Kind(1.3, 9.0, 45.0, 2.5, 0.5, 0.92, 0.0, 1.35, 0.9, vec2(90.0, 220.0), vec3(0.12, 0.08, 0.05), vec3(0.4, 0.34, 0.26));
+	if (species == PIGEON) return Kind(0.68, 15.0, 130.0, 6.0, 0.75, 0.2, 10.0, 1.0, 0.9, vec2(35.0, 110.0), vec3(0.26, 0.27, 0.31), vec3(0.42, 0.43, 0.46));
+	return Kind(0.3, 6.0, 9.0, 9.0, 1.0, 0.0, 0.0, 1.6, 0.6, vec2(4.0, 11.0), vec3(0.03, 0.025, 0.02), vec3(0.045, 0.035, 0.03)); // BAT
+}
+
+// a slow wandering loop around (0, 0), metres, about `speed` fast
+vec2 loopPath(float t, float radius, float speed, vec4 h) {
+	float w = speed / (1.4 * radius) * (h.x < 0.5 ? 1.0 : -1.0);
+	return radius * vec2(0.7 * sin(w * t + h.y * 6.28) + 0.3 * sin(2.3 * w * t + h.z * 6.28),
+						 0.7 * cos(0.83 * w * t + h.y * 6.28) + 0.3 * sin(1.9 * w * t + h.w * 6.28));
+}
+
+struct Flyer {
+	int species;
+	vec2 anchor; // terrain space xz
+	vec4 flock;	 // the flock's hash
+	vec4 own;	 // the bird's own
+	int member;
+	float altitude; // metres above the ground
+	float highGround; // terrain space y: the highest ground the flock's loop crosses (-1e9 = none)
+};
+
+// where the bird is at time t (terrain space)
+vec3 flyerPosition(Flyer f, Kind k, float t) {
+	float u = pc.unitsPerMeter;
+	vec2 centre;		 // metres from the anchor
+	vec3 offset = vec3(0.0); // metres from the flock's centre
+	if (f.species == BUZZARD) {
+		// a thermal drifting slowly, every bird circling in it on its own radius, height and direction
+		centre = loopPath(t, 150.0, 1.5, f.flock);
+		float r = mix(22.0, 55.0, f.own.x);
+		float a = (f.own.y < 0.3 ? -1.0 : 1.0) * k.speed / r * t + f.own.z * 6.28;
+		offset = vec3(r * cos(a), (f.own.w - 0.5) * 50.0 + 8.0 * sin(t * 0.05 + f.own.x * 6.0), r * sin(a));
+	} else if (f.species == GOOSE) {
+		// a V behind the leader, turned along the flight direction
+		centre = loopPath(t, k.radius, k.speed, f.flock);
+		vec2 heading = normalize(loopPath(t + 0.5, k.radius, k.speed, f.flock) - loopPath(t - 0.5, k.radius, k.speed, f.flock) + 1e-5);
+		float rank = float((f.member + 1) / 2), side = (f.member % 2 == 0) ? -1.0 : 1.0;
+		vec2 v = vec2(side * rank * 2.6, -rank * 2.3) + 0.4 * vec2(sin(t * 0.7 + f.own.x * 6.0), sin(t * 0.5 + f.own.y * 6.0));
+		vec2 right = vec2(heading.y, -heading.x);
+		offset = vec3(right * v.x + heading * v.y, 0.0).xzy + vec3(0.0, rank * 0.3 * sin(t * 0.3 + f.own.z * 6.0), 0.0);
+	} else {
+		// a loose cloud swirling around the flock's centre (bats: alone, darting)
+		centre = loopPath(t, k.radius, k.speed, f.flock);
+		vec4 w = mix(vec4(0.25), vec4(0.7), f.own) * (k.speed / 12.0);
+		offset = k.spread * vec3(sin(w.x * t + f.own.y * 6.28) * 0.7 + 0.3 * sin(w.w * 2.1 * t + f.own.x * 6.28),
+								 0.35 * sin(w.y * t + f.own.z * 6.28),
+								 cos(w.z * t + f.own.w * 6.28) * 0.7 + 0.3 * sin(w.y * 1.7 * t + f.own.z * 3.0));
+		// the whole flock breathes, tighter / looser
+		offset *= 0.75 + 0.25 * sin(t * 0.21 + f.flock.w * 6.28);
+		if (f.species == BAT) offset += vec3(1.5 * sin(t * 3.1 + f.own.x * 6.0), 0.8 * sin(t * 4.3 + f.own.y * 6.0), 1.5 * sin(t * 2.7 + f.own.z * 6.0));
+	}
+	vec2 centreXZ = f.anchor + centre * u;
+	vec2 xz = centreXZ + offset.xz * u;
+	// following the land under the flock, but never below half its height over the highest ground around (out over
+	// a valley it stays up at the ridges' level: seen from a hill it's against the sky, not lost against the slopes),
+	// and never closer to the ground under the bird than half its height
+	float y = max(groundAt(centreXZ), f.highGround) + (f.altitude + offset.y) * u;
+	y = max(y, max(groundAt(xz), f.highGround) + f.altitude * 0.5 * u);
+	return vec3(xz.x, y, xz.y);
+}
+
+// the wings' two joint angles (radians, up is positive): flapping, or held out gliding
+vec2 wingAngles(Flyer f, Kind k, float t) {
+	float s = 0.5 + 0.25 * (sin(t * 0.53 + f.own.x * 31.0) + sin(t * 0.29 + f.own.w * 13.0));
+	float glide = smoothstep(1.0 - k.glide - 0.08, 1.0 - k.glide + 0.08, s);
+	float phase = 2.0 * PI * k.flapHz * mix(0.9, 1.1, f.own.y) * t + f.own.z * 6.28;
+	float flap = k.flapAmp * (1.0 - glide);
+	// (gliding: held out straight, a buzzard's in a shallow V)
+	return vec2(0.1 + flap * sin(phase) + glide * (f.species == BUZZARD ? 0.12 : 0.04), flap * 0.6 * sin(phase - 0.9));
+}
+
+// local (x right, y up, z forward) -> terrain space, the bird flying along velocity and banked by its sideways acceleration
+mat3 flightFrame(vec3 velocity, vec3 acceleration) {
+	vec3 forward = normalize(velocity + vec3(0.0, 0.0, 1e-6));
+	vec3 lean = vec3(acceleration.x, 0.0, acceleration.z) / 9.81;
+	lean *= min(1.0, 1.2 / max(length(lean), 1e-4));
+	vec3 up = normalize(vec3(0.0, 1.0, 0.0) + lean);
+	vec3 right = normalize(cross(up, forward) + vec3(1e-6, 0.0, 0.0));
+	up = cross(forward, right);
+	return mat3(right, up, forward);
+}
+
+void hide(uint instance) {
+	critters[instance].position = vec4(0.0); // scale 0: wildlife.vert skips it
+}
+
+// a bird's (or bat's) Critter: where it is, its flight frame, its wings
+void placeBird(uint instance, Flyer f) {
+	Kind k = kindOf(f.species);
+	float u = pc.unitsPerMeter;
+	const float dt = 0.15;
+	vec3 p0 = flyerPosition(f, k, pc.time - dt), p1 = flyerPosition(f, k, pc.time), p2 = flyerPosition(f, k, pc.time + dt);
+	vec3 previous = flyerPosition(f, k, pc.previousTime);
+	mat3 frame = flightFrame(p2 - p0, (p2 - 2.0 * p1 + p0) / (dt * dt * u));
+
+	// no smaller than ~4 pixels across, and its wings and body no thinner than ~2 (a real one at 500m is a sub pixel
+	// speck that misses most pixels, the TAA then averages it away), shrinking away towards the edge of the flocks' reach
+	float dist = distance(p1, pc.campos);
+	float pixels = k.span * u * pc.projScale / max(dist, 1e-3);
+	float spanBoost = clamp(4.0 / pixels, 1.0, 6.0);
+	float thick = clamp(2.0 / (0.17 * k.chord * pixels * spanBoost), 1.0, 6.0);
+	float scale = k.span * u * spanBoost * (1.0 - smoothstep(BIRD_FAR * 0.8, BIRD_FAR, dist / u));
+	if (scale <= 0.0) { hide(instance); return; }
+
+	Critter c;
+	c.position = vec4(p1, scale);
+	c.previous = vec4(previous, float(CRITTER_BIRD)); // (last frame's orientation is close enough to this one's)
+	c.right = vec4(frame[0], k.chord);
+	c.up = vec4(frame[1], k.neck);
+	c.wings = vec4(wingAngles(f, k, pc.time), wingAngles(f, k, pc.previousTime));
+	c.colour = vec4(k.top * mix(0.85, 1.15, f.own.w), 0.0);
+	c.colour2 = vec4(k.bottom * mix(0.85, 1.15, f.own.w), thick);
+	critters[instance] = c;
+}
+
+// how active each kind is now: by day, at dusk, in the weather
+float daylight() { return smoothstep(-0.02, 0.12, pc.sunHeight); }
+float dusk() { return smoothstep(-0.25, -0.06, pc.sunHeight) * (1.0 - smoothstep(0.02, 0.1, pc.sunHeight)); }
+
+void birds(uint instance) {
+	uint flock = instance / BIRDS_PER_FLOCK, member = instance % BIRDS_PER_FLOCK;
+	float u = pc.unitsPerMeter;
+	float cell = FLOCK_CELL * u;
+	vec2 camWorld = pc.campos.xz + pc.offsetWorld;
+	ivec2 cellIndex = ivec2(floor(camWorld / cell)) + ivec2(flock % FLOCK_GRID, flock / FLOCK_GRID) - FLOCK_GRID / 2;
+	vec4 h = cellHash(cellIndex, 1u);
+	// most cells have a flock (the cheap test first)
+	if (h.w > 0.75) { hide(instance); return; }
+	vec2 anchor = (vec2(cellIndex) + 0.2 + h.xy * 0.6) * cell - pc.offsetWorld;
+
+	// what lives here: more birds of prey over the mountains, geese over the open lowlands, little over desert / snow
+	vec2 uv = heightmapUVAt(anchor);
+	vec3 climate = textureLod(climateMap, uv, 0.0).rgb;
+	float mountains = mountainWeight(climate);
+	float weights[BIOME_COUNT];
+	groundCover(climate, true, weights);
+	float barren = weights[BIOME_DESERT] + weights[BIOME_SNOW];
+	float roll = h.z;
+	int species;
+	if (roll < mix(0.12, 0.45, mountains)) species = BUZZARD;
+	else if (roll < mix(0.35, 0.7, mountains)) species = CROW;
+	else if (roll < mix(0.65, 0.85, mountains)) species = SONGBIRD;
+	else if (roll < mix(0.82, 0.95, mountains)) species = PIGEON;
+	else species = GOOSE;
+
+	// none in a storm or at night (the birds of prey only when the sun is high enough for thermals)
+	float activity = daylight() * pc.calm * (species == BUZZARD ? smoothstep(0.12, 0.35, pc.sunHeight) : 1.0) * (1.0 - barren * 0.5);
+	Kind k = kindOf(species);
+	vec4 own = cellHash(cellIndex * 31 + ivec2(int(member), 7), 2u);
+	const int minCount[6] = int[](14, 3, 7, 1, 6, 1), maxCount[6] = int[](24, 9, 15, 3, 14, 1);
+	int count = int(mix(float(minCount[species]), float(maxCount[species]) + 0.99, fract(h.z * 7.31 + h.w * 3.7)));
+	// (one by one as the day starts / ends or the weather turns)
+	if (int(member) >= count || own.x * 0.9 + 0.05 > activity) { hide(instance); return; }
+
+	Flyer f;
+	f.species = species;
+	f.anchor = anchor;
+	f.flock = cellHash(cellIndex, 3u);
+	f.own = own;
+	f.member = int(member);
+	f.altitude = mix(k.altitude.x, k.altitude.y, fract(h.y * 5.13 + h.x * 2.9));
+	// the highest ground in its territory (the loop's reach around the anchor), minus a bit: over a lone peak they still
+	// dip into the valleys around it
+	float reach = (species == BUZZARD ? 200.0 : k.radius + k.spread) * u;
+	float high = groundAt(anchor);
+	for (int i = 0; i < 12; i++) {
+		float a = float(i) * (PI / 6.0);
+		high = max(high, groundAt(anchor + vec2(cos(a), sin(a)) * reach * (i % 2 == 0 ? 1.0 : 0.55)));
+	}
+	f.highGround = high - 40.0 * u;
+	placeBird(instance, f);
+}
+
+// ---- the butterflies (and bats at dusk), near the camera
+
+// fluttering between the flowers around its spot, metres from it (y = above the ground)
+vec3 butterflyPath(vec4 h, float t) {
+	float w = 0.5 + h.w * 0.5;
+	vec2 xz = vec2(1.8 * sin(w * t + h.x * 6.28) + 0.7 * sin(2.7 * w * t + h.y * 6.28),
+				   1.8 * cos(0.8 * w * t + h.z * 6.28) + 0.7 * sin(2.1 * w * t + h.w * 6.28));
+	float y = 0.55 + 0.75 * (0.5 + 0.5 * sin(0.9 * t + h.y * 6.28)) + 0.07 * sin(11.0 * t + h.x * 6.28);
+	return vec3(xz.x, y, xz.y);
+}
+
+void butterflies(uint index) {
+	uint instance = uint(BIRDS) + index;
+	float u = pc.unitsPerMeter;
+	float cell = BUTTERFLY_CELL * u;
+	vec2 camWorld = pc.campos.xz + pc.offsetWorld;
+	ivec2 cellIndex = ivec2(floor(camWorld / cell)) + ivec2(index % BUTTERFLY_GRID, index / BUTTERFLY_GRID) - BUTTERFLY_GRID / 2;
+	vec4 h = cellHash(cellIndex, 7u);
+	vec2 world = (vec2(cellIndex) + 0.15 + h.xy * 0.7) * cell;
+	vec2 anchor = world - pc.offsetWorld;
+	// shrinking away towards the edge of the grid instead of popping
+	float edge = 1.0 - smoothstep(BUTTERFLY_CELL * (BUTTERFLY_GRID / 2 - 3), BUTTERFLY_CELL * (BUTTERFLY_GRID / 2 - 1), distance(anchor, pc.campos.xz) / u);
+	if (edge <= 0.0) { hide(instance); return; }
+
+	// where: open meadows with flowers (the grass' flower communities, foliage.comp), not in the woods, on rock or snow
+	vec2 uv = heightmapUVAt(anchor);
+	vec4 data = vec4(textureLod(climateMap, uv, 0.0).rgb, textureLod(heightmap, uv, 0.0).a);
+	float weights[BIOME_COUNT];
+	groundCover(data.rgb, true, weights);
+	vec3 trees = treeChances(data, 0.0, 1.0);
+	float forest = smoothstep(0.08, 0.45, trees.x + trees.y);
+	// (where grass grows, foliage.comp: the plains, the cooler taiga's open ground, alpine meadows, a few over the fields)
+	float mountains = mountainWeight(data.rgb);
+	float meadow = clamp(weights[BIOME_PLAINS] + weights[BIOME_WHEAT] * 0.4 + weights[BIOME_TAIGA] * 0.6, 0.0, 1.0) * (1.0 - mountains * 0.4);
+	// and what the ground there actually is: the climate alone said "meadow" up the mountains' rock and snow (it's the
+	// lowland climate under them). nothing over stone, snow or scree (foliage.comp's own test, its grass stops there),
+	// and thinning out above the treeline: a few over the alpine meadows, none higher up
+	vec2 texel = 1.0 / vec2(textureSize(heightmap, 0));
+	float hR = textureLod(heightmap, uv + vec2(texel.x, 0.0), 0.0).a, hL = textureLod(heightmap, uv - vec2(texel.x, 0.0), 0.0).a;
+	float hT = textureLod(heightmap, uv + vec2(0.0, texel.y), 0.0).a, hB = textureLod(heightmap, uv - vec2(0.0, texel.y), 0.0).a;
+	float slopeScale = heightmapSlopeScale(1.0 / texel.x);
+	float slope = (hR - hL) * (hR - hL) * slopeScale * slopeScale + (hT - hB) * (hT - hB) * slopeScale * slopeScale;
+	GroundBareness ground = groundBareness(uv, data, slope);
+	float treeline = mix(0.42, 0.56, data.r);
+	float alpine = mountains * smoothstep(treeline, treeline + 0.1, data.a);
+	float habitat = (1.0 - smoothstep(0.05, 0.2, ground.stone)) * (1.0 - smoothstep(0.0, 0.3, ground.bare)) * (1.0 - alpine * 0.85);
+	meadow *= habitat;
+	float flowers = community(world, 31.0);
+	float butterfly = 0.6 * meadow * (1.0 - forest * 0.85) * clamp(0.15 + flowers * 0.5, 0.0, 1.3) * daylight() * smoothstep(0.1, 0.3, pc.sunHeight) * pc.calm * pc.calm;
+	float bat = 0.06 * dusk() * pc.calm * (0.3 + forest) * (1.0 - weights[BIOME_DESERT] - weights[BIOME_SNOW]) * habitat;
+
+	if (h.z >= butterfly) {
+		if (fract(h.w * 5.31 + h.x) >= bat) { hide(instance); return; }
+		// a bat: the bird code, flying its own darting loop around this spot
+		Flyer f;
+		f.species = BAT;
+		f.anchor = anchor;
+		f.flock = cellHash(cellIndex, 9u);
+		f.own = cellHash(cellIndex, 10u);
+		f.member = 0;
+		f.altitude = mix(4.0, 11.0, f.own.x);
+		f.highGround = -1e9;
+		placeBird(instance, f);
+		return;
+	}
+
+	float t = pc.time, tp = pc.previousTime;
+	vec3 pathNow = butterflyPath(h, t), pathBefore = butterflyPath(h, tp);
+	vec3 heading3 = butterflyPath(h, t + 0.1) - butterflyPath(h, t - 0.1);
+	vec2 heading = normalize(heading3.xz + 1e-5);
+	const float spacingFree = 0.0; // (the full surface, the mesh up close is near enough to it)
+	vec2 xzNow = anchor + pathNow.xz * u, xzBefore = anchor + pathBefore.xz * u;
+	float distXZ = distance(xzNow, pc.campos.xz);
+	vec3 now = vec3(xzNow.x, terrainHeight(heightmap, heightmapUVAt(xzNow), distXZ, spacingFree, pc.factor, pc.terrainSize) + pathNow.y * u, xzNow.y);
+	vec3 before = vec3(xzBefore.x, terrainHeight(heightmap, heightmapUVAt(xzBefore), distXZ, spacingFree, pc.factor, pc.terrainSize) + pathBefore.y * u, xzBefore.y);
+
+	// the wings clap up and down fast, now and then held open gliding
+	float glide = smoothstep(0.75, 0.9, 0.5 + 0.25 * (sin(t * 0.9 + h.x * 20.0) + sin(t * 1.7 + h.y * 9.0)));
+	float glideBefore = smoothstep(0.75, 0.9, 0.5 + 0.25 * (sin(tp * 0.9 + h.x * 20.0) + sin(tp * 1.7 + h.y * 9.0)));
+	float flapNow = mix(0.1 + 1.25 * (0.5 + 0.5 * sin(2.0 * PI * 8.5 * t + h.z * 6.28)), 0.15, glide);
+	float flapBefore = mix(0.1 + 1.25 * (0.5 + 0.5 * sin(2.0 * PI * 8.5 * tp + h.z * 6.28)), 0.15, glideBefore);
+
+	float dist = distance(now, pc.campos);
+	float pixels = 0.06 * u * pc.projScale / max(dist, 1e-3);
+	float scale = 1.7 * u * clamp(2.0 / pixels, 1.0, 2.0) * edge; // (a bit bigger than life, ~10cm)
+	vec3 forward = normalize(vec3(heading.x, 0.25, heading.y)); // the body tilted up a little
+	vec3 right = normalize(cross(vec3(0.0, 1.0, 0.0), forward));
+
+	// the species: each meadow has mostly one or two of its own (~150m regions), a few others among them
+	float regional = clamp((latticeNoise(world / 25.0 + 71.0) - 0.2) / 0.6, 0.0, 0.999);
+	float pick = fract(h.w * 7.77) < 0.45 ? regional : fract(h.w * 13.1);
+	int pattern = clamp(int(pick * 5.0), 0, 4);
+	const vec3 colour[5] = vec3[](vec3(0.85, 0.85, 0.8), vec3(0.9, 0.8, 0.22), vec3(0.85, 0.33, 0.05), vec3(0.22, 0.38, 0.95), vec3(0.55, 0.06, 0.04));
+	const vec3 colour2[5] = vec3[](vec3(0.04, 0.04, 0.04), vec3(0.85, 0.4, 0.05), vec3(0.03, 0.025, 0.02), vec3(0.9, 0.9, 0.88), vec3(0.15, 0.22, 0.65));
+
+	Critter c;
+	c.position = vec4(now, scale);
+	c.previous = vec4(before, float(CRITTER_BUTTERFLY));
+	c.right = vec4(right, 1.0);
+	c.up = vec4(cross(forward, right), 1.0);
+	c.wings = vec4(flapNow, 0.0, flapBefore, 0.0);
+	c.colour = vec4(colour[pattern], float(pattern));
+	c.colour2 = vec4(colour2[pattern], 1.0);
+	critters[instance] = c;
+}
+
+void main() {
+	uint instance = gl_GlobalInvocationID.x;
+	if (instance < uint(BIRDS)) birds(instance);
+	else if (instance < uint(BIRDS + BUTTERFLY_GRID * BUTTERFLY_GRID)) butterflies(instance - uint(BIRDS));
+}

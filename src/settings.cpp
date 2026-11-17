@@ -13,6 +13,10 @@ void Application::updateWeather(float dt) {
 		fixedFromEnv = true;
 		WeatherType type;
 		if(const char* env = std::getenv("VULKAN2_WEATHER"); env && Weather::fromName(env, type)) { m_Weather.m_Auto = false; m_Weather.forceType(type); }
+		// a new sequence of weather every launch (the captures keep the fixed seed: they repeat)
+		if(!std::getenv("VULKAN2_SHOT")) m_Weather.reseed(std::random_device{}() ^ static_cast<uint32_t>(SDL_GetPerformanceCounter()));
+		// VULKAN2_WIND_SCALE=<x>: the weather's wind times this (the wind's particles and sway in the captures)
+		if(const char* env = std::getenv("VULKAN2_WIND_SCALE")) m_Weather.m_WindScale = static_cast<float>(std::atof(env));
 		// VULKAN2_LIGHTNING=1: a strike held at its brightest, =dx,dz: placed that far from the camera (km)
 		if(const char* env = std::getenv("VULKAN2_LIGHTNING")) {
 			m_Weather.m_HoldStrike = true;
@@ -24,10 +28,12 @@ void Application::updateWeather(float dt) {
 	}
 	float terrainSize = static_cast<float>(m_WorldSize) * m_TerrainScale;
 	glm::vec2 p = worldgen::noisePosition(glm::vec2(m_Camera.position.x, m_Camera.position.z), terrainSize, static_cast<float>(m_HeightmapSize) / terrainSize, static_cast<float>(m_HeightmapSize));
+	p += glm::vec2(m_HeightmapPC.seedOffset) * 4.0f / static_cast<float>(m_HeightmapSize); // the world seed (heightmap.comp's worldPos)
 	// where the camera is in the clouds' space (the cloud map's): the weather field drifts with them
 	const AtmosphereUBO& atmosphere = m_AtmosphereManager.m_AtmosphereData;
 	glm::vec2 cameraKm = (glm::vec2(m_CameraPos.x, m_CameraPos.z) + glm::vec2(m_MapOffset) * (m_WorldSize * m_TerrainScale / static_cast<float>(m_HeightmapSize))) * atmosphere.worldScale;
-	m_Weather.update(dt, worldgen::climateAt(p), cameraKm, m_AtmosphereManager.getCloudWind());
+	m_ClimateHere = worldgen::climateAt(p);
+	m_Weather.update(dt, m_ClimateHere, cameraKm, m_AtmosphereManager.getCloudWind());
 	m_AtmosphereManager.setWeather(m_Weather.state());
 }
 
@@ -35,9 +41,16 @@ void Application::updateWeather(float dt) {
 void Application::drawPrecipitation(VkCommandBuffer cmd) {
 	const WeatherState& w = m_Weather.state();
 	PrecipitationPushConstants pc{};
-	pc.counts = glm::ivec4(static_cast<int>(Precipitation::MAX_RAIN * std::min(w.rain, 1.5f) / 1.5f),
-						   static_cast<int>(Precipitation::MAX_SNOW * std::min(w.snow, 1.5f) / 1.5f),
-						   static_cast<int>(Precipitation::MAX_SAND * std::min(w.sand, 1.5f) / 1.5f), 0);
+	// everything here is in a box around the camera: what belongs near the ground fades out as you fly up (leaves
+	// swirled around you high over the forest, above the clouds even). metres above the ground under you
+	float metresUp = std::max(m_Camera.position.y - m_Camera.groundHeight, 0.0f) * m_Camera.metersPerUnit;
+	float nearGround = 1.0f - glm::smoothstep(6.0f, 20.0f, metresUp);	   // sand, spindrift
+	float inCrowns = 1.0f - glm::smoothstep(25.0f, 45.0f, metresUp);	   // leaves: up to about the tree tops
+	float inAir = 1.0f - glm::smoothstep(30.0f, 60.0f, metresUp);		   // motes
+	float underClouds = 1.0f - glm::smoothstep(0.85f, 1.0f, metresUp * 0.001f / std::max(w.cloudBase, 0.1f)); // rain, snow: below the cloud base
+	pc.counts = glm::ivec4(static_cast<int>(Precipitation::MAX_RAIN * std::min(w.rain, 1.5f) / 1.5f * underClouds),
+						   static_cast<int>(Precipitation::MAX_SNOW * std::min(w.snow, 1.5f) / 1.5f * underClouds),
+						   static_cast<int>(Precipitation::MAX_SAND * std::min(w.sand, 1.5f) / 1.5f * (1.0f - glm::smoothstep(40.0f, 120.0f, metresUp))), 0);
 	// leaves blowing about: only in a real forest (most of the tree cells around you hold a tree), more of them the
 	// harder it blows, none in the snow or a downpour (they're stuck to the wet ground). eased: the probe's tree
 	// count jumps as you walk from cell to cell
@@ -46,9 +59,37 @@ void Application::drawPrecipitation(VkCommandBuffer cmd) {
 		float target = glm::smoothstep(0.3f, 0.65f, m_Collision.treeCover());
 		forest += (target - forest) * std::min(m_Deltatime * 1.0f, 1.0f);
 		float amount = forest * glm::mix(0.15f, 1.0f, std::min(w.wind * 1.4f, 1.0f)) * (1.0f - std::min(w.snow * 2.0f, 1.0f)) * (1.0f - std::min(w.rain * 0.6f, 0.8f));
-		pc.counts.w = static_cast<int>(Precipitation::MAX_LEAVES * amount);
+		pc.counts.w = static_cast<int>(Precipitation::MAX_LEAVES * amount * inCrowns);
 	}
-	if(pc.counts.x + pc.counts.y + pc.counts.z + pc.counts.w == 0) return;
+	// what the wind carries, by the ground under you (biometools.glsl's groundCover thresholds on the climate):
+	//   motes: pollen, seed fluff and dust drifting in the air, glinting against the sun: fair days, wherever things
+	//     grow (more in the meadows than the woods), more of them in a breeze
+	//   spindrift: snow streaming off the ground in the snow climate (or a fresh snow cover) when it blows
+	{
+		glm::vec3 c = m_ClimateHere;
+		float desert = glm::smoothstep(0.62f, 0.72f, c.x) * glm::smoothstep(0.45f, 0.33f, c.y);
+		float snowClimate = glm::smoothstep(0.22f, 0.12f, c.x);
+		float dry = std::max(desert, glm::smoothstep(0.45f, 0.25f, c.y) * (1.0f - snowClimate));
+		float daylight = glm::smoothstep(-0.02f, 0.15f, m_SunDir.y);
+		float falling = std::min(std::max(w.rain, w.snow) * 2.0f, 1.0f);
+		// (the climate is the lowland's even up a mountain: by the ground's height there, fewer pollen and seeds above
+		// the treeline, none over the snow or a fresh snow cover. biometools.glsl's treeline / snowline)
+		float groundLevel = m_Camera.groundHeight / m_TerrainPC.factor + 0.5f; // 0..1, the heightmap's
+		float mountains = glm::smoothstep(0.55f, 0.72f, c.z);
+		float treeline = glm::mix(0.42f, 0.56f, c.x), snowline = glm::mix(0.44f, 0.68f, c.x) + desert * 0.6f;
+		float alpine = mountains * glm::smoothstep(treeline, treeline + 0.1f, groundLevel);
+		float snowGround = std::max(mountains * glm::smoothstep(snowline - 0.03f, snowline + 0.04f, groundLevel), std::min(w.snowCover * 2.0f, 1.0f));
+		float motes = daylight * (1.0f - falling) * (1.0f - snowClimate) * (1.0f - desert * 0.7f) * (1.0f - std::min(w.sand * 2.0f, 1.0f))
+					* (1.0f - alpine * 0.75f) * (1.0f - snowGround)
+					* glm::mix(0.35f, 1.0f, std::min(w.wind * 1.6f, 1.0f)) * (1.0f - 0.5f * glm::smoothstep(0.3f, 0.65f, m_Collision.treeCover()));
+		float drift = std::max(snowClimate, std::min(w.snowCover * 1.5f, 1.0f)) * glm::smoothstep(0.25f, 0.75f, w.wind) * (1.0f - std::min(w.rain * 3.0f, 1.0f));
+		// and sand creeping low along the desert floor when it blows (the sandstorm's streaks, a fraction of them)
+		float creep = desert * glm::smoothstep(0.3f, 0.8f, w.wind) * (1.0f - std::min(w.rain * 3.0f, 1.0f));
+		pc.counts.z = std::max(pc.counts.z, static_cast<int>(Precipitation::MAX_SAND * 0.12f * creep * nearGround));
+		pc.counts2 = glm::ivec4(static_cast<int>(Precipitation::MAX_MOTES * motes * inAir), 0,
+								static_cast<int>(Precipitation::MAX_DRIFT * drift * nearGround), 0);
+	}
+	if(pc.counts.x + pc.counts.y + pc.counts.z + pc.counts.w + pc.counts2.x + pc.counts2.y + pc.counts2.z == 0) return;
 
 	auto barrier = [&](VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
 		VkMemoryBarrier2 b{ .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
@@ -70,6 +111,7 @@ void Application::drawPrecipitation(VkCommandBuffer cmd) {
 	float projScale = static_cast<float>(m_SwapchainExtent.height) * 0.5f * std::abs(m_UnjitteredProjection[1][1]);
 	pc.view = glm::vec4(static_cast<float>(m_SwapchainExtent.width), static_cast<float>(m_SwapchainExtent.height), projScale, 0.0f);
 	pc.sundir = m_SunDir;
+	pc.standingEye = m_Camera.groundHeight + m_Camera.eyeHeight / m_Camera.metersPerUnit;
 	// the camera's velocity (continuous world space, smoothed; a teleport or a map shift isn't motion)
 	static glm::vec3 lastPosition = m_Camera.position, velocity(0.0f);
 	glm::vec3 moved = (m_Camera.position - lastPosition) / std::max(m_Deltatime, 1e-4f);
@@ -168,6 +210,7 @@ void Application::drawSettings() {
 	check("Cliff texturing (triplanar)", &s.triplanar);
 	ImGui::SameLine();
 	check("Detail bumps", &s.detailBumps);
+	check("Deep snow + footprints", &s.deepSnow);
 	ImGui::SameLine();
 	check("Anti-tiling layer", &s.macroLayer);
 	ImGui::SameLine();
@@ -193,13 +236,14 @@ void Application::drawSettings() {
 
 	ImGui::SeparatorText("Vegetation");
 	check("Grass + flowers", &s.foliage);
-	const char* ranges[] = { "Near (~27m)", "Medium (~110m)", "Far (~215m, wheat ~420m)" };
+	const char* ranges[] = { "Near (~27m)", "Medium (~110m)", "Far (~290m, wheat ~420m)" };
 	changed |= ImGui::Combo("Grass distance", &s.grassRange, ranges, 3);
 	check("Trees", &s.trees);
 	slider("Tree detail distance", &s.treeDetailDistance, 0.5f, 1.5f);
 	ImGui::SetItemTooltip("How far trees stay full meshes before they turn into flat impostors. Forests cost much less closer in");
 	check("Rocks + logs", &s.props);
 	check("Ground cover", &s.groundCover);
+	check("Birds + butterflies", &s.wildlife);
 
 	ImGui::SeparatorText("Lighting + post");
 	check("SSAO", &s.ssao);
@@ -308,6 +352,7 @@ void Application::applySettings() {
 	m_Trees.m_DetailDistance = s.treeDetailDistance;
 	m_Props.m_Enabled = s.props;
 	m_GroundCover.m_Enabled = s.groundCover;
+	m_Wildlife.m_Enabled = s.wildlife;
 	if(canopyChanged && m_Device && m_SkyVisibilityReady) {
 		{
 			std::lock_guard<std::mutex> lock(m_QueueMutex);

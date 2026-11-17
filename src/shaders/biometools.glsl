@@ -1,6 +1,7 @@
 #ifndef BIOME_TOOLS_GLSL
 #define BIOME_TOOLS_GLSL
 #include "heightmapscale.glsl"
+#include "noise.glsl"
 // biomes come from three slowly varying climate fields, written into the heightmap's rgb by heightmap.comp:
 //   r = temperature, g = moisture, b = ruggedness (all 0..1)
 // every biome is a soft region in that space, so the weights (and with them the heights and textures) blend
@@ -98,59 +99,23 @@ vec3 treeChances(vec4 data, float treelineJitter, float density) {
 
 // ---- where the ground shows bare stone / snow (the scatter passes: foliage.comp, groundcover.comp)
 
-// terrain.frag's rock / snow line noise, the same function at the same heightmap coordinate
-float lineHash(vec2 p) {
-	// exact integer math on the lattice point: the float hash (fract chains) is chaotic, the compiler fusing its
-	// multiply-adds differently for the cells either side of a border gave different values for the same point,
-	// hard seams in the noise (the snow edge's stripes), worse the further from the world's origin
-	uvec2 q = uvec2(ivec2(p)) * uvec2(1597334673u, 3812015801u);
-	uint n = (q.x ^ q.y) * 1597334673u;
-	return float(n >> 8) * (1.0 / 16777216.0);
-}
-
-float lineValueNoise(vec2 p) {
-	vec2 i = floor(p);
-	vec2 f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(lineHash(i), lineHash(i + vec2(1.0, 0.0)), u.x),
-			   mix(lineHash(i + vec2(0.0, 1.0)), lineHash(i + vec2(1.0, 1.0)), u.x), u.y);
-}
-
 struct GroundBareness {
 	float stone;   // bare rock (cliffs, above the rock line): the rock texture shows from ~0.2
 	float snowCap; // snow cover
 	float bare;	   // both, as one "nothing grows here" measure (stone counts 4x, it shows early)
 };
 
-// terrain.frag's own rock and snow masks, noise included, so plants grow right up to where the ground turns to
-// rock / snow and never on the stone. (a fixed slope cut left grass texture with nothing on it; the masks without
-// the noise put plants on the rock wherever the noise had pulled the rock line down.) data = climate rgb + height,
-// slope = the squared heightmap gradient (terrain.frag's measure)
-// the forest floor's cover (0..1): where the leaf litter / needles show (terrainmaterial.glsl) and, with exactly the
-// same function, where the grass thins out (foliage.comp). they used to differ: the grass went from the raw canopy
-// map and left bare blocky holes where the litter didn't come in. canopy: horizonao.comp's map (g = the crowns, its
-// texels are ~18m: four taps half a texel apart soften the bilinear blocks), worldXZ: continuous world units
-float forestFloorHash(vec2 p) {
-	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-	p3 += dot(p3, p3.yzx + 33.33);
-	return fract((p3.x + p3.y) * p3.z);
-}
-float forestFloorNoise(vec2 x) {
-	vec2 i = floor(x), f = fract(x);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(forestFloorHash(i), forestFloorHash(i + vec2(1, 0)), u.x), mix(forestFloorHash(i + vec2(0, 1)), forestFloorHash(i + vec2(1, 1)), u.x), u.y);
-}
 float forestFloorCover(sampler2D canopy, vec2 uv, vec2 worldXZ) {
 	vec2 t = 0.5 / vec2(textureSize(canopy, 0));
 	float crowns = 0.25 * (textureLod(canopy, uv + t, 0.0).g + textureLod(canopy, uv - t, 0.0).g
 						 + textureLod(canopy, uv + vec2(t.x, -t.y), 0.0).g + textureLod(canopy, uv + vec2(-t.x, t.y), 0.0).g);
-	float patches = forestFloorNoise(worldXZ * 0.12 + 29.0) * 0.45 + forestFloorNoise(worldXZ * 0.4 + 13.0) * 0.35 + forestFloorNoise(worldXZ * 1.7 - 3.0) * 0.2;
+	float patches = fractNoise(worldXZ * 0.12 + 29.0) * 0.45 + fractNoise(worldXZ * 0.4 + 13.0) * 0.35 + fractNoise(worldXZ * 1.7 - 3.0) * 0.2;
 	return smoothstep(0.36, 0.56, crowns + (patches - 0.5) * 0.4);
 }
 
 GroundBareness groundBareness(vec2 uv, vec4 data, float slope) {
 	float mountains = mountainWeight(data.rgb);
-	float lineNoise = lineValueNoise(uv * 180.0) * 0.65 + lineValueNoise(uv * 900.0) * 0.35;
+	float lineNoise = latticeNoise(uv * 180.0) * 0.65 + latticeNoise(uv * 900.0) * 0.35;
 	// bare rock on cliffs: in the lowlands only where it's really steep (the erosion's small scarps on the grassy
 	// hills were all rock streaks), the mountains from a gentler slope
 	float steepRock = smoothstep(mix(0.6, 0.35, mountains), mix(1.0, 0.75, mountains), slope + (lineNoise - 0.5) * 0.3);

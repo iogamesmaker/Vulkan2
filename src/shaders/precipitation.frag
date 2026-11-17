@@ -33,8 +33,15 @@ void main() {
 		shape = 1.0 - smoothstep(0.85, 1.0, length(vec2(p.x / edge, p.y)));
 		if (shape < 0.5) discard;
 		shape = 1.0;
-	} else if (inKind == KIND_SNOW) {
+	} else if (inKind == KIND_SNOW || inKind == KIND_MOTE) {
 		shape = 1.0 - smoothstep(0.55, 1.0, length(inUV * 2.0 - 1.0));
+	} else if (inKind == KIND_DRIFT) {
+		// a soft, lumpy wisp: radial falloff broken up by a few lobes, thinner at the edges
+		vec2 p = inUV * 2.0 - 1.0;
+		float a = atan(p.y, p.x), s = inLeaf.x;
+		float lobes = 0.75 + 0.12 * sin(a * 3.0 + s) + 0.08 * sin(a * 5.0 - s * 1.7) + 0.05 * sin(a * 9.0 + s * 2.3);
+		shape = 1.0 - smoothstep(0.0, lobes, length(p));
+		shape = shape * (1.5 - 0.5 * shape); // soft at the edge, but not just a dot in the middle
 	} else {
 		float across = 1.0 - abs(inUV.x * 2.0 - 1.0);
 		shape = across * smoothstep(0.0, 0.35, inUV.y); // brightest at the head, fading along the tail
@@ -61,6 +68,19 @@ void main() {
 		opacity = 1.0;
 	}
 
+	if (inKind == KIND_MOTE) {
+		// pale specks lit mostly by the sun shining through them: bright against the light (forward scattering), they
+		// twinkle as they turn
+		// (lit like the snow at least: dimmer, they showed as dark specks against the sunlit grass)
+		float glint = 1.0 + 4.0 * pow(inLeaf.y, 10.0) + 1.5 * pow(inLeaf.y, 3.0);
+		color = vec3(1.0, 0.97, 0.88) * (zenith * 1.0 + sun * 0.12 * glint) * mix(0.65, 1.0, inLeaf.x);
+		opacity = 0.9;
+	} else if (inKind == KIND_DRIFT) {
+		// soft against what's behind: thins out where it meets the ground (reversed z: the scene's depth over its own)
+		float soft = clamp((gl_FragCoord.z / max(scene, 1e-7) - 1.0) * 4.0, 0.0, 1.0);
+		color = vec3(0.86, 0.9, 0.97) * light * 0.34; // (a touch bluer than the snow on the ground)
+		opacity = 0.5 * soft;
+	}
 	float a = shape * opacity * inAlpha;
 	outColor = vec4(color, a);
 }

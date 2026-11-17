@@ -20,6 +20,7 @@ struct GraphicsSettings {
 	bool cliffNoTile = true;  // cliffs' rock texture varied per patch instead of a visible 7m repeat (~1ms on a screen of cliffs)
 	float pomDistance = 35.0f; // metres, 0 = off
 	int pomSteps = 12;
+	bool deepSnow = true;	 // the mountains' snow knee deep on the tessellated ground, footprints where you walk (snow.glsl)
 
 	// shadows
 	bool shadows = true;
@@ -32,11 +33,12 @@ struct GraphicsSettings {
 
 	// vegetation + props
 	bool foliage = true;
-	int grassRange = 2; // 0 = ~27m, 1 = ~110m, 2 = ~215m
+	int grassRange = 2; // 0 = ~27m, 1 = ~110m, 2 = ~290m
 	bool trees = true;
 	float treeDetailDistance = 1.0f; // how far trees are full meshes before they turn into impostors (x 70 units)
 	bool props = true;
 	bool groundCover = true;		 // ferns, bushes, weeds, dead branches
+	bool wildlife = true;			 // birds, bats, butterflies (wildlife.hpp)
 
 	// lighting extras + post
 	bool ssao = true;
@@ -139,9 +141,9 @@ inline GraphicsSettings qualityPreset(Quality q) {
 inline GraphicsSettings everythingOff(GraphicsSettings s) {
 	s.taa = false; s.sharpening = 0.0f;
 	s.triplanar = false; s.detailBumps = false; s.macroLayer = false; s.cliffNoTile = false;
-	s.pomDistance = 0.0f;
+	s.pomDistance = 0.0f; s.deepSnow = false;
 	s.shadows = false; s.softShadows = false; s.shadowSmoothing = 0; s.grassShadows = false; s.cloudShadows = false;
-	s.foliage = false; s.trees = false; s.props = false; s.groundCover = false;
+	s.foliage = false; s.trees = false; s.props = false; s.groundCover = false; s.wildlife = false;
 	s.ssao = false; s.contactShadows = false; s.bounceLight = false; s.bloom = 0.0f;
 	s.clouds = false; s.aerialPerspective = false;
 	s.volumetricFog = false;

@@ -15,7 +15,9 @@ void Bloom::init(Application* engine) {
 	samplerCI.magFilter = VK_FILTER_LINEAR;
 	samplerCI.minFilter = VK_FILTER_LINEAR;
 	samplerCI.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST; // every lookup names its mip
-	samplerCI.addressModeU = samplerCI.addressModeV = samplerCI.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	// mirrored, not clamped: clamping hands every tap past the border the outermost row / column, so its weight
+	// roughly doubles per mip and any flicker there (new, history-less TAA pixels while turning) glows at the edges
+	samplerCI.addressModeU = samplerCI.addressModeV = samplerCI.addressModeW = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
 	samplerCI.maxLod = static_cast<float>(MIPS);
 	VK_CHECK(vkCreateSampler(m_Device, &samplerCI, nullptr, &m_Sampler));
 

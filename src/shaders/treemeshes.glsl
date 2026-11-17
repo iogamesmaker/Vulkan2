@@ -5,20 +5,35 @@
 // the imported tree packs (assets/trees): every mesh's natural size in world units (TreeInstance posScale.w,
 // what fits into the impostor card) and its trunk's radius relative to that. per pack its meshes are
 // consecutive, the young ones first
-#define TREE_PACKS 5
-#define TREE_MESHES 58
+#define TREE_PACKS 8
+#define TREE_MESHES 89
 #define PACK_GROUP_CONIFER 0
 #define PACK_GROUP_BROADLEAF 1
+#define PACK_GROUP_SHRUB 2 // the shrubs and small trees that were ground cover (trees_place.comp)
 #define PACK_PINE 0
 #define PACK_FIR 1
 #define PACK_OAK 2
 #define PACK_MAPLE 3
 #define PACK_BIRCH 4
-const uint PACK_GROUP[TREE_PACKS] = uint[](0u, 0u, 1u, 1u, 1u);
-const uint PACK_FIRST[TREE_PACKS] = uint[](0u, 15u, 24u, 41u, 53u);
-const uint PACK_COUNT[TREE_PACKS] = uint[](15u, 9u, 17u, 12u, 5u);
-const uint PACK_YOUNG[TREE_PACKS] = uint[](6u, 3u, 6u, 6u, 0u); // the first this many of each pack
-const float MESH_SIZE[TREE_MESHES] = float[](0.2485, 0.2409, 0.2355, 0.6717, 0.6242, 0.7176, 2.6061, 2.4987, 3.0197, 4.9095, 4.8748, 4.6415, 2.1489, 1.9803, 1.6155, 0.5039, 0.4259, 0.5129, 2.8682, 2.8486, 2.4772, 1.3638, 1.2825, 2.0345, 0.1762, 0.1787, 0.1836, 0.8739, 0.8353, 0.8265, 3.1058, 3.1446, 3.1281, 3.5954, 4.6439, 4.1994, 4.5254, 4.2869, 1.6240, 1.6000, 1.9578, 0.5942, 0.5548, 0.5338, 1.0710, 0.9856, 0.9261, 3.6479, 3.7120, 2.8453, 2.0429, 2.0838, 1.5879, 1.5366, 1.5322, 1.5885, 1.8443, 2.3344);
-const float MESH_TRUNK[TREE_MESHES] = float[](0.0099, 0.0087, 0.0089, 0.0122, 0.0135, 0.0123, 0.0150, 0.0160, 0.0097, 0.0089, 0.0090, 0.0106, 0.0054, 0.0089, 0.0078, 0.0079, 0.0144, 0.0116, 0.0225, 0.0199, 0.0270, 0.0148, 0.0294, 0.0485, 0.0086, 0.0088, 0.0078, 0.0100, 0.0087, 0.0045, 0.0233, 0.0219, 0.0204, 0.0093, 0.0110, 0.0142, 0.0090, 0.0205, 0.0103, 0.0122, 0.0111, 0.0075, 0.0105, 0.0097, 0.0114, 0.0131, 0.0127, 0.0139, 0.0133, 0.0172, 0.0104, 0.0124, 0.0147, 0.0115, 0.0082, 0.0375, 0.0887, 0.0148);
+#define PACK_LILAC 5
+#define PACK_BUSH 6
+#define PACK_CACTUS 7
+const uint PACK_GROUP[TREE_PACKS] = uint[](0u, 0u, 1u, 1u, 1u, 2u, 2u, 2u);
+const uint PACK_FIRST[TREE_PACKS] = uint[](0u, 15u, 24u, 41u, 53u, 58u, 70u, 75u);
+const uint PACK_COUNT[TREE_PACKS] = uint[](15u, 9u, 17u, 12u, 5u, 12u, 5u, 14u);
+const uint PACK_YOUNG[TREE_PACKS] = uint[](6u, 3u, 6u, 6u, 0u, 0u, 0u, 0u); // the first this many of each pack
+const float MESH_SIZE[TREE_MESHES] = float[](0.2485, 0.2409, 0.2355, 0.6717, 0.6242, 0.7176, 2.6061, 2.4987, 3.0197, 4.9095, 4.8748, 4.6415, 2.1489, 1.9803, 1.6155, 0.5039, 0.4259, 0.5129, 2.8682, 2.8486, 2.4772, 1.3638, 1.2825, 2.0345, 0.1762, 0.1787, 0.1836, 0.8739, 0.8353, 0.8265, 3.1058, 3.1446, 3.1281, 3.5954, 4.6439, 4.1994, 4.5254, 4.2869, 1.6240, 1.6000, 1.9578, 0.5942, 0.5548, 0.5338, 1.0710, 0.9856, 0.9261, 3.6479, 3.7120, 2.8453, 2.0429, 2.0838, 1.5879, 1.5366, 1.5322, 1.5885, 1.8443, 2.3344, 1.1084, 1.0515, 1.0387, 0.7820, 0.7451, 0.6989, 0.6522, 0.4072, 0.5391, 0.3222, 0.3442, 0.4128, 0.2856, 0.2533, 0.2512, 0.2936, 0.2559, 0.7241, 0.7373, 0.6246, 0.7226, 0.4799, 0.5496, 0.3711, 0.4213, 0.4938, 0.2456, 0.2848, 0.1771, 0.2842, 0.1667);
+const float MESH_TRUNK[TREE_MESHES] = float[](0.0099, 0.0087, 0.0089, 0.0122, 0.0135, 0.0123, 0.0150, 0.0160, 0.0097, 0.0089, 0.0090, 0.0106, 0.0054, 0.0089, 0.0078, 0.0079, 0.0144, 0.0116, 0.0225, 0.0199, 0.0270, 0.0148, 0.0294, 0.0485, 0.0086, 0.0088, 0.0078, 0.0100, 0.0087, 0.0045, 0.0233, 0.0219, 0.0204, 0.0093, 0.0110, 0.0142, 0.0090, 0.0205, 0.0103, 0.0122, 0.0111, 0.0075, 0.0105, 0.0097, 0.0114, 0.0131, 0.0127, 0.0139, 0.0133, 0.0172, 0.0104, 0.0124, 0.0147, 0.0115, 0.0082, 0.0375, 0.0887, 0.0148, 0.0060, 0.0071, 0.0067, 0.0279, 0.0257, 0.0253, 0.0264, 0.0725, 0.0566, 0.0048, 0.0045, 0.0064, 0.0294, 0.0351, 0.0205, 0.0207, 0.0244, 0.0124, 0.0137, 0.0160, 0.0108, 0.0183, 0.0176, 0.0231, 0.0198, 0.0093, 0.0263, 0.0268, 0.0363, 0.0188, 0.0229);
+
+// the shrub packs' kinds (SHRUB_PACKS in the script), each a consecutive range of meshes
+#define SHRUB_KINDS 5
+#define FIRST_SHRUB_MESH 58u // the meshes from here on are shrubs
+#define SHRUB_LILAC_TREE 0
+#define SHRUB_LILAC_BUSH 1
+#define SHRUB_LILAC_SAPLING 2
+#define SHRUB_BUSH_BIG 3
+#define SHRUB_CACTUS 4
+const uint SHRUB_FIRST[SHRUB_KINDS] = uint[](58u, 61u, 67u, 70u, 75u);
+const uint SHRUB_COUNT[SHRUB_KINDS] = uint[](3u, 6u, 3u, 5u, 14u);
 
 #endif

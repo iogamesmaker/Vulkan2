@@ -1,6 +1,7 @@
 #include "props.hpp"
 #include "application.hpp"
 #include "gbuffer.hpp"
+#include "meshload.hpp"
 #include <filesystem>
 #include <fastgltf/glm_element_traits.hpp>
 #include <fastgltf/core.hpp>
@@ -36,18 +37,6 @@ namespace {
 		{ "tree_stump_02", nullptr, Kind::Stump, 4000, 600 },
 	};
 
-	glm::mat3 nodeRotationScale(const fastgltf::Node& node) {
-		// the rotation / scale only: the set's rocks are laid out side by side, each one goes to its own origin
-		glm::mat4 m(1.0f);
-		if(const auto* trs = std::get_if<fastgltf::TRS>(&node.transform)) {
-			glm::quat q(trs->rotation[3], trs->rotation[0], trs->rotation[1], trs->rotation[2]); // w, x, y, z
-			m = glm::mat4_cast(q) * glm::scale(glm::mat4(1.0f), glm::vec3(trs->scale[0], trs->scale[1], trs->scale[2]));
-		} else if(const auto* mat = std::get_if<fastgltf::math::fmat4x4>(&node.transform)) {
-			for(int c = 0; c < 3; c++)
-				for(int r = 0; r < 3; r++) m[c][r] = (*mat)[c][r];
-		}
-		return glm::mat3(m);
-	}
 }
 
 // one scan into mesh space, the space the placement and the collision shapes in propplacement.glsl are measured in:
@@ -58,18 +47,9 @@ namespace {
 bool Props::loadMesh(uint32_t mesh, std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
 	const PropFile& file = PROP_FILES[mesh];
 	std::filesystem::path path = util::getpath(std::string("assets\\props\\") + file.folder + "\\" + file.folder + "_1k.gltf");
-	auto data = fastgltf::GltfDataBuffer::FromPath(path);
-	if(data.error() != fastgltf::Error::None) {
-		fmt::print("props: couldn't read {}\n", path.string());
-		return false;
-	}
-	fastgltf::Parser parser{};
-	auto asset = parser.loadGltf(data.get(), path.parent_path(), fastgltf::Options::LoadExternalBuffers);
-	if(!asset) {
-		fmt::print("props: couldn't load {}\n", path.string());
-		return false;
-	}
-	fastgltf::Asset& gltf = asset.get();
+	std::optional<fastgltf::Asset> asset = meshload::loadGltf(path, "props");
+	if(!asset) return false;
+	fastgltf::Asset& gltf = *asset;
 	const fastgltf::Node* node = nullptr;
 	for(const fastgltf::Node& n : gltf.nodes)
 		if(n.meshIndex && (!file.node || n.name == file.node)) { node = &n; break; }
@@ -78,23 +58,18 @@ bool Props::loadMesh(uint32_t mesh, std::vector<Vertex>& vertices, std::vector<u
 		return false;
 	}
 
-	glm::mat3 transform = nodeRotationScale(*node);
+	glm::mat3 transform = meshload::nodeRotationScale(*node);
+	meshload::Primitive prim;
 	for(const fastgltf::Primitive& p : gltf.meshes[*node->meshIndex].primitives) {
-		if(!p.indicesAccessor || p.findAttribute("POSITION") == p.attributes.end() || p.findAttribute("NORMAL") == p.attributes.end()
-		   || p.findAttribute("TEXCOORD_0") == p.attributes.end()) continue;
+		if(!meshload::readPrimitive(gltf, p, transform, prim)) continue;
 		size_t base = vertices.size();
-		const fastgltf::Accessor& positions = gltf.accessors[p.findAttribute("POSITION")->accessorIndex];
-		vertices.resize(base + positions.count);
-		fastgltf::iterateAccessorWithIndex<glm::vec3>(gltf, positions, [&](glm::vec3 v, size_t i) {
-			vertices[base + i].positionMaterial = glm::vec4(transform * v, static_cast<float>(mesh));
-		});
-		fastgltf::iterateAccessorWithIndex<glm::vec3>(gltf, gltf.accessors[p.findAttribute("NORMAL")->accessorIndex], [&](glm::vec3 v, size_t i) {
-			vertices[base + i].normalAO = glm::vec4(glm::normalize(transform * v), 1.0f);
-		});
-		fastgltf::iterateAccessorWithIndex<glm::vec2>(gltf, gltf.accessors[p.findAttribute("TEXCOORD_0")->accessorIndex], [&](glm::vec2 v, size_t i) {
-			vertices[base + i].uv = glm::vec4(v, 0.0f, 0.0f);
-		});
-		fastgltf::iterateAccessor<uint32_t>(gltf, gltf.accessors[*p.indicesAccessor], [&](uint32_t index) { indices.push_back(index + static_cast<uint32_t>(base)); });
+		vertices.resize(base + prim.positions.size());
+		for(size_t i = 0; i < prim.positions.size(); i++) {
+			vertices[base + i].positionMaterial = glm::vec4(prim.positions[i], static_cast<float>(mesh));
+			vertices[base + i].normalAO = glm::vec4(prim.normals[i], 1.0f);
+			vertices[base + i].uv = glm::vec4(prim.uvs[i], 0.0f, 0.0f);
+		}
+		for(uint32_t index : prim.indices) indices.push_back(index + static_cast<uint32_t>(base));
 	}
 	if(vertices.empty()) return false;
 
@@ -235,17 +210,17 @@ void Props::init(Application* engine, TextureLoader& textures, const AllocatedIm
 		} else bakeShape(mesh, meshVertices, meshIndices);
 		// the LODs from the scan: the simplifier keeps the uv seams and the silhouette. LOD0 within a small error
 		// (it stops early on simple shapes), LOD1 down to its budget whatever it costs (it's small on screen)
-		// LOD2: a fifth of LOD1, for the ones only a few pixels across (props.comp), sloppy if it has to
+		// LOD2: a fifth of LOD1, for the ones only a few pixels across (props.comp), small loose bits dropped if it has to
+		// (never the sloppy simplifier: it welds the scan on a grid)
 		for(uint32_t lod = 0; lod < 3; lod++) {
 			size_t target = std::min(meshIndices.size(), (lod == 0 ? file.lod0 : (lod == 1 ? file.lod1 : std::max<size_t>(file.lod1 / 5, 40))) * 3);
 			std::vector<uint32_t> simplified(meshIndices.size());
-			float error = 0.0f;
-			simplified.resize(meshopt_simplify(simplified.data(), meshIndices.data(), meshIndices.size(), &meshVertices[0].positionMaterial.x,
-											   meshVertices.size(), sizeof(Vertex), target, lod == 0 ? 0.01f : 1.0f, 0, &error));
-			if(simplified.size() > target * 2) // couldn't get anywhere near the budget within the error: drop whatever it takes
-				simplified.resize(meshopt_simplifySloppy(simplified.data(), meshIndices.data(), meshIndices.size(), &meshVertices[0].positionMaterial.x,
-														 meshVertices.size(), sizeof(Vertex), target, 1.0f, &error));
+			// (the error allowed doubles while it's far over budget: LOD0 up to 0.08, the others up to all of it; then
+			// across the uv seams too, the boulder scan's uv charts make seams everywhere)
+			simplified.resize(meshload::simplifyCareful(simplified.data(), meshIndices.data(), meshIndices.size(), &meshVertices[0].positionMaterial.x,
+														meshVertices.size(), sizeof(Vertex), target, lod == 0 ? 0.01f : 0.05f, lod == 0 ? 0.08f : 1.0f, false));
 			meshopt_optimizeVertexCache(simplified.data(), simplified.data(), simplified.size(), meshVertices.size());
+			meshopt_optimizeOverdraw(simplified.data(), simplified.data(), simplified.size(), &meshVertices[0].positionMaterial.x, meshVertices.size(), sizeof(Vertex), 1.05f);
 			Mesh& m = m_Meshes[mesh][lod];
 			m.firstIndex = static_cast<uint32_t>(indices.size());
 			m.indexCount = static_cast<uint32_t>(simplified.size());

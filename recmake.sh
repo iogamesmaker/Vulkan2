@@ -4,6 +4,7 @@ set -e
 
 rm -rf build
 cmake -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_MAKE_PROGRAM=/ucrt64/bin/ninja.exe \
   -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_C_COMPILER=clang \

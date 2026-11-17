@@ -59,13 +59,16 @@ void main() {
 
 	int type = int(inst.params.y) % 8;
 	float ring = float(int(inst.params.y) / 8);
+	// wild oats are the wheat's cards, fewer and shorter (foliage.frag colours them)
+	bool wildOat = type == FOLIAGE_WILDOAT;
+	if (wildOat) type = FOLIAGE_WHEAT;
 	float seed = inst.params.z;
 	float size = inst.posScale.w;
 
 	// wheat fields only use cards 0..2 (a whole plant each, grain included): the rest goes outside the clip volume
 	// and gets clipped away before rasterisation
 	// (the two far rings: 3 plants per clump, they're wider)
-	if (type == FOLIAGE_WHEAT && blade >= (ring > 1.5 ? 3 : 6)) {
+	if (type == FOLIAGE_WHEAT && blade >= (ring > 1.5 || wildOat ? 3 : 6)) {
 		gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 		outPosition = vec3(0.0); outPrevPosition = vec3(0.0); outUV = vec2(0.0); outNormal = vec3(0.0, 1.0, 0.0); outHeight = 0.0;
 		outKind = 1; outSeed = 0.0; outMoisture = 0.0; outGust = 0.0;
@@ -78,7 +81,9 @@ void main() {
 	if (type == FOLIAGE_GRASS || (type == FOLIAGE_FLOWERS && blade >= 6)) {
 		float clumpDistance = distance(inst.posScale.xyz, pc.campos);
 		// continuous: the last blade shrinks away instead of popping out as you walk (bladeLOD scales its height)
-		float blades = ring > 0.5 ? 3.0 : mix(float(BLADES_PER_CLUMP), 3.0, smoothstep(1.0, 4.5, clumpDistance));
+		// (6 out at the near ring's edge and 5 in the mid ring: down to 3 the meadow went bare 10-30m out, the ground
+		// showing between the clumps as flat colour)
+		float blades = ring > 1.5 ? 3.0 : (ring > 0.5 ? 5.0 : mix(float(BLADES_PER_CLUMP), 6.0, smoothstep(1.5, 4.5, clumpDistance)));
 		bladeLOD = clamp(blades - float(blade), 0.0, 1.0);
 		if (bladeLOD <= 0.0) {
 			gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -106,7 +111,7 @@ void main() {
 	vec4 r = hash42(vec2(seed, float(stalk) * 7.31));
 
 	// spread the blades around the clump centre, the far ring has fewer, bigger clumps so they spread more
-	float clumpRadius = (ring > 2.5 ? 0.4 : (ring > 1.5 ? 0.2 : (ring > 0.5 ? 0.1 : 0.05))) * size; // 10 blades spread a bit wider to cover the ground
+	float clumpRadius = (ring > 2.5 ? 0.4 : (ring > 1.5 ? 0.23 :(ring > 0.5 ? 0.1 : 0.05))) * size; // 10 blades spread a bit wider to cover the ground
 	float angle = r.y * 6.2831853;
 	vec3 root = inst.posScale.xyz + vec3(cos(angle), 0.0, sin(angle)) * sqrt(r.z) * clumpRadius;
 
@@ -116,6 +121,7 @@ void main() {
 		rect = OATS[min(int(r.x * 3.0), 2)];
 		// ~1m, the short plant (a top without its lower stalk) is drawn shorter so all the grain sits about as high
 		height = 0.17 * (0.85 + 0.3 * r.z) * size * (rect.w - rect.y) / 0.84;
+		if (wildOat) height *= mix(0.55, 0.8, r.w); // ~60-90cm, just over the grass
 		width = height * (rect.z - rect.x) / (rect.w - rect.y);
 	} else if (type == FOLIAGE_FLOWERS) {
 		height = 0.06 * (0.7 + 0.6 * r.z) * size; // stems ~30-50cm, a bit above the grass
@@ -128,14 +134,16 @@ void main() {
 		height *= bladeLOD;
 	}
 	// thin blades disappear at a distance, fatter cards keep the coverage (whole plant cards are wide already)
-	if (ring > 0.5 && type != FOLIAGE_WHEAT) width *= ring > 1.5 ? 5.0 : 2.5;
+	// (the far ring's cells are 0.42 / 0.36 of what these were tuned for, ~1.36x fewer clumps per area: as much wider)
+	if (ring > 0.5 && type != FOLIAGE_WHEAT) width *= ring > 1.5 ? 6.8 : 2.5;
 	// wheat: the outer rings' plants are much further apart (cells 2.8x, 5.5x, 11x the near ring's), wider cards keep
 	// the field closed (it went bare a few metres out). only 3 of the 6 plants in the two far rings, wider still
-	if (type == FOLIAGE_WHEAT) width *= ring > 2.5 ? 9.0 : (ring > 1.5 ? 5.0 : (ring > 0.5 ? 2.4 : 1.0));
+	if (type == FOLIAGE_WHEAT) width *= ring > 2.5 ? 9.0 : (ring > 1.5 ? 5.8 :(ring > 0.5 ? 2.4 : 1.0));
 
 	// keep blades at least a couple of pixels wide so they don't shimmer away
 	float dist = distance(root, pc.campos);
-	width = max(width, dist * 0.003);
+	// (a bit more in the far ring, where this floor is what sets the width: its clumps are further apart)
+	width = max(width, dist * (ring > 1.5 && ring < 2.5 ? 0.0036 : 0.003));
 
 	// wind: the gusts rolling over the meadow (windfield.glsl) flatten it in waves, a little per blade flutter on
 	// top (harder in a gust), bends the tips most
@@ -219,7 +227,7 @@ void main() {
 	outUV = vec2(mix(rect.x, rect.z, corner.x + 0.5), mix(rect.w, rect.y, t));
 	outNormal = normal;
 	outHeight = flowerHead ? 1.0 : t;
-	outKind = flowerHead ? 3 : (type == FOLIAGE_WHEAT ? 1 : 0);
+	outKind = flowerHead ? 3 : (wildOat ? 4 : (type == FOLIAGE_WHEAT ? 1 : 0));
 	outSeed = r.w;
 	outMoisture = moisture;
 

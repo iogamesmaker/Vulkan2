@@ -23,6 +23,8 @@ layout(location = 3) out vec2 outUV;
 layout(location = 4) out float outHeight;
 layout(location = 5) flat out int outSpecies;
 layout(location = 6) flat out float outTint;
+layout(location = 7) flat out int outTexture; // the texture pair (uv.z)
+layout(location = 8) out vec3 outCrown;		  // from the plant's crown centre out to this vertex (the bushes' leaf normals)
 
 // gust: the gust over the plant (windfield.glsl), the same that rolls over the grass
 vec3 windOffset(float time, float gust, vec3 local, float height, float phase, float amount) {
@@ -55,6 +57,10 @@ void main() {
 	outUV = inUV.xy;
 	outHeight = height;
 	outSpecies = int(inPositionSpecies.w + 0.5);
+	outTexture = int(inUV.z + 0.5);
 	outTint = inst.params.y;
+	// the crown's centre: about half way up the plant (its top from this vertex' height and how far up the plant it is)
+	float top = local.y / max(height, 0.15);
+	outCrown = local - vec3(0.0, top * 0.55, 0.0);
 	gl_Position = pc.viewproj * vec4(pos, 1.0);
 }

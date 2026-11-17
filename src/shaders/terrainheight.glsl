@@ -7,6 +7,7 @@
 #define TERRAIN_HEIGHT_GLSL
 
 #include "heightmapscale.glsl"
+#include "noise.glsl"
 
 #define TERRAIN_PATCHES 128.0 // patches per side, must match Application::initTerrainPatches
 #define DETAIL_AMPLITUDE 0.12 // world units (~70cm)
@@ -34,21 +35,6 @@ float sampleHeightBicubic(sampler2D hm, vec2 uv) {
 		 + (textureLod(hm, vec2(t0.x, t1.y), 0.0).a * s0.x + textureLod(hm, vec2(t1.x, t1.y), 0.0).a * s1.x) * s1.y;
 }
 
-float detailHash(vec2 p) {
-	// exact integer math on the lattice point: the float hash (fract chains) is chaotic, the compiler fusing its
-	// multiply-adds differently for the cells either side of a border gave different values for the same point,
-	// hard seams in the noise (the snow edge's stripes), worse the further from the world's origin
-	uvec2 q = uvec2(ivec2(p)) * uvec2(1597334673u, 3812015801u);
-	uint n = (q.x ^ q.y) * 1597334673u;
-	return float(n >> 8) * (1.0 / 16777216.0);
-}
-
-float detailValueNoise(vec2 p) {
-	vec2 i = floor(p), f = fract(p);
-	vec2 u = f * f * (3.0 - 2.0 * f);
-	return mix(mix(detailHash(i), detailHash(i + vec2(1, 0)), u.x), mix(detailHash(i + vec2(0, 1)), detailHash(i + vec2(1, 1)), u.x), u.y);
-}
-
 // how much of a noise octave the mesh can carry: its lattice (texels) against the triangle spacing (texels). an
 // octave finer than ~2 triangles across only gets point sampled at the vertices, which turned the bumps into sharp
 // spikes further out (the fine octave's lattice is ~0.7 units, the triangles there ~1)
@@ -60,9 +46,9 @@ float detailOctaveWeight(float lattice, float spacing) {
 // spacing = the mesh's triangle size in those texels (0 = all of it: the probe, the shading)
 float terrainDetail(vec2 texel, float spacing) {
 	vec2 p = texel * 0.5;
-	float n = (detailValueNoise(p) - 0.5) * 0.55 * detailOctaveWeight(2.0, spacing)
-			+ (detailValueNoise(p * 2.13 + 17.0) - 0.5) * 0.3 * detailOctaveWeight(2.0 / 2.13, spacing)
-			+ (detailValueNoise(p * 4.37 - 9.0) - 0.5) * 0.15 * detailOctaveWeight(2.0 / 4.37, spacing);
+	float n = (latticeNoise(p) - 0.5) * 0.55 * detailOctaveWeight(2.0, spacing)
+			+ (latticeNoise(p * 2.13 + 17.0) - 0.5) * 0.3 * detailOctaveWeight(2.0 / 2.13, spacing)
+			+ (latticeNoise(p * 4.37 - 9.0) - 0.5) * 0.15 * detailOctaveWeight(2.0 / 4.37, spacing);
 	return n * 2.0 * DETAIL_AMPLITUDE;
 }
 
@@ -70,7 +56,7 @@ float terrainDetail(vec2 texel, float spacing) {
 vec2 detailValueNoiseGrad(vec2 p) {
 	vec2 i = floor(p), f = fract(p);
 	vec2 u = f * f * (3.0 - 2.0 * f), du = 6.0 * f * (1.0 - f);
-	float a = detailHash(i), b = detailHash(i + vec2(1, 0)), c = detailHash(i + vec2(0, 1)), d = detailHash(i + vec2(1, 1));
+	float a = latticeHash(i), b = latticeHash(i + vec2(1, 0)), c = latticeHash(i + vec2(0, 1)), d = latticeHash(i + vec2(1, 1));
 	return du * (vec2(b - a, c - a) + (a - b - c + d) * u.yx);
 }
 

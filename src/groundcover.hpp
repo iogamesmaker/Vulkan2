@@ -39,19 +39,21 @@ private:
 		glm::vec4 uv;
 	};
 	// lod 1: meshoptimizer's simplification (~30%), for the plants small on screen and the shadow casters
-	struct Mesh { uint32_t firstIndex, indexCount; int32_t vertexOffset; uint32_t vertexCount, firstIndex1, indexCount1, firstIndex2, indexCount2; };
+	// lod 2: ~8% (the far plants), the shadow LOD ~12% (the casters: a shadow doesn't show the leaves' detail)
+	// cards: loose leaf cards, its LODs thinned instead of simplified (GroundCover::init)
+	struct Mesh { uint32_t firstIndex, indexCount; int32_t vertexOffset; uint32_t vertexCount, firstIndex1, indexCount1, firstIndex2, indexCount2, firstIndexS, indexCountS, cards = 0; };
 	struct Species { glm::uvec4 meshes; glm::vec4 size; }; // groundcovercommon.glsl
 
 	// must match groundcovercommon.glsl
-	static constexpr uint32_t SPECIES = 20, MAX_MESHES = 128, BINS = MAX_MESHES * 4, CAPACITY = 3072; // bins: camera lod 0, shadow casters, camera lod 1, camera lod 2
-	static constexpr uint32_t SIDE[3] = { 140, 133, 166 }; // the small / medium / far grids, 2 * radius / cell
+	static constexpr uint32_t FILES = 36, SPECIES = 40, MAX_MESHES = 256, BINS = MAX_MESHES * 4, CAPACITY = 1792, MAX_TEXTURE_PAIRS = 64; // bins: camera lod 0, shadow casters, camera lod 1, camera lod 2
+	static constexpr uint32_t SIDE[3] = { 140, 174, 166 }; // the small / medium / far grids, 2 * radius / cell
 	static constexpr uint32_t THREADS = SIDE[0] * SIDE[0] + SIDE[1] * SIDE[1] + SIDE[2] * SIDE[2];
 
 	VkDevice m_Device;
 	VmaAllocator m_Allocator;
 	TextureLoader* m_TextureLoader = nullptr;
 	std::vector<Mesh> m_Meshes;
-	std::vector<AllocatedImage> m_Textures; // albedo, normal per species
+	std::vector<AllocatedImage> m_Textures; // albedo, normal per texture pair (a model's material images)
 	AllocatedBuffer m_VertexBuffer, m_IndexBuffer, m_Instances, m_Commands, m_SpeciesBuffer;
 	std::vector<VkDrawIndexedIndirectCommand> m_CommandTemplate;
 

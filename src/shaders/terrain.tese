@@ -15,8 +15,12 @@ layout(location = 1) out vec2 outUV;
 layout(location = 5) flat out int outLOD;
 
 layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 4) uniform sampler2D climateMap; // half resolution
 
 #include "terrainheight.glsl"
+#define SNOW_SET 0
+#define SNOW_BINDING 9
+#include "snow.glsl"
 
 layout(push_constant) uniform constants {
 	mat4 viewproj;
@@ -76,6 +80,18 @@ void main() {
 		float he = terrainHeight(heightmap, readCoord + du - dv, dist, spacing, pc.factor, terrainSize) + terrainHeight(heightmap, readCoord - du + dv, dist, spacing, pc.factor, terrainSize);
 		float concave = max(max(hx, hz), max(hd, he)) * 0.5 - pos.y; // (the diagonals are a longer edge: their sag counts double, as it should)
 		pos.y -= max(concave, 0.0) * 0.4 + min(spacing * 0.03, 0.06);
+	}
+
+	// deep snow on it (snow.glsl): the snow's depth, the ground's small bumps mostly smoothed over under it, and the
+	// prints and furrow pressed into it. the shadow casters lie at a print's floor everywhere: the shadow maps are only
+	// redrawn as the sun moves, the fresh prints since would be shaded by the snow they were pressed out of
+	float snow = snowDepthAt(readCoord);
+	if (snow > 0.0) {
+		float fade = detailFade(dist);
+		float spacingTexels = spacing / (terrainSize / HEIGHTMAP_REFERENCE_SIZE);
+		float softened = fade > 0.0 ? terrainDetail(readCoord * HEIGHTMAP_REFERENCE_SIZE, spacingTexels) * fade * 0.6 * (snow / (SNOW_DEPTH_METRES * snowInfo.window.w)) : 0.0;
+		float trail = shadowPass ? -SNOW_PRINT_DEPTH * snow : snowTrailOffset(snowTrailAt(pos.xz - pc.campos.xz, vec2(0.0)), snow);
+		pos.y += snow - softened + trail;
 	}
 
 	outPosition = pos.xyz;

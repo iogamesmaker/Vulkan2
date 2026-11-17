@@ -13,12 +13,14 @@ layout(set = 0, binding = 2) uniform sampler2D depthBuffer;   // full resolution
 layout(rgba16f, set = 0, binding = 3) uniform writeonly image2D resolved;
 layout(set = 0, binding = 4) uniform sampler2D historyDepth;  // the scene depth each texel was marched to last frame
 layout(r32f, set = 0, binding = 5) uniform writeonly image2D resolvedDepth; // this frame's, for the next
+layout(set = 0, binding = 6) uniform sampler2D cloudDepth;	  // where the cloud this texel sees is (clouds.comp), 0 = none
 
 layout(push_constant) uniform constants {
 	mat4 reproject;	  // this frame's NDC (as clouds.comp marched it) -> last frame's clip
 	float valid;	  // 0: no history (first frame, resize, clouds just turned on)
 	float blend;	  // how much of this frame goes in
-	vec2 pad;
+	float cloudReprojection; // 1: the sky reprojected from where its clouds are (0: from infinitely far, VULKAN2_CLOUD_REPROJ=0)
+	float clearDistance; // world units around the camera nothing the march draws can be in front of a surface (application.cpp)
 } pc;
 
 void main() {
@@ -35,6 +37,9 @@ void main() {
 	imageStore(resolvedDepth, p, vec4(depth));
 	if (pc.valid < 0.5) { imageStore(resolved, p, now); return; }
 	float viewZ = 0.02 / max(depth, 1e-7); // reversed z, ~ view distance (the sky: huge)
+	// a surface that near has nothing marched in front of it (and lighting.comp doesn't read it there): no filter, no
+	// history. (the view z is the distance along the view axis, up to ~1.5x shorter than the real one at the edges)
+	if (depth > 0.0 && viewZ * 1.6 < pc.clearDistance) { imageStore(resolved, p, vec4(0.0, 0.0, 0.0, 1.0)); return; }
 
 	// the neighbourhood (3x3, only the texels at this one's depth: along an edge the sky's rays and the ones stopped by
 	// a tree or a ridge are very different, together they opened the box so wide the march's noise went straight
@@ -44,11 +49,13 @@ void main() {
 	vec4 m1 = vec4(0.0), m2 = vec4(0.0);
 	float wSum = 0.0;
 	bool openSky = true; // all 9 the sky
+	float nearestCloud = 0.0; // the nearest cloud around (the largest reversed depth), for the parallax below
 	for (int y = -1; y <= 1; y++) {
 		for (int x = -1; x <= 1; x++) {
 			ivec2 q = clamp(p + ivec2(x, y), ivec2(0), size - 1);
 			float qDepth = texelFetch(depthBuffer, q * ratio, 0).r;
 			openSky = openSky && qDepth <= 0.0;
+			nearestCloud = max(nearestCloud, texelFetch(cloudDepth, q, 0).r);
 			float z = 0.02 / max(qDepth, 1e-7);
 			float tent = (x == 0 ? 2.0 : 1.0) * (y == 0 ? 2.0 : 1.0);
 			float w = tent * ((x == 0 && y == 0) ? 1.0 : exp(-abs(z - viewZ) / (viewZ * 0.1)));
@@ -67,12 +74,26 @@ void main() {
 	// uncover something: clamped there, never zero wide (a flat neighbourhood clamped the history to this frame's noise)
 	bool sky = openSky;
 	vec4 box = sigma * 2.0 + vec4(vec3(0.02 * max(max(m1.r, m1.g), m1.b)), 0.02);
-	// (only a very loose box in the open sky: flying fast through the clouds still has parallax up there)
-	if (sky) box = sigma * 6.0 + vec4(vec3(0.15 * max(max(m1.r, m1.g), m1.b)), 0.15);
+	// how far the camera's movement shifted the clouds here since last frame (texels): where the nearest cloud around
+	// reprojects to against where it would if it were infinitely far. turning alone is exact up there, flying fast
+	// towards or past a cloud isn't: the loose box and the slow blend below kept last frame's cloud (or sky) around
+	// in blocky smears, a growing tower lost its top for a second
+	float parallax = 0.0;
+	if (sky && nearestCloud > 0.0 && pc.cloudReprojection > 0.5) {
+		vec2 ndc = uv * 2.0 - 1.0;
+		vec4 far = pc.reproject * vec4(ndc, 1e-5, 1.0), near = pc.reproject * vec4(ndc, nearestCloud, 1.0);
+		if (far.w > 0.0 && near.w > 0.0) parallax = length((near.xy / near.w - far.xy / far.w) * 0.5 * vec2(size));
+	}
+	float moving = smoothstep(0.3, 2.0, parallax);
+	// (only a very loose box in the open sky while nothing moves: the box is built from this frame's noisy march)
+	if (sky) box = mix(sigma * 6.0 + vec4(vec3(0.15 * max(max(m1.r, m1.g), m1.b)), 0.15), box, moving);
 	vec4 low = m1 - box, high = m1 + box;
 
-	// where this pixel's ray was last frame (the clouds sit kilometres away, the scene's depth where it's in front)
-	vec4 previousClip = pc.reproject * vec4(uv * 2.0 - 1.0, depth > 0.0 ? depth : 1e-5, 1.0);
+	// where this pixel's ray was last frame: the scene's depth where it's in front, in the sky where the cloud is
+	// (treating all of it as infinitely far ignored the camera's movement: flying fast towards a cloud the history
+	// slid the wrong way and the loose sky box let it smear). the clear sky stays far: the cirrus are far up
+	float skyDepth = texelFetch(cloudDepth, p, 0).r;
+	vec4 previousClip = pc.reproject * vec4(uv * 2.0 - 1.0, depth > 0.0 ? depth : (pc.cloudReprojection > 0.5 ? max(skyDepth, 1e-5) : 1e-5), 1.0);
 	vec2 previousUV = previousClip.xy / previousClip.w * 0.5 + 0.5;
 	vec4 filtered = mix(now, m1, 0.6);
 	if (previousClip.w <= 0.0 || any(lessThan(previousUV, vec2(0.0))) || any(greaterThan(previousUV, vec2(1.0)))) {
@@ -110,7 +131,7 @@ void main() {
 	}
 	vec4 before = clamp(historySum / historyWeight, low, high);
 	// partly something else (an edge just uncovered): this frame counts for more until it has settled
-	float blend = sky ? pc.blend * 0.6 : pc.blend;
+	float blend = sky ? mix(pc.blend * 0.6, 0.25, moving) : pc.blend;
 	blend = mix(0.3, blend, historyWeight);
 	// (the sky holds ~20 frames, the land ~12: nothing moves fast up there, and the cloud edges are where a march
 	// either catches a thin wisp or skips it, the most noise to average)

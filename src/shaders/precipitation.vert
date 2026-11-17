@@ -24,7 +24,9 @@ vec3 hash3(uint i) {
 
 void main() {
 	int instance = gl_InstanceIndex;
-	int kind = instance < pc.counts.x ? KIND_RAIN : (instance < pc.counts.x + pc.counts.y ? KIND_SNOW : (instance < pc.counts.x + pc.counts.y + pc.counts.z ? KIND_SAND : KIND_LEAF));
+	int first4 = pc.counts.x + pc.counts.y + pc.counts.z + pc.counts.w;
+	int kind = instance < pc.counts.x ? KIND_RAIN : (instance < pc.counts.x + pc.counts.y ? KIND_SNOW : (instance < pc.counts.x + pc.counts.y + pc.counts.z ? KIND_SAND
+			 : (instance < first4 ? KIND_LEAF : (instance < first4 + pc.counts2.x ? KIND_MOTE : KIND_DRIFT))));
 	outLeaf = vec2(0.0);
 	vec3 r = hash3(uint(instance) * 7919u + uint(kind) * 104729u);
 	vec3 r2 = hash3(uint(instance) * 31u + 17u);
@@ -34,6 +36,9 @@ void main() {
 	// were so sparse a heavy rain showed a handful of streaks
 	// (leaves: ~17m around you, from the ground up into the lower crowns: further out they were specks)
 	vec3 halfSize = kind == KIND_RAIN ? vec3(5.0, 4.0, 5.0) : (kind == KIND_SNOW ? vec3(6.0, 5.0, 6.0) : (kind == KIND_SAND ? vec3(7.0, 2.0, 7.0) : vec3(3.0, 1.2, 3.0)));
+	// (motes: ~15m around you, they're specks further out; spindrift ~40m)
+	if (kind == KIND_MOTE) halfSize = vec3(2.5, 1.0, 2.5);
+	else if (kind == KIND_DRIFT) halfSize = vec3(7.0, 1.0, 7.0);
 	// each particle its own: drop size sets how fast rain falls (~7-11 m/s) and how much the wind carries it, snow
 	// flakes and sand grains vary more. the wind itself gusts: two slow waves of strength that sweep across the scene
 	// (their phase goes with the particle's place), so neighbouring drops lean together and the next patch differently.
@@ -44,7 +49,9 @@ void main() {
 	if (kind == KIND_RAIN)		{ fall = 1.2 + r2.x * 0.6;  drag = 0.35 + r2.y * 0.35; gustiness = 0.55; }
 	else if (kind == KIND_SNOW) { fall = 0.1 + r2.x * 0.14; drag = 0.6 + r2.y * 0.4;   gustiness = 0.8; }
 	else if (kind == KIND_SAND) { fall = 0.0;				drag = 1.0 + r2.y * 0.6;   gustiness = 0.7; }
-	else						{ fall = 0.12 + r2.x * 0.1; drag = 0.45 + r2.y * 0.4;  gustiness = 1.0; } // leaves: flutter down slowly, swept along in the gusts
+	else if (kind == KIND_LEAF) { fall = 0.12 + r2.x * 0.1; drag = 0.45 + r2.y * 0.4;  gustiness = 1.0; } // leaves: flutter down slowly, swept along in the gusts
+	else if (kind == KIND_MOTE) { fall = (r2.x - 0.6) * 0.01; drag = 0.85 + r2.y * 0.3; gustiness = 1.0; } // weightless: with the air, some rising
+	else						{ fall = 0.0;				drag = 1.0 + r2.y * 0.5;   gustiness = 0.9; } // spindrift
 	// where it is with the steady wind alone: the gusts' phase goes by that place in the world (stable as you move)
 	vec3 steady = base + vec3(pc.wind.x * drag * pc.time, -fall * pc.time, pc.wind.y * drag * pc.time);
 	vec3 place = worldCam + mod(steady - worldCam + halfSize, 2.0 * halfSize) - halfSize;
@@ -52,25 +59,52 @@ void main() {
 	float front = dot(place.xz, windDir) * 0.04 + dot(place.xz, vec2(-windDir.y, windDir.x)) * 0.015;
 	const float w1 = 0.45, w2 = 1.3;
 	float p1 = front, p2 = front * 1.7 + 2.1;
-	float a1 = gustiness * 0.7, a2 = gustiness * 0.3;
+	// (strength 1 - a1 - a2 at the lull: never below 0.4 of the wind, a gust never stops the air or turns it back)
+	float a1 = gustiness * 0.4, a2 = gustiness * 0.2;
 	float gustSpeed = 1.0 + a1 * cos(w1 * pc.time - p1) + a2 * cos(w2 * pc.time - p2); // the wind's strength now
 	float gustOffset = a1 / w1 * sin(w1 * pc.time - p1) + a2 / w2 * sin(w2 * pc.time - p2); // its integral, minus the steady part
 	vec3 velocity = vec3(pc.wind.x * drag * gustSpeed, -fall, pc.wind.y * drag * gustSpeed);
 	vec3 moved = steady + vec3(pc.wind.x * drag * gustOffset, 0.0, pc.wind.y * drag * gustOffset);
 	if (kind != KIND_RAIN) {
-		// flakes and grains tumble: a little swirl of their own on top (and its velocity)
-		float s1 = 0.8 + r2.y, s2 = 0.6 + r2.z, amp = kind == KIND_SNOW ? 0.1 : (kind == KIND_LEAF ? 0.18 : 0.06);
-		moved.xz += vec2(sin(pc.time * s1 + r2.z * 6.28), cos(pc.time * s2 + r2.y * 6.28)) * amp;
-		velocity.xz += vec2(cos(pc.time * s1 + r2.z * 6.28) * s1, -sin(pc.time * s2 + r2.y * 6.28) * s2) * amp;
-		if (kind == KIND_SAND) { moved.y += sin(pc.time * 1.7 + r2.x * 6.28) * 0.12; velocity.y += cos(pc.time * 1.7 + r2.x * 6.28) * 0.2; }
+		// flakes and grains tumble: a little swirl of their own on top (and its velocity). mostly across the wind, and
+		// never faster than the wind at its lull: they wobble about their way downwind, they don't turn round (in a
+		// light breeze the swirls used to outrun the wind, a leaf drifting one way and back the other a second later)
+		vec2 across = vec2(-windDir.y, windDir.x);
+		float lull = length(pc.wind) * drag * (1.0 - a1 - a2); // the slowest it's carried downwind
+		float s1 = 0.8 + r2.y, s2 = 0.6 + r2.z, amp = kind == KIND_SNOW ? 0.1 : (kind == KIND_LEAF ? 0.18 : (kind == KIND_MOTE ? 0.12 : 0.06));
+		float ampAcross = min(amp, 0.6 * lull / s1), ampAlong = min(amp * 0.5, 0.25 * lull / s2);
+		moved.xz += across * sin(pc.time * s1 + r2.z * 6.28) * ampAcross + windDir * cos(pc.time * s2 + r2.y * 6.28) * ampAlong;
+		velocity.xz += across * cos(pc.time * s1 + r2.z * 6.28) * s1 * ampAcross - windDir * sin(pc.time * s2 + r2.y * 6.28) * s2 * ampAlong;
+		if (kind == KIND_SAND || kind == KIND_DRIFT) { moved.y += sin(pc.time * 1.7 + r2.x * 6.28) * 0.12; velocity.y += cos(pc.time * 1.7 + r2.x * 6.28) * 0.2; }
+		// motes bob and loop in the eddies: a slower, wider swirl in all three axes
+		// (sideways and along no faster than a share of the lull either, up and down freely)
+		if (kind == KIND_MOTE) {
+			float s = 0.35 + r2.z * 0.4, side = min(0.08, 0.15 * lull / s);
+			moved.y += sin(pc.time * s * 1.3 + r.y * 6.28) * 0.6 * 0.08;
+			moved.xz += across * sin(pc.time * s + r.x * 6.28) * side + windDir * cos(pc.time * s * 0.8 + r.z * 6.28) * side * 0.5;
+		}
 		// a leaf rocks side to side as it falls (the falling leaf's pendulum), lifted for a moment at each end of the swing
-		if (kind == KIND_LEAF) { float s = 2.2 + r2.z * 1.5; moved.y += abs(sin(pc.time * s + r.x * 6.28)) * 0.08; moved.xz += vec2(sin(pc.time * s + r.x * 6.28)) * vec2(0.06, -0.04); }
+		// (the swing across the wind, as fast as a share of the lull: it rocks, it doesn't fly back upwind)
+		if (kind == KIND_LEAF) {
+			float s = 2.2 + r2.z * 1.5;
+			moved.y += abs(sin(pc.time * s + r.x * 6.28)) * 0.08;
+			moved.xz += across * sin(pc.time * s + r.x * 6.28) * min(0.07, 0.4 * lull / s);
+		}
 	}
-	// wrapped into the box around the camera
-	vec3 rel = mod(moved - worldCam + halfSize, 2.0 * halfSize) - halfSize;
-	if (kind == KIND_SAND) rel.y = (r.y * 2.0 - 1.0) * halfSize.y - 0.6 + (moved.y - base.y); // near the ground (the camera's ~eye height above it)
-	vec3 position = pc.campos + rel;
-	float dist = length(rel);
+	// wrapped into the box around the camera. the ones near the ground keep to it: their box's height goes by where
+	// your eyes are standing on the ground under you, not by the camera, so they don't rise and fall with you when you
+	// jump (with only a metre or so of box above and below, a jump used to carry the whole cloud of them along)
+	bool grounded = kind == KIND_SAND || kind == KIND_DRIFT || kind == KIND_LEAF || kind == KIND_MOTE;
+	vec3 anchor = vec3(pc.campos.x, grounded ? pc.standingEye : pc.campos.y, pc.campos.z);
+	vec3 rel = mod(moved - (worldCam - pc.campos + anchor) + halfSize, 2.0 * halfSize) - halfSize;
+	// near the ground (the camera's ~eye height above it), mostly below your eyes: higher up the streaks crossed the sky
+	// like scratches
+	if (kind == KIND_SAND) rel.y = (r.y * 2.0 - 1.0) * halfSize.y * 0.45 - 0.75 + (moved.y - base.y);
+	// spindrift hugs the ground
+	// (spindrift up to ~2m: lower it was white on the white ground, it shows against the trees and the sky)
+	if (kind == KIND_DRIFT) rel.y = -0.28 + r.y * r.y * 0.33 + (moved.y - base.y) * 0.3;
+	vec3 position = anchor + rel;
+	float dist = length(position - pc.campos);
 
 	// fades: at the box's edge (no popping as they wrap) and right at the camera (giant streaks across the screen)
 	float alpha = (1.0 - smoothstep(0.65, 1.0, length(rel / halfSize))) * smoothstep(0.12, 0.6, dist);
@@ -80,6 +114,9 @@ void main() {
 		position.y += 0.8;
 		alpha = (1.0 - smoothstep(0.7, 1.0, length(rel / halfSize))) * smoothstep(0.03, 0.08, length(position - pc.campos));
 	}
+	// spindrift thickens a little in the gusts (only a little: fading whole wisps in and out with them read as popping)
+	if (kind == KIND_DRIFT) alpha *= mix(0.6, 1.0, smoothstep(0.8, 1.35, gustSpeed));
+	if (kind == KIND_MOTE) alpha = (1.0 - smoothstep(0.6, 1.0, length(rel / halfSize))) * smoothstep(0.02, 0.06, dist);
 
 	// the quad: along the motion (streaks) or facing the screen (flakes), in pixels
 	vec2 corner = vec2(gl_VertexIndex == 1 || gl_VertexIndex == 2 || gl_VertexIndex == 4 ? 1.0 : 0.0,
@@ -89,7 +126,20 @@ void main() {
 	vec4 head = pc.viewProj * vec4(position, 1.0);
 	if (head.w <= 0.05) { gl_Position = vec4(0.0, 0.0, -1.0, 1.0); outAlpha = 0.0; return; } // behind: off screen
 	vec2 pixel = 2.0 / pc.view.xy; // one pixel in NDC
-	if (kind == KIND_LEAF) {
+	if (kind == KIND_MOTE || kind == KIND_DRIFT) {
+		// a mote: ~2cm (bigger than a pollen grain: it reads as one in the light), at least a pixel and a half
+		// (spindrift: soft wisps of 25-70cm: as streaks it drew long straight lines across the snow)
+		float sizeWorld = kind == KIND_MOTE ? 0.004 * (0.6 + 0.8 * r2.z) : mix(0.04, 0.12, r2.z);
+		float sizePx = sizeWorld * pc.view.z / head.w;
+		if (kind == KIND_MOTE) { alpha *= clamp(sizePx / 1.5, 0.3, 1.0); sizePx = max(sizePx, 1.5); }
+		float spin = r.y * 6.28 + pc.time * (r.z - 0.5) * 0.4;
+		vec2 q = (corner * 2.0 - 1.0) * sizePx * 0.5;
+		q = mat2(cos(spin), sin(spin), -sin(spin), cos(spin)) * q;
+		gl_Position = head + vec4(q * pixel * head.w, 0.0, 0.0);
+		// x: the mote's twinkle (seed fluff turning in the light) / the wisp's noise seed, y: how much it's against the sun
+		vec3 toIt = normalize(position - pc.campos);
+		outLeaf = vec2(kind == KIND_MOTE ? 0.5 + 0.5 * sin(pc.time * (2.0 + 4.0 * r2.x) + r.z * 6.28) : r.x * 17.0, max(dot(toIt, pc.sundir), 0.0));
+	} else if (kind == KIND_LEAF) {
 		// ~8cm, spinning and flipping over as it tumbles: the quad turned on screen and squashed along one side as the
 		// leaf turns edge on
 		float sizePx = 0.014 * (0.7 + 0.6 * r2.z) * pc.view.z / head.w;
@@ -109,7 +159,7 @@ void main() {
 	} else {
 		// a streak from where it is back along its velocity: rain ~1/30s of its fall (~0.3m), sand a shorter dash
 		// the particle's own velocity only: how you move doesn't bend the streaks
-		float streak = kind == KIND_RAIN ? 0.035 : 0.05;
+		float streak = kind == KIND_RAIN ? 0.035 : (kind == KIND_DRIFT ? 0.12 : 0.05); // (spindrift: long wisps)
 		vec4 tail = pc.viewProj * vec4(position - velocity * streak, 1.0);
 		tail.w = max(tail.w, 0.05);
 		vec2 a = head.xy / head.w, b = tail.xy / tail.w;
@@ -117,7 +167,7 @@ void main() {
 		float lengthPx = max(length(along), 1.0);
 		vec2 dir = along / lengthPx;
 		vec2 side = vec2(-dir.y, dir.x);
-		float widthWorld = kind == KIND_RAIN ? 0.0025 : 0.004; // ~1.5cm drops, a few mm of sand
+		float widthWorld = kind == KIND_RAIN ? 0.0025 : (kind == KIND_DRIFT ? 0.012 : 0.004); // ~1.5cm drops, a few mm of sand, ~7cm wisps of snow
 		float widthPx = widthWorld * pc.view.z / head.w;
 		alpha *= clamp(widthPx / 1.2, 0.55, 1.0); // a sub pixel streak still shows (it was faded to nothing)
 		widthPx = max(widthPx, 1.2);
