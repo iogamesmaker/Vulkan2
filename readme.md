@@ -2,6 +2,8 @@
 My previous attempt at learning Vulkan was a pretty lazy attempt to say the least. I only managed to get a proper build system working after 2 days of throwing random AI generated nonsense in a CMakeLists file, and I used some obscure Vulkan wrapper called "Diligent Engine" with slightly outdated documentation which made it a pain to work with, not knowing all the features and stuff.
 I poured very little effort in trying to understand how the graphics pipeline shit actually worked, and let AI deal with the weird Vulkan backend shit. No final goal in mind, just wanted some pretty pictures I guess, so I never bothered to look further than a shadertoy-esque engine.
 
+This one started out really good, until I hit the limit of my knowledge, after I added bindless texturing. Now I'm just vibecoding basically. Think of that what you want 💯💯
+
 ### Building (Windows, MSVC)
 Needs the Visual Studio Build Tools (C++ workload), CMake, Ninja, the Vulkan SDK and vcpkg in `C:\code\clone\vcpkg` (or set `VCPKG_ROOT`). Then:
 ```
